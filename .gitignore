@@ -1,0 +1,36 @@
+# Rust / Cargo
+/target/
+**/target/
+/Cargo.lock
+
+# Runtime-generated
+/cache/
+/logs/
+*.log
+
+# OS / Windows
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Visual Studio / VS Code
+.vscode/
+.vs/
+*.code-workspace
+
+# JetBrains
+.idea/
+*.iml
+
+# Build artifacts / misc
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Optional: local env files
+.env
+.env.*
