@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use roxmltree::{Document, Node};
 
 use crate::app::RenderableKind;
+use crate::sprite_keys::validate_sprite_key;
 use crate::AppPaths;
 
 use super::database::{DefDatabase, EntityArchetype, EntityDefId};
@@ -166,7 +167,7 @@ fn apply_patch(target: &mut MergedEntityDef, patch: &CompiledEntityDef) {
     if let Some(label) = &patch.label {
         target.label = Some(label.clone());
     }
-    if let Some(renderable) = patch.renderable {
+    if let Some(renderable) = patch.renderable.clone() {
         target.renderable = Some(renderable);
     }
     if let Some(move_speed) = patch.move_speed {
@@ -291,11 +292,25 @@ fn parse_entity_def(
                 let value = required_text(mod_id, file_path, doc, field, "renderable")?;
                 let parsed = match value.as_str() {
                     "Placeholder" => RenderableKind::Placeholder,
+                    _ if value.starts_with("Sprite:") => {
+                        let key = value.trim_start_matches("Sprite:");
+                        validate_sprite_key(key).map_err(|error| {
+                            error_at_node(
+                                ContentErrorCode::InvalidValue,
+                                format!("invalid sprite key '{key}': {error}"),
+                                mod_id,
+                                file_path,
+                                doc,
+                                field,
+                            )
+                        })?;
+                        RenderableKind::Sprite(key.to_string())
+                    }
                     _ => {
                         return Err(error_at_node(
                             ContentErrorCode::InvalidValue,
                             format!(
-                                "invalid renderable '{}'; allowed values: Placeholder",
+                                "invalid renderable '{}'; allowed values: Placeholder or Sprite:<key> where key uses [a-z0-9_/-], is non-empty, and excludes '..', leading '/', and '\\\\'",
                                 value
                             ),
                             mod_id,
@@ -644,6 +659,32 @@ mod tests {
         write_file(
             &app.base_content_dir.join("defs.xml"),
             r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable>Sprite</renderable></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::InvalidValue);
+    }
+
+    #[test]
+    fn sprite_renderable_parses_when_key_is_valid() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable>Sprite:player</renderable></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("a").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(def.renderable, RenderableKind::Sprite("player".to_string()));
+    }
+
+    #[test]
+    fn sprite_renderable_rejects_invalid_key() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable>Sprite:a.b</renderable></EntityDef></Defs>"#,
         );
         let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
         assert_eq!(err.code, ContentErrorCode::InvalidValue);

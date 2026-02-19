@@ -138,6 +138,23 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 
 ---
 
+## Ticket Notes (2026-02-19, Ticket 17)
+- Renderable contract expanded for sprite v0:
+  - `RenderableKind::{Placeholder, Sprite(String)}`
+  - XML renderable format supports `Sprite:<key>`
+- Sprite key validation contract (shared across compiler + renderer):
+  - allowed chars: `a-z`, `0-9`, `_`, `/`, `-`
+  - rejected: empty keys, leading `/`, any `\`, any `..`
+- Renderer asset lookup seam added:
+  - `asset_root` is passed from loop runner into renderer
+  - sprite file path is resolved strictly as `asset_root/base/sprites/<key>.png`
+  - cache stores sprite decode result by key to avoid repeated decode work
+- Fallback behavior locked:
+  - invalid sprite key, missing file, or decode failure renders placeholder square
+  - frame render continues; no runtime XML parsing is introduced
+
+---
+
 ## Ticket Notes (2026-02-19)
 - Ticket 1 implemented: engine heartbeat and lifecycle loop with fixed-timestep simulation and decoupled metrics surface.
 - App/Loop contract added in `crates/engine/src/app/`:

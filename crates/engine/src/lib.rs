@@ -6,6 +6,7 @@ use thiserror::Error;
 
 pub mod app;
 pub mod content;
+mod sprite_keys;
 
 pub use app::{
     run_app, run_app_with_metrics, screen_to_world_px, world_to_screen_px, AppError, Camera2D,

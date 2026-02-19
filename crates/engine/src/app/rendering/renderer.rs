@@ -1,7 +1,12 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use image::ImageReader;
 use pixels::{Error, Pixels, SurfaceTexture};
 use winit::window::Window;
 
 use crate::app::{tools::draw_overlay, OverlayData, RenderableKind, SceneWorld, Vec2};
+use crate::sprite_keys::validate_sprite_key;
 
 use super::{world_to_screen_px, Viewport, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX};
 
@@ -12,13 +17,21 @@ const GRID_MAJOR_EVERY: i32 = 5;
 const GRID_MINOR_COLOR: [u8; 4] = [35, 39, 46, 255];
 const GRID_MAJOR_COLOR: [u8; 4] = [52, 58, 70, 255];
 
+struct LoadedSprite {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
 pub struct Renderer<'window> {
     pixels: Pixels<'window>,
     viewport: Viewport,
+    asset_root: PathBuf,
+    sprite_cache: HashMap<String, Option<LoadedSprite>>,
 }
 
 impl<'window> Renderer<'window> {
-    pub fn new(window: &'window Window) -> Result<Self, Error> {
+    pub fn new(window: &'window Window, asset_root: PathBuf) -> Result<Self, Error> {
         let size = window.inner_size();
         let surface = SurfaceTexture::new(size.width, size.height, window);
         let pixels = Pixels::new(size.width, size.height, surface)?;
@@ -28,6 +41,8 @@ impl<'window> Renderer<'window> {
                 width: size.width,
                 height: size.height,
             },
+            asset_root,
+            sprite_cache: HashMap::new(),
         })
     }
 
@@ -50,6 +65,8 @@ impl<'window> Renderer<'window> {
             return Ok(());
         }
 
+        let asset_root = self.asset_root.as_path();
+        let sprite_cache = &mut self.sprite_cache;
         let frame = self.pixels.frame_mut();
         for chunk in frame.chunks_exact_mut(4) {
             chunk.copy_from_slice(&CLEAR_COLOR);
@@ -58,21 +75,45 @@ impl<'window> Renderer<'window> {
         draw_world_grid(frame, self.viewport.width, self.viewport.height, world);
 
         for entity in world.entities() {
-            if matches!(entity.renderable.kind, RenderableKind::Placeholder) {
-                let (cx, cy) = world_to_screen_px(
-                    world.camera(),
-                    (self.viewport.width, self.viewport.height),
-                    entity.transform.position,
-                );
-                draw_square(
-                    frame,
-                    self.viewport.width,
-                    self.viewport.height,
-                    cx,
-                    cy,
-                    PLACEHOLDER_HALF_SIZE_PX,
-                    PLACEHOLDER_COLOR,
-                );
+            let (cx, cy) = world_to_screen_px(
+                world.camera(),
+                (self.viewport.width, self.viewport.height),
+                entity.transform.position,
+            );
+            match &entity.renderable.kind {
+                RenderableKind::Placeholder => {
+                    draw_square(
+                        frame,
+                        self.viewport.width,
+                        self.viewport.height,
+                        cx,
+                        cy,
+                        PLACEHOLDER_HALF_SIZE_PX,
+                        PLACEHOLDER_COLOR,
+                    );
+                }
+                RenderableKind::Sprite(key) => {
+                    if let Some(sprite) = resolve_cached_sprite(sprite_cache, asset_root, key) {
+                        draw_sprite_centered(
+                            frame,
+                            self.viewport.width,
+                            self.viewport.height,
+                            cx,
+                            cy,
+                            sprite,
+                        );
+                    } else {
+                        draw_square(
+                            frame,
+                            self.viewport.width,
+                            self.viewport.height,
+                            cx,
+                            cy,
+                            PLACEHOLDER_HALF_SIZE_PX,
+                            PLACEHOLDER_COLOR,
+                        );
+                    }
+                }
             }
         }
 
@@ -82,6 +123,40 @@ impl<'window> Renderer<'window> {
 
         self.pixels.render()
     }
+}
+
+fn resolve_cached_sprite<'a>(
+    cache: &'a mut HashMap<String, Option<LoadedSprite>>,
+    asset_root: &Path,
+    key: &str,
+) -> Option<&'a LoadedSprite> {
+    if !cache.contains_key(key) {
+        let sprite =
+            resolve_sprite_image_path(asset_root, key).and_then(|path| load_sprite_rgba(&path));
+        cache.insert(key.to_string(), sprite);
+    }
+    cache.get(key).and_then(Option::as_ref)
+}
+
+fn resolve_sprite_image_path(asset_root: &Path, key: &str) -> Option<PathBuf> {
+    if validate_sprite_key(key).is_err() {
+        return None;
+    }
+    Some(
+        asset_root
+            .join("base")
+            .join("sprites")
+            .join(format!("{key}.png")),
+    )
+}
+
+fn load_sprite_rgba(path: &Path) -> Option<LoadedSprite> {
+    let image = ImageReader::open(path).ok()?.decode().ok()?.to_rgba8();
+    Some(LoadedSprite {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    })
 }
 
 fn draw_world_grid(frame: &mut [u8], width: u32, height: u32, world: &SceneWorld) {
@@ -206,10 +281,59 @@ fn draw_square(
     }
 }
 
+fn draw_sprite_centered(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    center_x: i32,
+    center_y: i32,
+    sprite: &LoadedSprite,
+) {
+    if sprite.width == 0 || sprite.height == 0 {
+        return;
+    }
+    let left = center_x - (sprite.width as i32 / 2);
+    let top = center_y - (sprite.height as i32 / 2);
+
+    for sy in 0..sprite.height as i32 {
+        for sx in 0..sprite.width as i32 {
+            let dx = left + sx;
+            let dy = top + sy;
+            if dx < 0 || dy < 0 || dx >= width as i32 || dy >= height as i32 {
+                continue;
+            }
+
+            let src_offset = ((sy as usize * sprite.width as usize) + sx as usize) * 4;
+            if src_offset + 3 >= sprite.rgba.len() {
+                continue;
+            }
+
+            let alpha = sprite.rgba[src_offset + 3];
+            if alpha == 0 {
+                continue;
+            }
+
+            write_pixel_rgba_clipped(
+                frame,
+                width as usize,
+                dx,
+                dy,
+                [
+                    sprite.rgba[src_offset],
+                    sprite.rgba[src_offset + 1],
+                    sprite.rgba[src_offset + 2],
+                    alpha,
+                ],
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::Camera2D;
+    use tempfile::TempDir;
 
     #[test]
     fn major_index_classification_handles_negative_indices() {
@@ -272,5 +396,20 @@ mod tests {
             },
         );
         assert_eq!(xa - xb, PIXELS_PER_WORLD.round() as i32);
+    }
+
+    #[test]
+    fn sprite_path_resolution_and_missing_asset_fallback_behavior() {
+        let temp = TempDir::new().expect("temp");
+        let asset_root = temp.path();
+
+        assert!(resolve_sprite_image_path(asset_root, r"bad\key").is_none());
+
+        let valid_path = resolve_sprite_image_path(asset_root, "player").expect("path");
+        assert_eq!(
+            valid_path,
+            asset_root.join("base").join("sprites").join("player.png")
+        );
+        assert!(load_sprite_rgba(&valid_path).is_none());
     }
 }

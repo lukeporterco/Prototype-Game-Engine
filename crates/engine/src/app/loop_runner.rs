@@ -111,7 +111,9 @@ pub fn run_app_with_metrics(
     ));
     let window_for_renderer = window;
     let window_for_loop = window;
-    let mut renderer = Renderer::new(window_for_renderer).map_err(AppError::CreateRenderer)?;
+    let asset_root = app_paths.root.join("assets");
+    let mut renderer =
+        Renderer::new(window_for_renderer, asset_root).map_err(AppError::CreateRenderer)?;
 
     event_loop.set_control_flow(ControlFlow::Poll);
 

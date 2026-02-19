@@ -162,12 +162,13 @@ impl Default for Transform {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderableKind {
     Placeholder,
+    Sprite(String),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RenderableDesc {
     pub kind: RenderableKind,
     pub debug_name: &'static str,
@@ -213,7 +214,7 @@ pub struct DebugInfoSnapshot {
     pub resource_count: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Entity {
     pub id: EntityId,
     pub transform: Transform,
@@ -366,7 +367,7 @@ impl SceneWorld {
             if !entity.selectable {
                 continue;
             }
-            if !matches!(entity.renderable.kind, RenderableKind::Placeholder) {
+            if !matches!(&entity.renderable.kind, RenderableKind::Placeholder) {
                 continue;
             }
 
@@ -402,7 +403,7 @@ impl SceneWorld {
             if entity.interactable.is_none() {
                 continue;
             }
-            if !matches!(entity.renderable.kind, RenderableKind::Placeholder) {
+            if !matches!(&entity.renderable.kind, RenderableKind::Placeholder) {
                 continue;
             }
 

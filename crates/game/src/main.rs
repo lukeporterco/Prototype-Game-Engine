@@ -302,12 +302,12 @@ impl GameplayScene {
             let renderable_kind = if saved_entity.interactable.is_some() {
                 pile_archetype
                     .as_ref()
-                    .map(|archetype| archetype.renderable)
+                    .map(|archetype| archetype.renderable.clone())
                     .unwrap_or(RenderableKind::Placeholder)
             } else if saved_entity.actor {
                 player_archetype
                     .as_ref()
-                    .map(|archetype| archetype.renderable)
+                    .map(|archetype| archetype.renderable.clone())
                     .unwrap_or(RenderableKind::Placeholder)
             } else {
                 RenderableKind::Placeholder
@@ -385,7 +385,7 @@ impl Scene for GameplayScene {
                 rotation_radians: None,
             },
             RenderableDesc {
-                kind: player_archetype.renderable,
+                kind: player_archetype.renderable.clone(),
                 debug_name: "player",
             },
         );
@@ -398,7 +398,7 @@ impl Scene for GameplayScene {
                 rotation_radians: None,
             },
             RenderableDesc {
-                kind: player_archetype.renderable,
+                kind: player_archetype.renderable.clone(),
                 debug_name: "unit_a",
             },
         );
@@ -411,7 +411,7 @@ impl Scene for GameplayScene {
                 rotation_radians: None,
             },
             RenderableDesc {
-                kind: player_archetype.renderable,
+                kind: player_archetype.renderable.clone(),
                 debug_name: "unit_b",
             },
         );
@@ -424,7 +424,7 @@ impl Scene for GameplayScene {
                 rotation_radians: None,
             },
             RenderableDesc {
-                kind: pile_archetype.renderable,
+                kind: pile_archetype.renderable.clone(),
                 debug_name: "resource_pile",
             },
         );
@@ -1525,7 +1525,7 @@ mod tests {
         );
         world_b.apply_pending();
 
-        let before = *world_a.find_entity(actor).expect("actor");
+        let before = world_a.find_entity(actor).expect("actor").clone();
         let before_items = scene_a.resource_count;
         let before_selection = scene_a.selected_entity;
 
@@ -1534,7 +1534,7 @@ mod tests {
             world_b.apply_pending();
         }
 
-        let after = *world_a.find_entity(actor).expect("actor");
+        let after = world_a.find_entity(actor).expect("actor").clone();
         assert_eq!(scene_a.selected_entity, before_selection);
         assert_eq!(scene_a.resource_count, before_items);
         assert_eq!(after.transform.position, before.transform.position);
