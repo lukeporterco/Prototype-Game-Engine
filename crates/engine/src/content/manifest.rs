@@ -1,13 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use super::atomic_io::write_text_atomic;
+use super::pack::ContentPackError;
 use super::types::ContentPlanError;
 
 pub(crate) const CONTENT_PACK_FORMAT_VERSION: u16 = 1;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct ManifestV1 {
     pub pack_format_version: u16,
     pub compiler_version: String,
@@ -51,4 +53,19 @@ pub(crate) fn pack_path(cache_dir: &Path, mod_id: &str) -> PathBuf {
 
 pub(crate) fn manifest_path(cache_dir: &Path, mod_id: &str) -> PathBuf {
     content_pack_cache_dir(cache_dir).join(format!("{mod_id}.manifest.json"))
+}
+
+pub(crate) fn write_manifest_atomic(
+    path: &Path,
+    manifest: &ManifestV1,
+) -> Result<(), ContentPackError> {
+    let text =
+        serde_json::to_string(manifest).map_err(|error| ContentPackError::InvalidFormat {
+            path: path.to_path_buf(),
+            message: format!("failed to encode manifest json: {error}"),
+        })?;
+    write_text_atomic(path, &text).map_err(|source| ContentPackError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }

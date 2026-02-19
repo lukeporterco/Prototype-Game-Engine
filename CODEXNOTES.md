@@ -316,3 +316,29 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - scene load resolves `proto.player` from `DefDatabase`
   - player `renderable` + `moveSpeed` come from compiled XML archetype
   - missing `proto.player` now fails load with actionable panic message
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 9)
+- Added cache load/build orchestration:
+  - `crates/engine/src/content/pipeline.rs`
+  - public API: `build_or_load_def_database(app_paths, request)`
+- Added binary pack I/O:
+  - `crates/engine/src/content/pack.rs`
+  - custom LE `ContentPack v1` format with payload hash
+- Added atomic file helpers:
+  - `crates/engine/src/content/atomic_io.rs`
+  - temp-file + rename writes
+- Startup integration switched from XML-only compile to pipeline load/build in:
+  - `crates/engine/src/app/loop_runner.rs`
+- Atomicity rule implemented (locked):
+  - for rebuilt mods, `.pack` is written atomically first
+  - `.manifest.json` is written atomically only after pack write succeeds
+- Redundant header validation implemented (locked):
+  - pack header stores cache-key fields mirrored from manifest
+  - cache load requires manifest-to-expected match and header-to-manifest exact match
+  - mismatch/corruption triggers per-mod rebuild fallback
+- Failure policy:
+  - cache read/validation failures are recoverable per mod (recompile)
+  - XML compile failures remain fatal and fail startup
+  - atomic write failures are fatal for startup

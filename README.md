@@ -108,6 +108,31 @@ If no matching root is found, startup fails fast with instructions.
   - `renderable`
   - `moveSpeed` (defaults to `5.0` if omitted)
 
+## ContentPack Binary Cache (Ticket 9)
+
+- Startup now uses `build_or_load_def_database(...)`:
+  - builds compile plan
+  - loads valid per-mod packs from cache
+  - recompiles only invalid/corrupt mods from XML
+- Deterministic cache paths:
+  - `cache/content_packs/<mod_id>.pack`
+  - `cache/content_packs/<mod_id>.manifest.json`
+- Atomic write order per rebuilt mod:
+  - write/rename pack first
+  - then write/rename manifest
+- Manifest remains planning authority in v1, but pack header redundantly stores the same key metadata:
+  - format/version fields
+  - `mod_id`
+  - `mod_load_index`
+  - `compiler_version`
+  - `game_version`
+  - enabled-mods hash and input hash
+- Cache load cross-checks:
+  - manifest matches expected request/inputs exactly
+  - pack decodes and payload hash is valid
+  - pack header fields match manifest exactly
+- Any cache inconsistency falls back to per-mod rebuild; XML compile errors are still fatal.
+
 ## Scenes and Entities
 
 - Two hardcoded in-memory scenes are active.

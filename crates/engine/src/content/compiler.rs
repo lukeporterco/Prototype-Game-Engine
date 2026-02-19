@@ -69,11 +69,44 @@ impl fmt::Display for ContentCompileError {
 impl std::error::Error for ContentCompileError {}
 
 #[derive(Debug, Clone)]
-struct PendingEntityDef {
-    def_name: String,
-    label: String,
-    renderable: RenderableKind,
-    move_speed: f32,
+pub struct CompiledEntityDef {
+    pub def_name: String,
+    pub label: String,
+    pub renderable: RenderableKind,
+    pub move_speed: f32,
+}
+
+pub fn compile_mod_entity_defs(
+    source_dir: &Path,
+    mod_id: &str,
+) -> Result<Vec<CompiledEntityDef>, ContentCompileError> {
+    let xml_files = collect_xml_files_sorted(source_dir)
+        .map_err(|error| read_error(mod_id, error.path, error.source))?;
+    let mut defs = Vec::<CompiledEntityDef>::new();
+    let mut seen_defs = HashSet::<String>::new();
+
+    for xml_file in xml_files {
+        let raw = fs::read_to_string(&xml_file)
+            .map_err(|source| read_error(mod_id, xml_file.clone(), source))?;
+        let parsed = parse_defs_document(mod_id, &xml_file, &raw)?;
+        for def in parsed {
+            if !seen_defs.insert(def.def_name.clone()) {
+                return Err(ContentCompileError {
+                    code: ContentErrorCode::DuplicateDefInMod,
+                    message: format!(
+                        "duplicate EntityDef '{}' in mod '{}'; each mod may define a defName only once",
+                        def.def_name, mod_id
+                    ),
+                    mod_id: mod_id.to_string(),
+                    file_path: xml_file.clone(),
+                    location: None,
+                });
+            }
+            defs.push(def);
+        }
+    }
+
+    Ok(defs)
 }
 
 pub fn compile_def_database(
@@ -82,38 +115,19 @@ pub fn compile_def_database(
 ) -> Result<DefDatabase, ContentCompileError> {
     let sources = discover_mod_sources(app_paths, request)
         .map_err(|error| map_discovery_error(error, &app_paths.root))?;
-
-    let mut merged = BTreeMap::<String, PendingEntityDef>::new();
-
+    let mut merged = BTreeMap::<String, CompiledEntityDef>::new();
     for source in sources {
-        let xml_files = collect_xml_files_sorted(&source.source_dir)
-            .map_err(|error| read_error(&source.mod_id, error.path, error.source))?;
-        let mut seen_in_mod = HashSet::<String>::new();
-
-        for xml_file in xml_files {
-            let raw = fs::read_to_string(&xml_file)
-                .map_err(|source_err| read_error(&source.mod_id, xml_file.clone(), source_err))?;
-            let defs = parse_defs_document(&source.mod_id, &xml_file, &raw)?;
-            for def in defs {
-                if !seen_in_mod.insert(def.def_name.clone()) {
-                    return Err(ContentCompileError {
-                        code: ContentErrorCode::DuplicateDefInMod,
-                        message: format!(
-                            "duplicate EntityDef '{}' in mod '{}'; each mod may define a defName only once",
-                            def.def_name, source.mod_id
-                        ),
-                        mod_id: source.mod_id.clone(),
-                        file_path: xml_file.clone(),
-                        location: None,
-                    });
-                }
-                // Cross-mod duplicates are intentional override points (last mod wins).
-                merged.insert(def.def_name.clone(), def);
-            }
+        let defs = compile_mod_entity_defs(&source.source_dir, &source.mod_id)?;
+        for def in defs {
+            // Cross-mod duplicates are intentional override points (last mod wins).
+            merged.insert(def.def_name.clone(), def);
         }
     }
+    Ok(def_database_from_merged(merged))
+}
 
-    let entity_defs = merged
+pub(crate) fn def_database_from_merged(merged: BTreeMap<String, CompiledEntityDef>) -> DefDatabase {
+    let defs = merged
         .into_values()
         .map(|def| EntityArchetype {
             id: EntityDefId(0),
@@ -123,15 +137,14 @@ pub fn compile_def_database(
             move_speed: def.move_speed,
         })
         .collect::<Vec<_>>();
-
-    Ok(DefDatabase::from_entity_defs(entity_defs))
+    DefDatabase::from_entity_defs(defs)
 }
 
 fn parse_defs_document(
     mod_id: &str,
     file_path: &Path,
     raw: &str,
-) -> Result<Vec<PendingEntityDef>, ContentCompileError> {
+) -> Result<Vec<CompiledEntityDef>, ContentCompileError> {
     let doc = Document::parse(raw).map_err(|error| ContentCompileError {
         code: ContentErrorCode::XmlMalformed,
         message: format!("malformed XML: {error}"),
@@ -155,7 +168,7 @@ fn parse_defs_document(
         ));
     }
 
-    let mut defs = Vec::<PendingEntityDef>::new();
+    let mut defs = Vec::<CompiledEntityDef>::new();
     for child in root.children().filter(|node| node.is_element()) {
         if child.tag_name().name() != "EntityDef" {
             return Err(error_at_node(
@@ -181,12 +194,12 @@ fn parse_entity_def(
     file_path: &Path,
     doc: &Document<'_>,
     node: Node<'_, '_>,
-) -> Result<PendingEntityDef, ContentCompileError> {
+) -> Result<CompiledEntityDef, ContentCompileError> {
     let mut seen_fields = HashSet::<String>::new();
-    let mut def_name: Option<String> = None;
-    let mut label: Option<String> = None;
-    let mut renderable: Option<RenderableKind> = None;
-    let mut move_speed: Option<f32> = None;
+    let mut def_name = None::<String>;
+    let mut label = None::<String>;
+    let mut renderable = None::<RenderableKind>;
+    let mut move_speed = None::<f32>;
 
     for field in node.children().filter(|child| child.is_element()) {
         let field_name = field.tag_name().name().to_string();
@@ -202,12 +215,8 @@ fn parse_entity_def(
         }
 
         match field_name.as_str() {
-            "defName" => {
-                def_name = Some(required_text(mod_id, file_path, doc, field, "defName")?);
-            }
-            "label" => {
-                label = Some(required_text(mod_id, file_path, doc, field, "label")?);
-            }
+            "defName" => def_name = Some(required_text(mod_id, file_path, doc, field, "defName")?),
+            "label" => label = Some(required_text(mod_id, file_path, doc, field, "label")?),
             "renderable" => {
                 let value = required_text(mod_id, file_path, doc, field, "renderable")?;
                 let parsed = match value.as_str() {
@@ -298,7 +307,7 @@ fn parse_entity_def(
         ));
     };
 
-    Ok(PendingEntityDef {
+    Ok(CompiledEntityDef {
         def_name,
         label,
         renderable,
@@ -433,6 +442,7 @@ fn map_discovery_error(error: ContentPlanError, root: &Path) -> ContentCompileEr
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
 
@@ -669,5 +679,32 @@ mod tests {
         .expect_err("error");
         assert_eq!(err.code, ContentErrorCode::UnknownField);
         assert_eq!(err.mod_id, "unknownfield");
+    }
+
+    #[test]
+    fn def_database_from_merged_sorts_ids_by_def_name() {
+        let mut merged = BTreeMap::<String, CompiledEntityDef>::new();
+        merged.insert(
+            "z".to_string(),
+            CompiledEntityDef {
+                def_name: "z".to_string(),
+                label: "Z".to_string(),
+                renderable: RenderableKind::Placeholder,
+                move_speed: 1.0,
+            },
+        );
+        merged.insert(
+            "a".to_string(),
+            CompiledEntityDef {
+                def_name: "a".to_string(),
+                label: "A".to_string(),
+                renderable: RenderableKind::Placeholder,
+                move_speed: 1.0,
+            },
+        );
+        let db = def_database_from_merged(merged);
+        let a = db.entity_def_id_by_name("a").expect("a");
+        let z = db.entity_def_id_by_name("z").expect("z");
+        assert!(a.0 < z.0);
     }
 }
