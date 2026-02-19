@@ -2,6 +2,10 @@
 
 Prototype-first Rust engine bootstrap for Proto GE.
 
+## Reference
+
+- `docs/PROTOGE_INFRASTRUCTURE_REFERENCE.md`
+
 ## Run
 
 ```powershell
