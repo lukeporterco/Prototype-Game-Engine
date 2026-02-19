@@ -52,6 +52,18 @@ If no matching root is found, startup fails fast with instructions.
 - Camera pan controls: `I/J/K/L`.
 - Window resize is handled by renderer surface/buffer resize and alignment stays centered in world space.
 
+## Tools Overlay (Ticket 5)
+
+- Overlay is on-screen by default and updates every frame.
+- Toggle overlay visibility with `F3`.
+- Current lines:
+  - `FPS: ...`
+  - `TPS: ...`
+  - `Frame: ... ms`
+  - `Entities: ...`
+  - `Content: loaded` (reserved placeholder for content compile/load status)
+- Overlay text blitting is clipping-safe for very small windows and off-screen text.
+
 ## Scenes and Entities
 
 - Two hardcoded in-memory scenes are active.

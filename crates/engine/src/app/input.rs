@@ -8,10 +8,11 @@ pub enum InputAction {
     CameraDown,
     CameraLeft,
     CameraRight,
+    ToggleOverlay,
     Quit,
 }
 
-const ACTION_COUNT: usize = 9;
+const ACTION_COUNT: usize = 10;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ActionStates {
@@ -39,7 +40,8 @@ impl InputAction {
             InputAction::CameraDown => 5,
             InputAction::CameraLeft => 6,
             InputAction::CameraRight => 7,
-            InputAction::Quit => 8,
+            InputAction::ToggleOverlay => 8,
+            InputAction::Quit => 9,
         }
     }
 }

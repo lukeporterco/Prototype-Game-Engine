@@ -221,3 +221,20 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Game integration:
   - Camera is moved from scene update using action input
   - Debug title includes player and camera position
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 5)
+- Tools overlay added in engine (`crates/engine/src/app/tools/overlay.rs`), drawn from renderer each frame.
+- Overlay toggle contract:
+  - `F3` toggles visibility via engine-owned edge trigger in `InputCollector`
+  - hold does not spam toggles; only key-down edge flips state
+- Overlay data contract (engine-owned, no scene/window coupling):
+  - FPS/TPS/frame time from `MetricsHandle`
+  - entity count from `SceneWorld::entity_count()`
+  - reserved content status line currently hardcoded as `Content: loaded`
+- Glyph system intentionally constrained:
+  - only supports required current charset (digits, `.`, `:`, space, `-`, and letters needed for labels/status)
+  - unknown characters are treated as space (safe fallback)
+- Safety rule locked:
+  - text blitter is clipping-safe by design (negative/off-screen coords and tiny viewports never panic or write out of bounds)

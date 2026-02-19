@@ -1,7 +1,7 @@
 use pixels::{Error, Pixels, SurfaceTexture};
 use winit::window::Window;
 
-use crate::app::{RenderableKind, SceneWorld};
+use crate::app::{tools::draw_overlay, OverlayData, RenderableKind, SceneWorld};
 
 use super::transform::{world_to_screen, Viewport};
 
@@ -39,7 +39,11 @@ impl<'window> Renderer<'window> {
         Ok(())
     }
 
-    pub fn render_world(&mut self, world: &SceneWorld) -> Result<(), Error> {
+    pub(crate) fn render_world(
+        &mut self,
+        world: &SceneWorld,
+        overlay_data: Option<&OverlayData>,
+    ) -> Result<(), Error> {
         if self.viewport.width == 0 || self.viewport.height == 0 {
             return Ok(());
         }
@@ -67,6 +71,10 @@ impl<'window> Renderer<'window> {
                     PLACEHOLDER_COLOR,
                 );
             }
+        }
+
+        if let Some(data) = overlay_data {
+            draw_overlay(frame, self.viewport.width, self.viewport.height, data);
         }
 
         self.pixels.render()

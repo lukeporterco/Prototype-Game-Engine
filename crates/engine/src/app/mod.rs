@@ -3,6 +3,7 @@ mod loop_runner;
 mod metrics;
 mod rendering;
 mod scene;
+mod tools;
 
 pub use input::InputAction;
 pub use loop_runner::{run_app, run_app_with_metrics, AppError, LoopConfig, SLOW_FRAME_ENV_VAR};
@@ -12,3 +13,4 @@ pub use scene::{
     Camera2D, Entity, EntityId, InputSnapshot, RenderableDesc, RenderableKind, Scene, SceneCommand,
     SceneKey, SceneWorld, Transform, Vec2,
 };
+pub(crate) use tools::OverlayData;

@@ -17,7 +17,8 @@ use crate::{resolve_app_paths, StartupError};
 use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
 use super::{
-    InputAction, InputSnapshot, MetricsHandle, Renderer, Scene, SceneCommand, SceneKey, SceneWorld,
+    InputAction, InputSnapshot, MetricsHandle, OverlayData, Renderer, Scene, SceneCommand,
+    SceneKey, SceneWorld,
 };
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
@@ -138,105 +139,118 @@ pub fn run_app_with_metrics(
     let mut last_frame_instant = Instant::now();
     let mut metrics_accumulator = MetricsAccumulator::new(metrics_log_interval);
     let mut last_applied_title: Option<String> = None;
+    let mut overlay_visible = true;
 
     event_loop
         .run(move |event, window_target| match event {
-            Event::WindowEvent { window_id, event } if window_id == window_for_loop.id() => match event {
-                WindowEvent::CloseRequested => {
-                    input_collector.mark_quit_requested();
-                    info!(reason = "window_close", "shutdown_requested");
-                    window_target.exit();
-                }
-                WindowEvent::Resized(new_size) => {
-                    if let Err(error) = renderer.resize(new_size.width, new_size.height) {
-                        warn!(error = %error, "renderer_resize_failed");
+            Event::WindowEvent { window_id, event } if window_id == window_for_loop.id() => {
+                match event {
+                    WindowEvent::CloseRequested => {
+                        input_collector.mark_quit_requested();
+                        info!(reason = "window_close", "shutdown_requested");
                         window_target.exit();
                     }
-                }
-                WindowEvent::ScaleFactorChanged { .. } => {
-                    let size = window_for_loop.inner_size();
-                    if let Err(error) = renderer.resize(size.width, size.height) {
-                        warn!(error = %error, "renderer_resize_failed");
-                        window_target.exit();
+                    WindowEvent::Resized(new_size) => {
+                        if let Err(error) = renderer.resize(new_size.width, new_size.height) {
+                            warn!(error = %error, "renderer_resize_failed");
+                            window_target.exit();
+                        }
                     }
-                }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    input_collector.handle_keyboard_input(&event);
-                    if input_collector.quit_requested {
-                        info!(reason = "escape_key", "shutdown_requested");
-                        window_target.exit();
+                    WindowEvent::ScaleFactorChanged { .. } => {
+                        let size = window_for_loop.inner_size();
+                        if let Err(error) = renderer.resize(size.width, size.height) {
+                            warn!(error = %error, "renderer_resize_failed");
+                            window_target.exit();
+                        }
                     }
-                }
-                WindowEvent::RedrawRequested => {
-                    if slow_frame_delay > Duration::ZERO {
-                        thread::sleep(slow_frame_delay);
+                    WindowEvent::KeyboardInput { event, .. } => {
+                        input_collector.handle_keyboard_input(&event);
+                        if input_collector.quit_requested {
+                            info!(reason = "escape_key", "shutdown_requested");
+                            window_target.exit();
+                        }
                     }
+                    WindowEvent::RedrawRequested => {
+                        if input_collector.take_overlay_toggle_pressed() {
+                            overlay_visible = !overlay_visible;
+                            info!(overlay_visible, "overlay_toggled");
+                        }
 
-                    let now = Instant::now();
-                    let raw_frame_dt = now.saturating_duration_since(last_frame_instant);
-                    last_frame_instant = now;
+                        if slow_frame_delay > Duration::ZERO {
+                            thread::sleep(slow_frame_delay);
+                        }
 
-                    let clamped_frame_dt = clamp_frame_delta(raw_frame_dt, max_frame_delta);
-                    accumulator = accumulator.saturating_add(clamped_frame_dt);
+                        let now = Instant::now();
+                        let raw_frame_dt = now.saturating_duration_since(last_frame_instant);
+                        last_frame_instant = now;
 
-                    let step_plan = plan_sim_steps(accumulator, fixed_dt, max_ticks_per_frame);
-                    for _ in 0..step_plan.ticks_to_run {
-                        let input_snapshot = input_collector.snapshot_for_tick();
-                        let command =
-                            scenes.update_active(fixed_dt_seconds, &input_snapshot, &mut world);
-                        world.apply_pending();
+                        let clamped_frame_dt = clamp_frame_delta(raw_frame_dt, max_frame_delta);
+                        accumulator = accumulator.saturating_add(clamped_frame_dt);
 
-                        if let SceneCommand::SwitchTo(next_scene) = command {
-                            if scenes.switch_to(next_scene, &mut world) {
-                                world.apply_pending();
-                                info!(
-                                    scene = ?scenes.active_scene(),
-                                    entity_count = world.entity_count(),
-                                    "scene_switched"
-                                );
+                        let step_plan = plan_sim_steps(accumulator, fixed_dt, max_ticks_per_frame);
+                        for _ in 0..step_plan.ticks_to_run {
+                            let input_snapshot = input_collector.snapshot_for_tick();
+                            let command =
+                                scenes.update_active(fixed_dt_seconds, &input_snapshot, &mut world);
+                            world.apply_pending();
+
+                            if let SceneCommand::SwitchTo(next_scene) = command {
+                                if scenes.switch_to(next_scene, &mut world) {
+                                    world.apply_pending();
+                                    info!(
+                                        scene = ?scenes.active_scene(),
+                                        entity_count = world.entity_count(),
+                                        "scene_switched"
+                                    );
+                                }
                             }
+                            metrics_accumulator.record_tick();
                         }
-                        metrics_accumulator.record_tick();
-                    }
-                    accumulator = step_plan.remaining_accumulator;
+                        accumulator = step_plan.remaining_accumulator;
 
-                    if step_plan.dropped_backlog > Duration::ZERO {
-                        warn!(
-                            dropped_backlog_ms = step_plan.dropped_backlog.as_millis() as u64,
-                            max_ticks_per_frame, "sim_clamp_triggered"
-                        );
-                    }
-
-                    scenes.render_active(&world);
-                    if let Err(error) = renderer.render_world(&world) {
-                        warn!(error = %error, "renderer_draw_failed");
-                        window_target.exit();
-                    }
-                    let next_title = scenes.debug_title_active(&world);
-                    if next_title != last_applied_title {
-                        if let Some(title) = &next_title {
-                            window_for_loop.set_title(title);
-                        } else {
-                            window_for_loop.set_title(&config.window_title);
+                        if step_plan.dropped_backlog > Duration::ZERO {
+                            warn!(
+                                dropped_backlog_ms = step_plan.dropped_backlog.as_millis() as u64,
+                                max_ticks_per_frame, "sim_clamp_triggered"
+                            );
                         }
-                        last_applied_title = next_title;
-                    }
-                    metrics_accumulator.record_frame(raw_frame_dt);
 
-                    if let Some(snapshot) = metrics_accumulator.maybe_snapshot(now) {
-                        metrics_handle.publish(snapshot);
-                        info!(
-                            fps = snapshot.fps,
-                            tps = snapshot.tps,
-                            frame_time_ms = snapshot.frame_time_ms,
-                            entity_count = world.entity_count(),
-                            scene = ?scenes.active_scene(),
-                            "loop_metrics"
-                        );
+                        scenes.render_active(&world);
+                        let overlay = overlay_visible.then(|| OverlayData {
+                            metrics: metrics_handle.snapshot(),
+                            entity_count: world.entity_count(),
+                            content_status: "loaded",
+                        });
+                        if let Err(error) = renderer.render_world(&world, overlay.as_ref()) {
+                            warn!(error = %error, "renderer_draw_failed");
+                            window_target.exit();
+                        }
+                        let next_title = scenes.debug_title_active(&world);
+                        if next_title != last_applied_title {
+                            if let Some(title) = &next_title {
+                                window_for_loop.set_title(title);
+                            } else {
+                                window_for_loop.set_title(&config.window_title);
+                            }
+                            last_applied_title = next_title;
+                        }
+                        metrics_accumulator.record_frame(raw_frame_dt);
+
+                        if let Some(snapshot) = metrics_accumulator.maybe_snapshot(now) {
+                            metrics_handle.publish(snapshot);
+                            info!(
+                                fps = snapshot.fps,
+                                tps = snapshot.tps,
+                                frame_time_ms = snapshot.frame_time_ms,
+                                entity_count = world.entity_count(),
+                                scene = ?scenes.active_scene(),
+                                "loop_metrics"
+                            );
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Event::AboutToWait => {
                 window_for_loop.request_redraw();
             }
@@ -255,6 +269,8 @@ struct InputCollector {
     quit_requested: bool,
     tab_is_down: bool,
     switch_scene_pressed_edge: bool,
+    overlay_toggle_is_down: bool,
+    overlay_toggle_pressed_edge: bool,
     action_states: super::input::ActionStates,
 }
 
@@ -266,6 +282,7 @@ impl InputCollector {
     fn handle_keyboard_input(&mut self, key_event: &winit::event::KeyEvent) {
         self.update_action_state_from_key_event(key_event);
         self.handle_key_state(is_tab_key(key_event), key_event.state);
+        self.handle_overlay_toggle_key_state(is_overlay_toggle_key(key_event), key_event.state);
     }
 
     fn handle_key_state(&mut self, is_tab: bool, state: ElementState) {
@@ -294,9 +311,31 @@ impl InputCollector {
         snapshot
     }
 
+    fn take_overlay_toggle_pressed(&mut self) -> bool {
+        let was_pressed = self.overlay_toggle_pressed_edge;
+        self.overlay_toggle_pressed_edge = false;
+        was_pressed
+    }
+
     fn update_action_state_from_key_event(&mut self, key_event: &winit::event::KeyEvent) {
         let is_pressed = key_event.state == ElementState::Pressed;
         self.update_action_state_from_physical_key(key_event.physical_key, is_pressed);
+    }
+
+    fn handle_overlay_toggle_key_state(&mut self, is_toggle_key: bool, state: ElementState) {
+        if !is_toggle_key {
+            return;
+        }
+
+        match state {
+            ElementState::Pressed => {
+                if !self.overlay_toggle_is_down {
+                    self.overlay_toggle_pressed_edge = true;
+                }
+                self.overlay_toggle_is_down = true;
+            }
+            ElementState::Released => self.overlay_toggle_is_down = false,
+        }
     }
 
     fn update_action_state_from_physical_key(&mut self, key: PhysicalKey, is_pressed: bool) {
@@ -324,6 +363,10 @@ impl InputCollector {
             }
             PhysicalKey::Code(KeyCode::KeyL) => {
                 self.action_states.set(InputAction::CameraRight, is_pressed);
+            }
+            PhysicalKey::Code(KeyCode::F3) => {
+                self.action_states
+                    .set(InputAction::ToggleOverlay, is_pressed);
             }
             PhysicalKey::Code(KeyCode::Escape) => {
                 self.action_states.set(InputAction::Quit, is_pressed);
@@ -411,6 +454,10 @@ fn resolve_slow_frame_delay(config_slow_frame_ms: u64) -> Duration {
 
 fn is_tab_key(key_event: &winit::event::KeyEvent) -> bool {
     matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::Tab))
+}
+
+fn is_overlay_toggle_key(key_event: &winit::event::KeyEvent) -> bool {
+    matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F3))
 }
 
 #[cfg(test)]
@@ -520,5 +567,20 @@ mod tests {
         let snapshot = input.snapshot_for_tick();
         assert!(snapshot.is_down(InputAction::CameraUp));
         assert!(snapshot.is_down(InputAction::CameraRight));
+    }
+
+    #[test]
+    fn f3_toggle_is_edge_triggered() {
+        let mut input = InputCollector::default();
+
+        input.handle_overlay_toggle_key_state(true, ElementState::Pressed);
+        assert!(input.take_overlay_toggle_pressed());
+
+        input.handle_overlay_toggle_key_state(true, ElementState::Pressed);
+        assert!(!input.take_overlay_toggle_pressed());
+
+        input.handle_overlay_toggle_key_state(true, ElementState::Released);
+        input.handle_overlay_toggle_key_state(true, ElementState::Pressed);
+        assert!(input.take_overlay_toggle_pressed());
     }
 }
