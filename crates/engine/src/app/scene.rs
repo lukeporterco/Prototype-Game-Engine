@@ -1,3 +1,5 @@
+use super::input::{ActionStates, InputAction};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SceneKey {
     A,
@@ -14,13 +16,23 @@ pub enum SceneCommand {
 pub struct InputSnapshot {
     quit_requested: bool,
     switch_scene_pressed: bool,
+    actions: ActionStates,
 }
 
 impl InputSnapshot {
-    pub fn new(quit_requested: bool, switch_scene_pressed: bool) -> Self {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn new(
+        quit_requested: bool,
+        switch_scene_pressed: bool,
+        actions: ActionStates,
+    ) -> Self {
         Self {
             quit_requested,
             switch_scene_pressed,
+            actions,
         }
     }
 
@@ -30,6 +42,15 @@ impl InputSnapshot {
 
     pub fn switch_scene_pressed(&self) -> bool {
         self.switch_scene_pressed
+    }
+
+    pub fn is_down(&self, action: InputAction) -> bool {
+        self.actions.is_down(action)
+    }
+
+    pub fn with_action_down(mut self, action: InputAction, is_down: bool) -> Self {
+        self.actions.set(action, is_down);
+        self
     }
 }
 
@@ -142,6 +163,14 @@ impl SceneWorld {
     pub fn entities(&self) -> &[Entity] {
         &self.entities
     }
+
+    pub fn find_entity(&self, id: EntityId) -> Option<&Entity> {
+        self.entities.iter().find(|entity| entity.id == id)
+    }
+
+    pub fn find_entity_mut(&mut self, id: EntityId) -> Option<&mut Entity> {
+        self.entities.iter_mut().find(|entity| entity.id == id)
+    }
 }
 
 pub trait Scene {
@@ -154,16 +183,23 @@ pub trait Scene {
     ) -> SceneCommand;
     fn render(&mut self, world: &SceneWorld);
     fn unload(&mut self, world: &mut SceneWorld);
+    fn debug_title(&self, _world: &SceneWorld) -> Option<String> {
+        None
+    }
 }
 
-pub struct SceneMachine {
+pub(crate) struct SceneMachine {
     scene_a: Box<dyn Scene>,
     scene_b: Box<dyn Scene>,
     active_scene: SceneKey,
 }
 
 impl SceneMachine {
-    pub fn new(scene_a: Box<dyn Scene>, scene_b: Box<dyn Scene>, active_scene: SceneKey) -> Self {
+    pub(crate) fn new(
+        scene_a: Box<dyn Scene>,
+        scene_b: Box<dyn Scene>,
+        active_scene: SceneKey,
+    ) -> Self {
         Self {
             scene_a,
             scene_b,
@@ -171,15 +207,15 @@ impl SceneMachine {
         }
     }
 
-    pub fn active_scene(&self) -> SceneKey {
+    pub(crate) fn active_scene(&self) -> SceneKey {
         self.active_scene
     }
 
-    pub fn load_active(&mut self, world: &mut SceneWorld) {
+    pub(crate) fn load_active(&mut self, world: &mut SceneWorld) {
         self.active_scene_mut().load(world);
     }
 
-    pub fn update_active(
+    pub(crate) fn update_active(
         &mut self,
         fixed_dt_seconds: f32,
         input: &InputSnapshot,
@@ -189,15 +225,19 @@ impl SceneMachine {
             .update(fixed_dt_seconds, input, world)
     }
 
-    pub fn render_active(&mut self, world: &SceneWorld) {
+    pub(crate) fn render_active(&mut self, world: &SceneWorld) {
         self.active_scene_mut().render(world);
     }
 
-    pub fn unload_active(&mut self, world: &mut SceneWorld) {
+    pub(crate) fn unload_active(&mut self, world: &mut SceneWorld) {
         self.active_scene_mut().unload(world);
     }
 
-    pub fn switch_to(&mut self, next_scene: SceneKey, world: &mut SceneWorld) -> bool {
+    pub(crate) fn debug_title_active(&self, world: &SceneWorld) -> Option<String> {
+        self.active_scene_ref().debug_title(world)
+    }
+
+    pub(crate) fn switch_to(&mut self, next_scene: SceneKey, world: &mut SceneWorld) -> bool {
         if self.active_scene == next_scene {
             return false;
         }
@@ -213,6 +253,13 @@ impl SceneMachine {
         match self.active_scene {
             SceneKey::A => self.scene_a.as_mut(),
             SceneKey::B => self.scene_b.as_mut(),
+        }
+    }
+
+    fn active_scene_ref(&self) -> &dyn Scene {
+        match self.active_scene {
+            SceneKey::A => self.scene_a.as_ref(),
+            SceneKey::B => self.scene_b.as_ref(),
         }
     }
 }

@@ -34,9 +34,17 @@ If no matching root is found, startup fails fast with instructions.
   - Window close button
   - `Esc` key
 
+## Input and Movement (Ticket 3)
+
+- Engine maps keyboard to actions: `MoveUp/Down/Left/Right`, `Quit`.
+- Supported movement keys: `WASD` and arrow keys.
+- Game scene consumes engine `InputSnapshot` actions with no `winit` dependency.
+- Player movement runs in fixed-timestep update (`5.0` units/second), so distance is stable across FPS changes.
+- Game exposes optional debug title text (`Scene::debug_title`), and engine applies it to the window title.
+
 ## Scenes and Entities
 
-- Two hardcoded in-memory scenes are active for Ticket 2.
+- Two hardcoded in-memory scenes are active.
 - Press `Tab` to switch between Scene A and Scene B at runtime.
 - Scene switching performs lifecycle in order: `unload -> clear -> load`.
 - Entity model is engine-owned:

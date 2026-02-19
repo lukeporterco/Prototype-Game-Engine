@@ -180,3 +180,20 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - Hardcoded Scene A and Scene B
   - `Tab` toggles between scenes at runtime
   - Per-scene entity counts reset on each switch (A=3, B=5)
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 3)
+- Input mapping contract added in engine:
+  - `InputAction::{MoveUp, MoveDown, MoveLeft, MoveRight, Quit}`
+  - `InputSnapshot::is_down(action)` for scene-side action reads
+  - Key mapping in loop runner: `WASD` + arrow keys for movement, `Esc` for quit
+- Game/engine seam for window title:
+  - `Scene::debug_title(&SceneWorld) -> Option<String>` added with default `None`
+  - Engine applies title to window when changed; game never touches window handles
+- Scene world helpers added:
+  - `find_entity(id)` and `find_entity_mut(id)` for controllable entity updates
+- Game movement behavior:
+  - One controllable player entity per scene
+  - Movement speed locked to `5.0` units/second in fixed-timestep update
+  - Diagonal movement normalized to keep stable movement magnitude

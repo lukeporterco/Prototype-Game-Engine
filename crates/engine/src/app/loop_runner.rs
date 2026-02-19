@@ -14,7 +14,8 @@ use winit::window::WindowBuilder;
 use crate::{resolve_app_paths, StartupError};
 
 use super::metrics::MetricsAccumulator;
-use super::{InputSnapshot, MetricsHandle, SceneCommand, SceneMachine, SceneWorld};
+use super::scene::SceneMachine;
+use super::{InputAction, InputSnapshot, MetricsHandle, Scene, SceneCommand, SceneKey, SceneWorld};
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
 
@@ -57,16 +58,22 @@ pub enum AppError {
     EventLoopRun(#[source] EventLoopError),
 }
 
-pub fn run_app(config: LoopConfig, scenes: SceneMachine) -> Result<(), AppError> {
+pub fn run_app(
+    config: LoopConfig,
+    scene_a: Box<dyn Scene>,
+    scene_b: Box<dyn Scene>,
+) -> Result<(), AppError> {
     let metrics_handle = MetricsHandle::default();
-    run_app_with_metrics(config, scenes, metrics_handle)
+    run_app_with_metrics(config, scene_a, scene_b, metrics_handle)
 }
 
 pub fn run_app_with_metrics(
     config: LoopConfig,
-    mut scenes: SceneMachine,
+    scene_a: Box<dyn Scene>,
+    scene_b: Box<dyn Scene>,
     metrics_handle: MetricsHandle,
 ) -> Result<(), AppError> {
+    let mut scenes = SceneMachine::new(scene_a, scene_b, SceneKey::A);
     let app_paths = resolve_app_paths()?;
     info!(
         root = %app_paths.root.display(),
@@ -120,6 +127,7 @@ pub fn run_app_with_metrics(
     let mut accumulator = Duration::ZERO;
     let mut last_frame_instant = Instant::now();
     let mut metrics_accumulator = MetricsAccumulator::new(metrics_log_interval);
+    let mut last_applied_title: Option<String> = None;
 
     event_loop
         .run(move |event, window_target| match event {
@@ -130,12 +138,10 @@ pub fn run_app_with_metrics(
                     window_target.exit();
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
-                    if is_escape_pressed(&event) {
-                        input_collector.mark_quit_requested();
+                    input_collector.handle_keyboard_input(&event);
+                    if input_collector.quit_requested {
                         info!(reason = "escape_key", "shutdown_requested");
                         window_target.exit();
-                    } else {
-                        input_collector.handle_tab_event(&event);
                     }
                 }
                 WindowEvent::RedrawRequested => {
@@ -179,6 +185,15 @@ pub fn run_app_with_metrics(
                     }
 
                     scenes.render_active(&world);
+                    let next_title = scenes.debug_title_active(&world);
+                    if next_title != last_applied_title {
+                        if let Some(title) = &next_title {
+                            window.set_title(title);
+                        } else {
+                            window.set_title(&config.window_title);
+                        }
+                        last_applied_title = next_title;
+                    }
                     metrics_accumulator.record_frame(raw_frame_dt);
 
                     if let Some(snapshot) = metrics_accumulator.maybe_snapshot(now) {
@@ -213,6 +228,7 @@ struct InputCollector {
     quit_requested: bool,
     tab_is_down: bool,
     switch_scene_pressed_edge: bool,
+    action_states: super::input::ActionStates,
 }
 
 impl InputCollector {
@@ -220,7 +236,8 @@ impl InputCollector {
         self.quit_requested = true;
     }
 
-    fn handle_tab_event(&mut self, key_event: &winit::event::KeyEvent) {
+    fn handle_keyboard_input(&mut self, key_event: &winit::event::KeyEvent) {
+        self.update_action_state_from_key_event(key_event);
         self.handle_key_state(is_tab_key(key_event), key_event.state);
     }
 
@@ -241,9 +258,42 @@ impl InputCollector {
     }
 
     fn snapshot_for_tick(&mut self) -> InputSnapshot {
-        let snapshot = InputSnapshot::new(self.quit_requested, self.switch_scene_pressed_edge);
+        let snapshot = InputSnapshot::new(
+            self.quit_requested,
+            self.switch_scene_pressed_edge,
+            self.action_states,
+        );
         self.switch_scene_pressed_edge = false;
         snapshot
+    }
+
+    fn update_action_state_from_key_event(&mut self, key_event: &winit::event::KeyEvent) {
+        let is_pressed = key_event.state == ElementState::Pressed;
+        self.update_action_state_from_physical_key(key_event.physical_key, is_pressed);
+    }
+
+    fn update_action_state_from_physical_key(&mut self, key: PhysicalKey, is_pressed: bool) {
+        match key {
+            PhysicalKey::Code(KeyCode::KeyW) | PhysicalKey::Code(KeyCode::ArrowUp) => {
+                self.action_states.set(InputAction::MoveUp, is_pressed);
+            }
+            PhysicalKey::Code(KeyCode::KeyS) | PhysicalKey::Code(KeyCode::ArrowDown) => {
+                self.action_states.set(InputAction::MoveDown, is_pressed);
+            }
+            PhysicalKey::Code(KeyCode::KeyA) | PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                self.action_states.set(InputAction::MoveLeft, is_pressed);
+            }
+            PhysicalKey::Code(KeyCode::KeyD) | PhysicalKey::Code(KeyCode::ArrowRight) => {
+                self.action_states.set(InputAction::MoveRight, is_pressed);
+            }
+            PhysicalKey::Code(KeyCode::Escape) => {
+                self.action_states.set(InputAction::Quit, is_pressed);
+                if is_pressed {
+                    self.mark_quit_requested();
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -318,11 +368,6 @@ fn resolve_slow_frame_delay(config_slow_frame_ms: u64) -> Duration {
             Duration::from_millis(config_slow_frame_ms)
         }
     }
-}
-
-fn is_escape_pressed(key_event: &winit::event::KeyEvent) -> bool {
-    key_event.state == ElementState::Pressed
-        && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::Escape))
 }
 
 fn is_tab_key(key_event: &winit::event::KeyEvent) -> bool {
@@ -404,5 +449,27 @@ mod tests {
         assert!(first.switch_scene_pressed());
         assert!(!second.switch_scene_pressed());
         assert!(third.switch_scene_pressed());
+    }
+
+    #[test]
+    fn wasd_and_arrow_keys_map_to_actions() {
+        let mut input = InputCollector::default();
+
+        input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyW), true);
+        input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::ArrowLeft), true);
+
+        let snapshot = input.snapshot_for_tick();
+        assert!(snapshot.is_down(InputAction::MoveUp));
+        assert!(snapshot.is_down(InputAction::MoveLeft));
+    }
+
+    #[test]
+    fn key_release_clears_action_state() {
+        let mut input = InputCollector::default();
+        input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyD), true);
+        input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyD), false);
+
+        let snapshot = input.snapshot_for_tick();
+        assert!(!snapshot.is_down(InputAction::MoveRight));
     }
 }
