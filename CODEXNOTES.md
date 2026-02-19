@@ -598,3 +598,17 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Startup logs now include effective render cap and debug delay values for visibility.
 - Important runtime note:
   - backend present/vsync behavior may still bound observed FPS independently of app-level cap.
+
+---
+
+## Ticket Notes (2026-02-19, Hotfix 16.2)
+- Fixed click-picking regression for sprite-backed entities in crates/engine/src/app/scene.rs.
+- Root cause: pick helpers (pick_topmost_selectable_at_cursor, pick_topmost_interactable_at_cursor) filtered to RenderableKind::Placeholder only, so entities rendered as RenderableKind::Sprite(...) were never pickable.
+- Behavioral contract update:
+  - picking now considers both placeholder and sprite renderables
+  - existing spawn-order tie-break semantics are unchanged.
+- Added regression tests:
+  - `pick_topmost_selectable_includes_sprite_renderables`
+  - `pick_topmost_interactable_includes_sprite_renderables`
+- Pitfall pattern:
+  - avoid gameplay/input logic branching on debug/fallback render type; renderable variants can evolve without changing selection semantics.

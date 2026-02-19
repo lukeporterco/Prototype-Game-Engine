@@ -367,9 +367,6 @@ impl SceneWorld {
             if !entity.selectable {
                 continue;
             }
-            if !matches!(&entity.renderable.kind, RenderableKind::Placeholder) {
-                continue;
-            }
 
             let (cx, cy) =
                 world_to_screen_px(self.camera(), window_size, entity.transform.position);
@@ -401,9 +398,6 @@ impl SceneWorld {
 
         for entity in &self.entities {
             if entity.interactable.is_none() {
-                continue;
-            }
-            if !matches!(&entity.renderable.kind, RenderableKind::Placeholder) {
                 continue;
             }
 
@@ -1029,6 +1023,26 @@ mod tests {
     }
 
     #[test]
+    fn pick_topmost_selectable_includes_sprite_renderables() {
+        let mut world = SceneWorld::default();
+        let sprite_entity = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Sprite("ui/icons/worker_1".to_string()),
+                debug_name: "sprite_selectable",
+            },
+        );
+        world.apply_pending();
+
+        let picked =
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        assert_eq!(picked, Some(sprite_entity));
+    }
+
+    #[test]
     fn spawn_actor_marks_entity_as_actor_and_without_target() {
         let mut world = SceneWorld::default();
         let actor_id = world.spawn_actor(
@@ -1115,6 +1129,34 @@ mod tests {
         let picked =
             world.pick_topmost_interactable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
         assert_eq!(picked, Some(second));
+    }
+
+    #[test]
+    fn pick_topmost_interactable_includes_sprite_renderables() {
+        let mut world = SceneWorld::default();
+        let sprite_interactable = world.spawn(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Sprite("objects/resource_pile".to_string()),
+                debug_name: "sprite_interactable",
+            },
+        );
+        world.apply_pending();
+        world
+            .find_entity_mut(sprite_interactable)
+            .expect("exists")
+            .interactable = Some(Interactable {
+            kind: InteractableKind::ResourcePile,
+            interaction_radius: 0.75,
+            remaining_uses: 3,
+        });
+
+        let picked =
+            world.pick_topmost_interactable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        assert_eq!(picked, Some(sprite_interactable));
     }
 
     #[test]
