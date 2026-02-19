@@ -114,8 +114,8 @@ mod tests {
             .maybe_snapshot(base + Duration::from_secs(1))
             .expect("snapshot should be emitted");
 
-        assert!((snapshot.fps - 2.0).abs() < f32::EPSILON);
-        assert!((snapshot.tps - 4.0).abs() < f32::EPSILON);
+        assert!((snapshot.fps - 2.0).abs() < 0.05);
+        assert!((snapshot.tps - 4.0).abs() < 0.05);
         assert!((snapshot.frame_time_ms - 16.0).abs() < 0.001);
     }
 

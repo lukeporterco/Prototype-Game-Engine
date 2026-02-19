@@ -7,8 +7,9 @@ use thiserror::Error;
 pub mod app;
 
 pub use app::{
-    run_app, run_app_with_metrics, AppError, LoopConfig, LoopMetricsSnapshot, MetricsHandle, Scene,
-    SLOW_FRAME_ENV_VAR,
+    run_app, run_app_with_metrics, AppError, Entity, EntityId, InputSnapshot, LoopConfig,
+    LoopMetricsSnapshot, MetricsHandle, RenderableDesc, RenderableKind, Scene, SceneCommand,
+    SceneKey, SceneMachine, SceneWorld, Transform, Vec2, SLOW_FRAME_ENV_VAR,
 };
 
 pub const ROOT_ENV_VAR: &str = "PROTOGE_ROOT";

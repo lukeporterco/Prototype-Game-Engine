@@ -159,3 +159,24 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - Clean shutdown emits `shutdown` log
 - Test hook:
   - `PROTOGE_SLOW_FRAME_MS` adds artificial per-frame delay to verify clamp behavior.
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 2)
+- Scene boundary upgraded to explicit lifecycle in `crates/engine/src/app/scene.rs`:
+  - `load(world)`, `update(fixed_dt_seconds, input, world) -> SceneCommand`, `render(world)`, `unload(world)`
+- Engine-owned minimal input seam added:
+  - `InputSnapshot { quit_requested, switch_scene_pressed }`
+  - Game detects `Tab` scene-switch intent via snapshot, with no `winit` dependency in game code.
+- Entity model and storage added in engine:
+  - `EntityId`, `Transform { position, rotation_radians }`, `RenderableDesc`
+  - `SceneWorld` owns entities and spawn/despawn queues
+  - `EntityId` allocation is monotonic and session-global (no reuse after scene switches)
+- Runtime scene switching contract:
+  - `SceneCommand::{None, SwitchTo(SceneKey)}`
+  - `SceneMachine` manages two in-memory scenes (`A`, `B`)
+  - Switch lifecycle order locked: `unload -> world.clear -> load`
+- Game wiring (`crates/game/src/main.rs`):
+  - Hardcoded Scene A and Scene B
+  - `Tab` toggles between scenes at runtime
+  - Per-scene entity counts reset on each switch (A=3, B=5)

@@ -14,7 +14,7 @@ use winit::window::WindowBuilder;
 use crate::{resolve_app_paths, StartupError};
 
 use super::metrics::MetricsAccumulator;
-use super::{MetricsHandle, Scene};
+use super::{InputSnapshot, MetricsHandle, SceneCommand, SceneMachine, SceneWorld};
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
 
@@ -57,14 +57,14 @@ pub enum AppError {
     EventLoopRun(#[source] EventLoopError),
 }
 
-pub fn run_app<S: Scene + 'static>(config: LoopConfig, scene: S) -> Result<(), AppError> {
+pub fn run_app(config: LoopConfig, scenes: SceneMachine) -> Result<(), AppError> {
     let metrics_handle = MetricsHandle::default();
-    run_app_with_metrics(config, scene, metrics_handle)
+    run_app_with_metrics(config, scenes, metrics_handle)
 }
 
-pub fn run_app_with_metrics<S: Scene + 'static>(
+pub fn run_app_with_metrics(
     config: LoopConfig,
-    mut scene: S,
+    mut scenes: SceneMachine,
     metrics_handle: MetricsHandle,
 ) -> Result<(), AppError> {
     let app_paths = resolve_app_paths()?;
@@ -97,6 +97,16 @@ pub fn run_app_with_metrics<S: Scene + 'static>(
     let fixed_dt = Duration::from_secs_f64(1.0 / target_tps as f64);
     let fixed_dt_seconds = fixed_dt.as_secs_f32();
     let slow_frame_delay = resolve_slow_frame_delay(config.simulated_slow_frame_ms);
+    let mut input_collector = InputCollector::default();
+    let mut world = SceneWorld::default();
+
+    scenes.load_active(&mut world);
+    world.apply_pending();
+    info!(
+        scene = ?scenes.active_scene(),
+        entity_count = world.entity_count(),
+        "scene_loaded"
+    );
 
     info!(
         target_tps,
@@ -115,12 +125,18 @@ pub fn run_app_with_metrics<S: Scene + 'static>(
         .run(move |event, window_target| match event {
             Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                 WindowEvent::CloseRequested => {
+                    input_collector.mark_quit_requested();
                     info!(reason = "window_close", "shutdown_requested");
                     window_target.exit();
                 }
-                WindowEvent::KeyboardInput { event, .. } if is_escape_pressed(&event) => {
-                    info!(reason = "escape_key", "shutdown_requested");
-                    window_target.exit();
+                WindowEvent::KeyboardInput { event, .. } => {
+                    if is_escape_pressed(&event) {
+                        input_collector.mark_quit_requested();
+                        info!(reason = "escape_key", "shutdown_requested");
+                        window_target.exit();
+                    } else {
+                        input_collector.handle_tab_event(&event);
+                    }
                 }
                 WindowEvent::RedrawRequested => {
                     if slow_frame_delay > Duration::ZERO {
@@ -136,7 +152,21 @@ pub fn run_app_with_metrics<S: Scene + 'static>(
 
                     let step_plan = plan_sim_steps(accumulator, fixed_dt, max_ticks_per_frame);
                     for _ in 0..step_plan.ticks_to_run {
-                        scene.update(fixed_dt_seconds);
+                        let input_snapshot = input_collector.snapshot_for_tick();
+                        let command =
+                            scenes.update_active(fixed_dt_seconds, &input_snapshot, &mut world);
+                        world.apply_pending();
+
+                        if let SceneCommand::SwitchTo(next_scene) = command {
+                            if scenes.switch_to(next_scene, &mut world) {
+                                world.apply_pending();
+                                info!(
+                                    scene = ?scenes.active_scene(),
+                                    entity_count = world.entity_count(),
+                                    "scene_switched"
+                                );
+                            }
+                        }
                         metrics_accumulator.record_tick();
                     }
                     accumulator = step_plan.remaining_accumulator;
@@ -148,7 +178,7 @@ pub fn run_app_with_metrics<S: Scene + 'static>(
                         );
                     }
 
-                    scene.render();
+                    scenes.render_active(&world);
                     metrics_accumulator.record_frame(raw_frame_dt);
 
                     if let Some(snapshot) = metrics_accumulator.maybe_snapshot(now) {
@@ -157,6 +187,8 @@ pub fn run_app_with_metrics<S: Scene + 'static>(
                             fps = snapshot.fps,
                             tps = snapshot.tps,
                             frame_time_ms = snapshot.frame_time_ms,
+                            entity_count = world.entity_count(),
+                            scene = ?scenes.active_scene(),
                             "loop_metrics"
                         );
                     }
@@ -167,11 +199,52 @@ pub fn run_app_with_metrics<S: Scene + 'static>(
                 window.request_redraw();
             }
             Event::LoopExiting => {
+                scenes.unload_active(&mut world);
+                world.clear();
                 info!("shutdown");
             }
             _ => {}
         })
         .map_err(AppError::EventLoopRun)
+}
+
+#[derive(Debug, Default)]
+struct InputCollector {
+    quit_requested: bool,
+    tab_is_down: bool,
+    switch_scene_pressed_edge: bool,
+}
+
+impl InputCollector {
+    fn mark_quit_requested(&mut self) {
+        self.quit_requested = true;
+    }
+
+    fn handle_tab_event(&mut self, key_event: &winit::event::KeyEvent) {
+        self.handle_key_state(is_tab_key(key_event), key_event.state);
+    }
+
+    fn handle_key_state(&mut self, is_tab: bool, state: ElementState) {
+        if !is_tab {
+            return;
+        }
+
+        match state {
+            ElementState::Pressed => {
+                if !self.tab_is_down {
+                    self.switch_scene_pressed_edge = true;
+                }
+                self.tab_is_down = true;
+            }
+            ElementState::Released => self.tab_is_down = false,
+        }
+    }
+
+    fn snapshot_for_tick(&mut self) -> InputSnapshot {
+        let snapshot = InputSnapshot::new(self.quit_requested, self.switch_scene_pressed_edge);
+        self.switch_scene_pressed_edge = false;
+        snapshot
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -252,6 +325,10 @@ fn is_escape_pressed(key_event: &winit::event::KeyEvent) -> bool {
         && matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::Escape))
 }
 
+fn is_tab_key(key_event: &winit::event::KeyEvent) -> bool {
+    matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::Tab))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +362,47 @@ mod tests {
         assert_eq!(result.ticks_to_run, 3);
         assert_eq!(result.remaining_accumulator, Duration::ZERO);
         assert_eq!(result.dropped_backlog, Duration::from_millis(72));
+    }
+
+    #[test]
+    fn tab_press_is_edge_triggered_for_single_tick() {
+        let mut input = InputCollector::default();
+        input.tab_is_down = false;
+        input.switch_scene_pressed_edge = true;
+
+        let first = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick();
+
+        assert!(first.switch_scene_pressed());
+        assert!(!second.switch_scene_pressed());
+    }
+
+    #[test]
+    fn no_retrigger_without_new_press() {
+        let mut input = InputCollector::default();
+        let first = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick();
+
+        assert!(!first.switch_scene_pressed());
+        assert!(!second.switch_scene_pressed());
+    }
+
+    #[test]
+    fn held_tab_does_not_spam_press_edges() {
+        let mut input = InputCollector::default();
+
+        input.handle_key_state(true, ElementState::Pressed);
+        let first = input.snapshot_for_tick();
+
+        input.handle_key_state(true, ElementState::Pressed);
+        let second = input.snapshot_for_tick();
+
+        input.handle_key_state(true, ElementState::Released);
+        input.handle_key_state(true, ElementState::Pressed);
+        let third = input.snapshot_for_tick();
+
+        assert!(first.switch_scene_pressed());
+        assert!(!second.switch_scene_pressed());
+        assert!(third.switch_scene_pressed());
     }
 }

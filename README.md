@@ -34,6 +34,17 @@ If no matching root is found, startup fails fast with instructions.
   - Window close button
   - `Esc` key
 
+## Scenes and Entities
+
+- Two hardcoded in-memory scenes are active for Ticket 2.
+- Press `Tab` to switch between Scene A and Scene B at runtime.
+- Scene switching performs lifecycle in order: `unload -> clear -> load`.
+- Entity model is engine-owned:
+  - `EntityId` (session-unique)
+  - `Transform` (`position` + optional `rotation_radians`)
+  - renderer-agnostic `RenderableDesc`
+- Game rules read an engine `InputSnapshot` in `Scene.update(...)`, so game code has no `winit` dependency.
+
 ## Slow Frame Simulation (Manual Test)
 
 Use this to force an artificial per-frame delay and verify sim clamping behavior:
