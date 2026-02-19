@@ -558,3 +558,26 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
     - actors -> `proto.player` archetype renderable/move speed
     - interactables -> `proto.resource_pile` archetype renderable
   - non-role entities use placeholder renderable fallback.
+
+---
+
+## Ticket Notes (2026-02-19, Hotfix 16.1)
+- Added authoritative render FPS cap knob in loop config:
+  - `LoopConfig.max_render_fps: Option<u32>`
+  - default is `None` (cap off)
+  - zero values normalize to cap-off.
+- Render pacing contract:
+  - exactly one FPS-cap sleep point in redraw loop (`compute_cap_sleep` + `thread::sleep`)
+  - cap helpers added and unit-tested:
+    - `target_frame_duration`
+    - `compute_cap_sleep`
+    - cap normalization.
+- `PROTOGE_SLOW_FRAME_MS` retained as explicit debug delay:
+  - still applies separate intentional sleep
+  - explicitly documented in code as not an FPS cap.
+- Overlay FPS line changed to show cap and debug delay together:
+  - format: `[{Current} / {Cap}] dbg+{slow_ms}ms`
+  - cap-off display uses `∞` (with safe fallback test allowance for `"off"`).
+- Startup logs now include effective render cap and debug delay values for visibility.
+- Important runtime note:
+  - backend present/vsync behavior may still bound observed FPS independently of app-level cap.

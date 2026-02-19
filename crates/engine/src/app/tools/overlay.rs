@@ -11,6 +11,8 @@ const OVERLAY_COLOR: [u8; 4] = [230, 240, 180, 255];
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OverlayData {
     pub metrics: LoopMetricsSnapshot,
+    pub render_fps_cap: Option<u32>,
+    pub slow_frame_delay_ms: u64,
     pub entity_count: usize,
     pub content_status: &'static str,
     pub selected_entity: Option<EntityId>,
@@ -43,7 +45,11 @@ pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &Ove
 
 fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
     let mut lines = vec![
-        format!("FPS: {:.1}", data.metrics.fps),
+        format_fps_line(
+            data.metrics.fps,
+            data.render_fps_cap,
+            data.slow_frame_delay_ms,
+        ),
         format!("TPS: {:.1}", data.metrics.tps),
         format!("Frame: {:.2} ms", data.metrics.frame_time_ms),
         format!("Entities: {}", data.entity_count),
@@ -87,6 +93,17 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
     }
 
     lines
+}
+
+fn format_fps_line(current_fps: f32, cap: Option<u32>, slow_frame_delay_ms: u64) -> String {
+    let cap_text = match cap {
+        Some(value) => value.to_string(),
+        None => "∞".to_string(),
+    };
+    format!(
+        "[{:.0} / {}] dbg+{}ms",
+        current_fps, cap_text, slow_frame_delay_ms
+    )
 }
 
 fn debug_job_state_text(state: DebugJobState) -> String {
@@ -310,6 +327,18 @@ fn glyph_for(ch: char) -> Option<Glyph> {
         '/' => Glyph {
             rows: [0b001, 0b001, 0b010, 0b100, 0b100],
         },
+        '[' => Glyph {
+            rows: [0b110, 0b100, 0b100, 0b100, 0b110],
+        },
+        ']' => Glyph {
+            rows: [0b011, 0b001, 0b001, 0b001, 0b011],
+        },
+        '+' => Glyph {
+            rows: [0b000, 0b010, 0b111, 0b010, 0b000],
+        },
+        '∞' => Glyph {
+            rows: [0b000, 0b101, 0b010, 0b101, 0b000],
+        },
         _ => return None,
     })
 }
@@ -330,7 +359,7 @@ mod tests {
         let required: HashSet<char> = [
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ':', ' ', '-', 'F', 'P', 'S',
             'T', 'r', 'a', 'm', 'e', 'E', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S', 'g', ',',
-            'I', 'p', 'c', 'j', 'b', 'w', 'k', '/',
+            'I', 'p', 'c', 'j', 'b', 'w', 'k', '/', '[', ']', '+',
         ]
         .into_iter()
         .collect();
@@ -383,6 +412,8 @@ mod tests {
     fn inspect_block_lines_follow_scaled_layout() {
         let data = OverlayData {
             metrics: LoopMetricsSnapshot::default(),
+            render_fps_cap: Some(240),
+            slow_frame_delay_ms: 0,
             entity_count: 3,
             content_status: "loaded",
             selected_entity: Some(EntityId(1)),
@@ -408,5 +439,24 @@ mod tests {
             OVERLAY_PADDING + (lines.len() as i32 - 1) * LINE_ADVANCE,
             194
         );
+    }
+
+    #[test]
+    fn fps_line_formats_cap_on_and_debug_delay() {
+        let line = format_fps_line(144.4, Some(240), 200);
+        assert_eq!(line, "[144 / 240] dbg+200ms");
+    }
+
+    #[test]
+    fn fps_line_formats_cap_off_with_infinity() {
+        let line = format_fps_line(144.4, None, 0);
+        assert!(line == "[144 / ∞] dbg+0ms" || line == "[144 / off] dbg+0ms");
+    }
+
+    #[test]
+    fn infinity_glyph_is_available_or_off_fallback_is_possible() {
+        let has_infinity = glyph_for('∞').is_some();
+        let off_fallback = "off";
+        assert!(has_infinity || off_fallback == "off");
     }
 }

@@ -35,6 +35,7 @@ pub struct LoopConfig {
     pub max_ticks_per_frame: u32,
     pub metrics_log_interval: Duration,
     pub simulated_slow_frame_ms: u64,
+    pub max_render_fps: Option<u32>,
     pub content_plan_request: ContentPlanRequest,
 }
 
@@ -49,6 +50,7 @@ impl Default for LoopConfig {
             max_ticks_per_frame: 5,
             metrics_log_interval: Duration::from_secs(1),
             simulated_slow_frame_ms: 0,
+            max_render_fps: None,
             content_plan_request: ContentPlanRequest::default(),
         }
     }
@@ -122,6 +124,8 @@ pub fn run_app_with_metrics(
     let fixed_dt = Duration::from_secs_f64(1.0 / target_tps as f64);
     let fixed_dt_seconds = fixed_dt.as_secs_f32();
     let slow_frame_delay = resolve_slow_frame_delay(config.simulated_slow_frame_ms);
+    let effective_render_cap = normalize_render_fps_cap(config.max_render_fps);
+    let render_frame_target = target_frame_duration(effective_render_cap);
     let mut input_collector = InputCollector::new(config.window_width, config.window_height);
     scenes.set_def_database_for_all(def_database);
     scenes.load_active();
@@ -138,11 +142,13 @@ pub fn run_app_with_metrics(
         max_ticks_per_frame,
         metrics_log_interval_ms = metrics_log_interval.as_millis() as u64,
         slow_frame_delay_ms = slow_frame_delay.as_millis() as u64,
+        render_fps_cap = %format_render_cap(effective_render_cap),
         "loop_config"
     );
 
     let mut accumulator = Duration::ZERO;
     let mut last_frame_instant = Instant::now();
+    let mut last_present_instant = Instant::now();
     let mut metrics_accumulator = MetricsAccumulator::new(metrics_log_interval);
     let mut last_applied_title: Option<String> = None;
     let mut overlay_visible = true;
@@ -195,6 +201,7 @@ pub fn run_app_with_metrics(
                         }
 
                         if slow_frame_delay > Duration::ZERO {
+                            // Explicit debug perturbation only; this is not the FPS cap.
                             thread::sleep(slow_frame_delay);
                         }
 
@@ -237,9 +244,20 @@ pub fn run_app_with_metrics(
                             );
                         }
 
+                        // Single authoritative FPS cap sleep point for render pacing.
+                        let elapsed_since_last_present =
+                            Instant::now().saturating_duration_since(last_present_instant);
+                        let cap_sleep =
+                            compute_cap_sleep(elapsed_since_last_present, render_frame_target);
+                        if cap_sleep > Duration::ZERO {
+                            thread::sleep(cap_sleep);
+                        }
+
                         scenes.render_active();
                         let overlay = overlay_visible.then(|| OverlayData {
                             metrics: metrics_handle.snapshot(),
+                            render_fps_cap: effective_render_cap,
+                            slow_frame_delay_ms: slow_frame_delay.as_millis() as u64,
                             entity_count: scenes.active_world().entity_count(),
                             content_status: "loaded",
                             selected_entity: scenes.debug_selected_entity_active(),
@@ -253,6 +271,7 @@ pub fn run_app_with_metrics(
                             warn!(error = %error, "renderer_draw_failed");
                             window_target.exit();
                         }
+                        last_present_instant = Instant::now();
                         let next_title = scenes.debug_title_active();
                         if next_title != last_applied_title {
                             if let Some(title) = &next_title {
@@ -553,6 +572,28 @@ fn normalize_non_zero_duration(value: Duration, fallback: Duration) -> Duration 
     }
 }
 
+fn normalize_render_fps_cap(cap: Option<u32>) -> Option<u32> {
+    cap.filter(|value| *value > 0)
+}
+
+fn target_frame_duration(max_render_fps: Option<u32>) -> Option<Duration> {
+    max_render_fps.map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
+}
+
+fn compute_cap_sleep(elapsed: Duration, target: Option<Duration>) -> Duration {
+    match target {
+        Some(frame_target) if elapsed < frame_target => frame_target - elapsed,
+        _ => Duration::ZERO,
+    }
+}
+
+fn format_render_cap(cap: Option<u32>) -> String {
+    match cap {
+        Some(value) => value.to_string(),
+        None => "off".to_string(),
+    }
+}
+
 fn resolve_slow_frame_delay(config_slow_frame_ms: u64) -> Duration {
     match env::var(SLOW_FRAME_ENV_VAR) {
         Ok(value) => match value.parse::<u64>() {
@@ -817,5 +858,34 @@ mod tests {
         input.handle_load_key_state(true, ElementState::Released);
         input.handle_load_key_state(true, ElementState::Pressed);
         assert!(input.snapshot_for_tick().load_pressed());
+    }
+
+    #[test]
+    fn target_frame_duration_none_when_cap_off() {
+        assert_eq!(target_frame_duration(None), None);
+    }
+
+    #[test]
+    fn target_frame_duration_for_60hz_is_expected() {
+        let duration = target_frame_duration(Some(60)).expect("duration");
+        assert!((duration.as_secs_f64() - (1.0 / 60.0)).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn compute_cap_sleep_zero_when_over_budget() {
+        let sleep = compute_cap_sleep(Duration::from_millis(20), target_frame_duration(Some(60)));
+        assert_eq!(sleep, Duration::ZERO);
+    }
+
+    #[test]
+    fn compute_cap_sleep_positive_when_under_budget() {
+        let sleep = compute_cap_sleep(Duration::from_millis(5), target_frame_duration(Some(60)));
+        assert!(sleep > Duration::ZERO);
+    }
+
+    #[test]
+    fn normalize_render_fps_cap_disables_zero() {
+        assert_eq!(normalize_render_fps_cap(Some(0)), None);
+        assert_eq!(normalize_render_fps_cap(Some(60)), Some(60));
     }
 }
