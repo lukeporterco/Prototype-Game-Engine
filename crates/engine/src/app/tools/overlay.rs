@@ -2,7 +2,7 @@ use crate::app::{DebugInfoSnapshot, DebugJobState, EntityId, LoopMetricsSnapshot
 
 const GLYPH_WIDTH: i32 = 3;
 const GLYPH_HEIGHT: i32 = 5;
-const TEXT_SCALE: i32 = 2;
+const TEXT_SCALE: i32 = 3;
 const GLYPH_ADVANCE: i32 = (GLYPH_WIDTH + 1) * TEXT_SCALE;
 const LINE_ADVANCE: i32 = (GLYPH_HEIGHT + 2) * TEXT_SCALE;
 const OVERLAY_PADDING: i32 = 6 * TEXT_SCALE;
@@ -98,7 +98,7 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
 fn format_fps_line(current_fps: f32, cap: Option<u32>, slow_frame_delay_ms: u64) -> String {
     let cap_text = match cap {
         Some(value) => value.to_string(),
-        None => "∞".to_string(),
+        None => "off".to_string(),
     };
     format!(
         "[{:.0} / {}] dbg+{}ms",
@@ -276,6 +276,9 @@ fn glyph_for(ch: char) -> Option<Glyph> {
         'e' => Glyph {
             rows: [0b000, 0b111, 0b110, 0b100, 0b111],
         },
+        'f' => Glyph {
+            rows: [0b011, 0b100, 0b110, 0b100, 0b100],
+        },
         'n' => Glyph {
             rows: [0b000, 0b110, 0b101, 0b101, 0b101],
         },
@@ -358,8 +361,8 @@ mod tests {
 
         let required: HashSet<char> = [
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ':', ' ', '-', 'F', 'P', 'S',
-            'T', 'r', 'a', 'm', 'e', 'E', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S', 'g', ',',
-            'I', 'p', 'c', 'j', 'b', 'w', 'k', '/', '[', ']', '+',
+            'T', 'r', 'a', 'm', 'e', 'E', 'f', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S', 'g',
+            ',', 'I', 'p', 'c', 'j', 'b', 'w', 'k', '/', '[', ']', '+',
         ]
         .into_iter()
         .collect();
@@ -402,10 +405,10 @@ mod tests {
 
     #[test]
     fn layout_metrics_follow_text_scale() {
-        assert_eq!(TEXT_SCALE, 2);
-        assert_eq!(GLYPH_ADVANCE, 8);
-        assert_eq!(LINE_ADVANCE, 14);
-        assert_eq!(OVERLAY_PADDING, 12);
+        assert_eq!(TEXT_SCALE, 3);
+        assert_eq!(GLYPH_ADVANCE, 12);
+        assert_eq!(LINE_ADVANCE, 21);
+        assert_eq!(OVERLAY_PADDING, 18);
     }
 
     #[test]
@@ -437,7 +440,7 @@ mod tests {
         assert_eq!(lines[8], "Inspect");
         assert_eq!(
             OVERLAY_PADDING + (lines.len() as i32 - 1) * LINE_ADVANCE,
-            194
+            291
         );
     }
 
@@ -448,15 +451,8 @@ mod tests {
     }
 
     #[test]
-    fn fps_line_formats_cap_off_with_infinity() {
+    fn fps_line_formats_cap_off_with_off_text() {
         let line = format_fps_line(144.4, None, 0);
-        assert!(line == "[144 / ∞] dbg+0ms" || line == "[144 / off] dbg+0ms");
-    }
-
-    #[test]
-    fn infinity_glyph_is_available_or_off_fallback_is_possible() {
-        let has_infinity = glyph_for('∞').is_some();
-        let off_fallback = "off";
-        assert!(has_infinity || off_fallback == "off");
+        assert_eq!(line, "[144 / off] dbg+0ms");
     }
 }

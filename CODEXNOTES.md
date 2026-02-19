@@ -577,7 +577,7 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - explicitly documented in code as not an FPS cap.
 - Overlay FPS line changed to show cap and debug delay together:
   - format: `[{Current} / {Cap}] dbg+{slow_ms}ms`
-  - cap-off display uses `∞` (with safe fallback test allowance for `"off"`).
+  - cap-off display uses ASCII `"off"` to avoid font/glyph ambiguity on overlay text rendering.
 - Startup logs now include effective render cap and debug delay values for visibility.
 - Important runtime note:
   - backend present/vsync behavior may still bound observed FPS independently of app-level cap.
