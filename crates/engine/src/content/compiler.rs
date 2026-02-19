@@ -761,6 +761,26 @@ mod tests {
     }
 
     #[test]
+    fn interactable_tags_compile_and_preserve_values() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs>
+                <EntityDef><defName>proto.player</defName><label>Player</label><renderable>Placeholder</renderable></EntityDef>
+                <EntityDef><defName>proto.resource_pile</defName><label>ResourcePile</label><renderable>Placeholder</renderable><tags><li>interactable</li><li>resource_pile</li></tags></EntityDef>
+            </Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("proto.resource_pile").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(
+            def.tags,
+            vec!["interactable".to_string(), "resource_pile".to_string()]
+        );
+    }
+
+    #[test]
     fn fixture_valid_case_compiles() {
         let temp = TempDir::new().expect("temp");
         let app = setup_app_paths(temp.path());

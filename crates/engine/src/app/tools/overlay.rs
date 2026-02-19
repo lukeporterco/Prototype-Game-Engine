@@ -15,6 +15,7 @@ pub(crate) struct OverlayData {
     pub content_status: &'static str,
     pub selected_entity: Option<EntityId>,
     pub selected_target: Option<crate::app::Vec2>,
+    pub resource_count: Option<u32>,
 }
 
 pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &OverlayData) {
@@ -36,6 +37,7 @@ pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &Ove
             Some(target) => format!("Target: {:.1},{:.1}", target.x, target.y),
             None => "Target: idle".to_string(),
         },
+        format!("items: {}", data.resource_count.unwrap_or(0)),
     ];
 
     let mut y = OVERLAY_PADDING;

@@ -423,3 +423,37 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - right click only issues move target if selected entity exists and `actor == true`
   - fixed-tick movement steps entities with `actor == true && move_target_world.is_some()`
   - target is cleared on arrival threshold
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 13)
+- Added minimal interactable + timed job completion loop using runtime data only (no XML parsing at runtime).
+- Content usage (tags-only, no schema change):
+  - `assets/base/defs.xml` now includes `proto.resource_pile` with tags:
+    - `interactable`
+    - `resource_pile`
+  - runtime resolves and validates this def via `DefDatabase`.
+- Engine runtime entity contract expanded:
+  - `Entity { interactable: Option<Interactable>, job_state: JobState, interaction_target: Option<EntityId> }`
+  - new runtime types in `scene.rs`:
+    - `Interactable { kind, interaction_radius, remaining_uses }`
+    - `InteractableKind::ResourcePile`
+    - `JobState::{Idle, Working { target, remaining_time }}`
+- Engine world query seam expanded:
+  - `SceneWorld::pick_topmost_interactable_at_cursor(cursor_px, window_size) -> Option<EntityId>`
+  - uses same placeholder screen bounds and deterministic last-applied-spawn tie-break as selection.
+- Scene debug/overlay seam expanded:
+  - `Scene::debug_resource_count() -> Option<u32>` default method
+  - `SceneMachine::debug_resource_count_active()`
+  - overlay now includes `items: <count>` (defaults to `0` when absent)
+- Gameplay behavior locked for Ticket 13:
+  - right-click is interactable-first:
+    - hit interactable: actor gets move target to object + `interaction_target`
+    - miss interactable: regular ground move target
+  - actor starts working once within interaction radius
+  - job duration is fixed-step deterministic (`2.0s`)
+  - completion increments resource counter and decrements pile uses
+  - pile despawns when uses reach zero
+  - missing/stale interaction targets are cleared safely to `Idle` state
+- Performance-minded loop detail:
+  - gameplay reuses scratch vectors (`interactable_cache`, `completed_target_ids`) to avoid per-tick allocation churn.

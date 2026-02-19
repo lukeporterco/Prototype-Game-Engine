@@ -148,6 +148,27 @@ pub struct RenderableDesc {
     pub debug_name: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractableKind {
+    ResourcePile,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Interactable {
+    pub kind: InteractableKind,
+    pub interaction_radius: f32,
+    pub remaining_uses: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum JobState {
+    Idle,
+    Working {
+        target: EntityId,
+        remaining_time: f32,
+    },
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Entity {
     pub id: EntityId,
@@ -156,6 +177,9 @@ pub struct Entity {
     pub selectable: bool,
     pub actor: bool,
     pub move_target_world: Option<Vec2>,
+    pub interactable: Option<Interactable>,
+    pub job_state: JobState,
+    pub interaction_target: Option<EntityId>,
     applied_spawn_order: u64,
 }
 
@@ -215,6 +239,9 @@ impl SceneWorld {
             selectable,
             actor,
             move_target_world: None,
+            interactable: None,
+            job_state: JobState::Idle,
+            interaction_target: None,
             applied_spawn_order: 0,
         });
         id
@@ -318,6 +345,42 @@ impl SceneWorld {
         best.map(|(_, id)| id)
     }
 
+    pub fn pick_topmost_interactable_at_cursor(
+        &self,
+        cursor_position_px: Vec2,
+        window_size: (u32, u32),
+    ) -> Option<EntityId> {
+        let cursor_x = cursor_position_px.x.round() as i32;
+        let cursor_y = cursor_position_px.y.round() as i32;
+        let mut best: Option<(u64, EntityId)> = None;
+
+        for entity in &self.entities {
+            if entity.interactable.is_none() {
+                continue;
+            }
+            if !matches!(entity.renderable.kind, RenderableKind::Placeholder) {
+                continue;
+            }
+
+            let (cx, cy) =
+                world_to_screen_px(self.camera(), window_size, entity.transform.position);
+            let in_bounds = cursor_x >= cx - PLACEHOLDER_HALF_SIZE_PX
+                && cursor_x <= cx + PLACEHOLDER_HALF_SIZE_PX
+                && cursor_y >= cy - PLACEHOLDER_HALF_SIZE_PX
+                && cursor_y <= cy + PLACEHOLDER_HALF_SIZE_PX;
+            if !in_bounds {
+                continue;
+            }
+
+            match best {
+                Some((order, _)) if order >= entity.applied_spawn_order => {}
+                _ => best = Some((entity.applied_spawn_order, entity.id)),
+            }
+        }
+
+        best.map(|(_, id)| id)
+    }
+
     pub fn set_def_database(&mut self, def_database: DefDatabase) {
         self.def_database = Some(def_database);
     }
@@ -344,6 +407,9 @@ pub trait Scene {
         None
     }
     fn debug_selected_target(&self, _world: &SceneWorld) -> Option<Vec2> {
+        None
+    }
+    fn debug_resource_count(&self) -> Option<u32> {
         None
     }
 }
@@ -403,6 +469,10 @@ impl SceneMachine {
 
     pub(crate) fn debug_selected_target_active(&self, world: &SceneWorld) -> Option<Vec2> {
         self.active_scene_ref().debug_selected_target(world)
+    }
+
+    pub(crate) fn debug_resource_count_active(&self) -> Option<u32> {
+        self.active_scene_ref().debug_resource_count()
     }
 
     pub(crate) fn switch_to(&mut self, next_scene: SceneKey, world: &mut SceneWorld) -> bool {
@@ -682,5 +752,76 @@ mod tests {
         assert!(actor.actor);
         assert!(!actor.selectable);
         assert!(actor.move_target_world.is_none());
+        assert!(actor.interactable.is_none());
+        assert_eq!(actor.job_state, JobState::Idle);
+        assert!(actor.interaction_target.is_none());
+    }
+
+    #[test]
+    fn pick_topmost_interactable_returns_hit() {
+        let mut world = SceneWorld::default();
+        let interactable_id = world.spawn(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "pile",
+            },
+        );
+        world.apply_pending();
+        world
+            .find_entity_mut(interactable_id)
+            .expect("exists")
+            .interactable = Some(Interactable {
+            kind: InteractableKind::ResourcePile,
+            interaction_radius: 0.75,
+            remaining_uses: 3,
+        });
+
+        let picked =
+            world.pick_topmost_interactable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        assert_eq!(picked, Some(interactable_id));
+    }
+
+    #[test]
+    fn pick_topmost_interactable_uses_last_applied_spawn_order() {
+        let mut world = SceneWorld::default();
+        let first = world.spawn(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "first",
+            },
+        );
+        let second = world.spawn(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "second",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(first).expect("first").interactable = Some(Interactable {
+            kind: InteractableKind::ResourcePile,
+            interaction_radius: 0.75,
+            remaining_uses: 3,
+        });
+        world.find_entity_mut(second).expect("second").interactable = Some(Interactable {
+            kind: InteractableKind::ResourcePile,
+            interaction_radius: 0.75,
+            remaining_uses: 3,
+        });
+
+        let picked =
+            world.pick_topmost_interactable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        assert_eq!(picked, Some(second));
     }
 }

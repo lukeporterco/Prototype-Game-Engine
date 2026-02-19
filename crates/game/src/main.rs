@@ -1,13 +1,16 @@
 use engine::{
     run_app, screen_to_world_px, ContentPlanRequest, EntityArchetype, EntityId, InputAction,
-    InputSnapshot, LoopConfig, RenderableDesc, Scene, SceneCommand, SceneKey, SceneWorld,
-    Transform, Vec2,
+    InputSnapshot, Interactable, InteractableKind, JobState, LoopConfig, RenderableDesc, Scene,
+    SceneCommand, SceneKey, SceneWorld, Transform, Vec2,
 };
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 const CAMERA_SPEED_UNITS_PER_SECOND: f32 = 6.0;
 const MOVE_ARRIVAL_THRESHOLD: f32 = 0.1;
+const JOB_DURATION_SECONDS: f32 = 2.0;
+const RESOURCE_PILE_INTERACTION_RADIUS: f32 = 0.75;
+const RESOURCE_PILE_STARTING_USES: u32 = 3;
 const ENABLED_MODS_ENV_VAR: &str = "PROTOGE_ENABLED_MODS";
 
 struct GameplayScene {
@@ -17,6 +20,9 @@ struct GameplayScene {
     player_id: Option<EntityId>,
     selected_entity: Option<EntityId>,
     player_move_speed: f32,
+    resource_count: u32,
+    interactable_cache: Vec<(EntityId, Vec2, f32)>,
+    completed_target_ids: Vec<EntityId>,
 }
 
 impl GameplayScene {
@@ -28,6 +34,9 @@ impl GameplayScene {
             player_id: None,
             selected_entity: None,
             player_move_speed: 5.0,
+            resource_count: 0,
+            interactable_cache: Vec::new(),
+            completed_target_ids: Vec::new(),
         }
     }
 }
@@ -35,6 +44,7 @@ impl GameplayScene {
 impl Scene for GameplayScene {
     fn load(&mut self, world: &mut SceneWorld) {
         let player_archetype = resolve_player_archetype(world);
+        let pile_archetype = resolve_resource_pile_archetype(world);
         self.player_move_speed = player_archetype.move_speed;
         let player_id = world.spawn_actor(
             Transform {
@@ -72,12 +82,36 @@ impl Scene for GameplayScene {
                 debug_name: "unit_b",
             },
         );
+        let pile_id = world.spawn(
+            Transform {
+                position: Vec2 {
+                    x: self.player_spawn.x + 4.0,
+                    y: self.player_spawn.y,
+                },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: pile_archetype.renderable,
+                debug_name: "resource_pile",
+            },
+        );
         self.player_id = Some(player_id);
+        self.selected_entity = None;
+        self.resource_count = 0;
+        self.interactable_cache.clear();
+        self.completed_target_ids.clear();
         world.apply_pending();
         for id in [player_id, unit_a, unit_b] {
             if let Some(entity) = world.find_entity_mut(id) {
                 entity.selectable = true;
             }
+        }
+        if let Some(pile) = world.find_entity_mut(pile_id) {
+            pile.interactable = Some(Interactable {
+                kind: InteractableKind::ResourcePile,
+                interaction_radius: RESOURCE_PILE_INTERACTION_RADIUS,
+                remaining_uses: RESOURCE_PILE_STARTING_USES,
+            });
         }
         info!(
             scene = self.scene_name,
@@ -106,10 +140,26 @@ impl Scene for GameplayScene {
             if let (Some(selected_id), Some(cursor_px)) =
                 (self.selected_entity, input.cursor_position_px())
             {
-                let target = screen_to_world_px(world.camera(), input.window_size(), cursor_px);
+                let window_size = input.window_size();
+                let ground_target = screen_to_world_px(world.camera(), window_size, cursor_px);
+                let interactable_target = world
+                    .pick_topmost_interactable_at_cursor(cursor_px, window_size)
+                    .and_then(|id| {
+                        world
+                            .find_entity(id)
+                            .map(|entity| (id, entity.transform.position))
+                    });
+
                 if let Some(entity) = world.find_entity_mut(selected_id) {
                     if entity.actor {
-                        entity.move_target_world = Some(target);
+                        entity.job_state = JobState::Idle;
+                        if let Some((target_id, target_world)) = interactable_target {
+                            entity.move_target_world = Some(target_world);
+                            entity.interaction_target = Some(target_id);
+                        } else {
+                            entity.move_target_world = Some(ground_target);
+                            entity.interaction_target = None;
+                        }
                     }
                 }
             }
@@ -123,23 +173,106 @@ impl Scene for GameplayScene {
             }
         }
 
+        self.interactable_cache.clear();
+        for entity in world.entities() {
+            if let Some(interactable) = entity.interactable {
+                if interactable.remaining_uses > 0 {
+                    self.interactable_cache.push((
+                        entity.id,
+                        entity.transform.position,
+                        interactable.interaction_radius,
+                    ));
+                }
+            }
+        }
+
+        self.completed_target_ids.clear();
+        let mut completed_jobs = 0u32;
         for entity in world.entities_mut() {
             if !entity.actor {
                 continue;
             }
-            let Some(target) = entity.move_target_world else {
+
+            if let Some(target) = entity.move_target_world {
+                let (next, arrived) = step_toward(
+                    entity.transform.position,
+                    target,
+                    self.player_move_speed,
+                    fixed_dt_seconds,
+                    MOVE_ARRIVAL_THRESHOLD,
+                );
+                entity.transform.position = next;
+                if arrived {
+                    entity.move_target_world = None;
+                }
+            }
+
+            let mut started_work_this_tick = false;
+            if let Some(interaction_target) = entity.interaction_target {
+                if let Some((target_world, radius)) =
+                    interactable_target_info(&self.interactable_cache, interaction_target)
+                {
+                    if matches!(entity.job_state, JobState::Idle) {
+                        let dx = target_world.x - entity.transform.position.x;
+                        let dy = target_world.y - entity.transform.position.y;
+                        if dx * dx + dy * dy <= radius * radius {
+                            entity.job_state = JobState::Working {
+                                target: interaction_target,
+                                remaining_time: JOB_DURATION_SECONDS,
+                            };
+                            entity.move_target_world = None;
+                            started_work_this_tick = true;
+                        }
+                    }
+                } else {
+                    entity.interaction_target = None;
+                    entity.job_state = JobState::Idle;
+                    entity.move_target_world = None;
+                }
+            }
+
+            if started_work_this_tick {
                 continue;
-            };
-            let (next, arrived) = step_toward(
-                entity.transform.position,
+            }
+
+            if let JobState::Working {
                 target,
-                self.player_move_speed,
-                fixed_dt_seconds,
-                MOVE_ARRIVAL_THRESHOLD,
-            );
-            entity.transform.position = next;
-            if arrived {
-                entity.move_target_world = None;
+                remaining_time,
+            } = entity.job_state
+            {
+                if has_interactable_target(&self.interactable_cache, target) {
+                    let next_remaining = remaining_time - fixed_dt_seconds;
+                    if next_remaining <= 0.0 {
+                        entity.job_state = JobState::Idle;
+                        entity.interaction_target = None;
+                        completed_jobs = completed_jobs.saturating_add(1);
+                        self.completed_target_ids.push(target);
+                    } else {
+                        entity.job_state = JobState::Working {
+                            target,
+                            remaining_time: next_remaining,
+                        };
+                    }
+                } else {
+                    entity.job_state = JobState::Idle;
+                    entity.interaction_target = None;
+                }
+            }
+        }
+
+        self.resource_count = self.resource_count.saturating_add(completed_jobs);
+        for target_id in self.completed_target_ids.iter().copied() {
+            let mut should_despawn = false;
+            if let Some(target) = world.find_entity_mut(target_id) {
+                if let Some(interactable) = target.interactable.as_mut() {
+                    if interactable.remaining_uses > 0 {
+                        interactable.remaining_uses -= 1;
+                    }
+                    should_despawn = interactable.remaining_uses == 0;
+                }
+            }
+            if should_despawn {
+                world.despawn(target_id);
             }
         }
 
@@ -160,6 +293,9 @@ impl Scene for GameplayScene {
         );
         self.player_id = None;
         self.selected_entity = None;
+        self.resource_count = 0;
+        self.interactable_cache.clear();
+        self.completed_target_ids.clear();
     }
 
     fn debug_title(&self, world: &SceneWorld) -> Option<String> {
@@ -186,7 +322,24 @@ impl Scene for GameplayScene {
         if !entity.actor {
             return None;
         }
-        entity.move_target_world
+        if let Some(target) = entity.move_target_world {
+            return Some(target);
+        }
+        if let Some(target_id) = entity.interaction_target {
+            return world
+                .find_entity(target_id)
+                .map(|target| target.transform.position);
+        }
+        if let JobState::Working { target, .. } = entity.job_state {
+            return world
+                .find_entity(target)
+                .map(|target| target.transform.position);
+        }
+        None
+    }
+
+    fn debug_resource_count(&self) -> Option<u32> {
+        Some(self.resource_count)
     }
 }
 
@@ -203,6 +356,46 @@ fn resolve_player_archetype(world: &SceneWorld) -> EntityArchetype {
         .entity_def(player_id)
         .unwrap_or_else(|| panic!("EntityDef id for 'proto.player' is missing from DefDatabase"))
         .clone()
+}
+
+fn resolve_resource_pile_archetype(world: &SceneWorld) -> EntityArchetype {
+    let def_db = world
+        .def_database()
+        .unwrap_or_else(|| panic!("DefDatabase not set on SceneWorld before scene load"));
+    let pile_id = def_db
+        .entity_def_id_by_name("proto.resource_pile")
+        .unwrap_or_else(|| {
+            panic!(
+                "missing EntityDef 'proto.resource_pile'; add it to assets/base or enabled mods and fix XML compile errors"
+            )
+        });
+    let pile = def_db
+        .entity_def(pile_id)
+        .unwrap_or_else(|| {
+            panic!("EntityDef id for 'proto.resource_pile' is missing from DefDatabase")
+        })
+        .clone();
+    let has_interactable_tag = pile.tags.iter().any(|tag| tag == "interactable");
+    let has_resource_pile_tag = pile.tags.iter().any(|tag| tag == "resource_pile");
+    assert!(
+        has_interactable_tag && has_resource_pile_tag,
+        "EntityDef 'proto.resource_pile' must include tags 'interactable' and 'resource_pile'"
+    );
+    pile
+}
+
+fn interactable_target_info(
+    interactables: &[(EntityId, Vec2, f32)],
+    target: EntityId,
+) -> Option<(Vec2, f32)> {
+    interactables
+        .iter()
+        .find(|(id, _, _)| *id == target)
+        .map(|(_, position, radius)| (*position, *radius))
+}
+
+fn has_interactable_target(interactables: &[(EntityId, Vec2, f32)], target: EntityId) -> bool {
+    interactables.iter().any(|(id, _, _)| *id == target)
 }
 
 fn movement_delta(input: &InputSnapshot, fixed_dt_seconds: f32, speed: f32) -> Vec2 {
@@ -364,6 +557,30 @@ mod tests {
             .with_right_click_pressed(true)
             .with_cursor_position_px(Some(cursor_px))
             .with_window_size(window_size)
+    }
+
+    fn spawn_interactable_pile(
+        world: &mut SceneWorld,
+        position: Vec2,
+        remaining_uses: u32,
+    ) -> EntityId {
+        let pile_id = world.spawn(
+            Transform {
+                position,
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "pile",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(pile_id).expect("pile").interactable = Some(Interactable {
+            kind: InteractableKind::ResourcePile,
+            interaction_radius: RESOURCE_PILE_INTERACTION_RADIUS,
+            remaining_uses,
+        });
+        pile_id
     }
 
     #[test]
@@ -640,5 +857,95 @@ mod tests {
         let entity = world.find_entity(actor).expect("actor");
         assert!(entity.move_target_world.is_none());
         assert!((entity.transform.position.x - 0.2).abs() <= MOVE_ARRIVAL_THRESHOLD);
+    }
+
+    #[test]
+    fn right_click_interactable_sets_interaction_target() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: -2.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 3);
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.selected_entity = Some(actor);
+
+        let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &click, &mut world);
+
+        let updated = world.find_entity(actor).expect("actor");
+        assert_eq!(updated.interaction_target, Some(pile));
+        assert!(updated.move_target_world.is_some());
+        assert_eq!(updated.job_state, JobState::Idle);
+    }
+
+    #[test]
+    fn job_completion_increments_items_and_despawns_depleted_pile() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 1);
+        {
+            let entity = world.find_entity_mut(actor).expect("actor");
+            entity.interaction_target = Some(pile);
+            entity.job_state = JobState::Idle;
+        }
+
+        for _ in 0..40 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+        }
+
+        let actor_entity = world.find_entity(actor).expect("actor");
+        assert_eq!(actor_entity.job_state, JobState::Idle);
+        assert_eq!(actor_entity.interaction_target, None);
+        assert_eq!(scene.resource_count, 1);
+        assert!(world.find_entity(pile).is_none());
+    }
+
+    #[test]
+    fn missing_interaction_target_clears_job_state_safely() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        {
+            let entity = world.find_entity_mut(actor).expect("actor");
+            entity.interaction_target = Some(EntityId(9999));
+            entity.job_state = JobState::Working {
+                target: EntityId(9999),
+                remaining_time: 1.0,
+            };
+        }
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        let actor_entity = world.find_entity(actor).expect("actor");
+        assert_eq!(actor_entity.job_state, JobState::Idle);
+        assert_eq!(actor_entity.interaction_target, None);
     }
 }

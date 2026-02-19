@@ -5,4 +5,13 @@
     <renderable>Placeholder</renderable>
     <moveSpeed>5.0</moveSpeed>
   </EntityDef>
+  <EntityDef>
+    <defName>proto.resource_pile</defName>
+    <label>ResourcePile</label>
+    <renderable>Placeholder</renderable>
+    <tags>
+      <li>interactable</li>
+      <li>resource_pile</li>
+    </tags>
+  </EntityDef>
 </Defs>

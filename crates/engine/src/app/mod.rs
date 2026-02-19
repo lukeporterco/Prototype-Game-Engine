@@ -13,7 +13,7 @@ pub use rendering::{
     PLACEHOLDER_HALF_SIZE_PX,
 };
 pub use scene::{
-    Camera2D, Entity, EntityId, InputSnapshot, RenderableDesc, RenderableKind, Scene, SceneCommand,
-    SceneKey, SceneWorld, Transform, Vec2,
+    Camera2D, Entity, EntityId, InputSnapshot, Interactable, InteractableKind, JobState,
+    RenderableDesc, RenderableKind, Scene, SceneCommand, SceneKey, SceneWorld, Transform, Vec2,
 };
 pub(crate) use tools::OverlayData;

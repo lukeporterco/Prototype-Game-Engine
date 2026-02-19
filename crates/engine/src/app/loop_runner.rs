@@ -243,6 +243,7 @@ pub fn run_app_with_metrics(
                             content_status: "loaded",
                             selected_entity: scenes.debug_selected_entity_active(),
                             selected_target: scenes.debug_selected_target_active(&world),
+                            resource_count: scenes.debug_resource_count_active(),
                         });
                         if let Err(error) = renderer.render_world(&world, overlay.as_ref()) {
                             warn!(error = %error, "renderer_draw_failed");
