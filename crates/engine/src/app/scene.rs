@@ -285,6 +285,24 @@ pub struct DebugInfoSnapshot {
     pub resource_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugMarkerKind {
+    Order,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DebugMarker {
+    pub kind: DebugMarkerKind,
+    pub position_world: Vec2,
+    pub ttl_seconds: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SceneVisualState {
+    pub selected_actor: Option<EntityId>,
+    pub hovered_interactable: Option<EntityId>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Entity {
     pub id: EntityId,
@@ -321,6 +339,8 @@ pub struct SceneWorld {
     next_applied_spawn_order: u64,
     camera: Camera2D,
     tilemap: Option<Tilemap>,
+    visual_state: SceneVisualState,
+    debug_markers: Vec<DebugMarker>,
     def_database: Option<DefDatabase>,
 }
 
@@ -396,6 +416,8 @@ impl SceneWorld {
         self.pending_despawns.clear();
         self.next_applied_spawn_order = 0;
         self.camera = Camera2D::default();
+        self.visual_state = SceneVisualState::default();
+        self.debug_markers.clear();
     }
 
     pub fn set_tilemap(&mut self, tilemap: Tilemap) {
@@ -408,6 +430,37 @@ impl SceneWorld {
 
     pub fn tilemap(&self) -> Option<&Tilemap> {
         self.tilemap.as_ref()
+    }
+
+    pub fn set_selected_actor_visual(&mut self, selected: Option<EntityId>) {
+        self.visual_state.selected_actor = selected;
+    }
+
+    pub fn set_hovered_interactable_visual(&mut self, hovered: Option<EntityId>) {
+        self.visual_state.hovered_interactable = hovered;
+    }
+
+    pub fn visual_state(&self) -> &SceneVisualState {
+        &self.visual_state
+    }
+
+    pub fn push_debug_marker(&mut self, marker: DebugMarker) {
+        self.debug_markers.push(marker);
+    }
+
+    pub fn debug_markers(&self) -> &[DebugMarker] {
+        &self.debug_markers
+    }
+
+    pub fn clear_debug_markers(&mut self) {
+        self.debug_markers.clear();
+    }
+
+    pub fn tick_debug_markers(&mut self, fixed_dt_seconds: f32) {
+        self.debug_markers.retain_mut(|marker| {
+            marker.ttl_seconds -= fixed_dt_seconds;
+            marker.ttl_seconds > 0.0
+        });
     }
 
     pub fn entity_count(&self) -> usize {
@@ -1047,6 +1100,33 @@ mod tests {
         assert!(world.tilemap().is_some());
         world.clear_tilemap();
         assert!(world.tilemap().is_none());
+    }
+
+    #[test]
+    fn debug_markers_ttl_decrements_and_removes_expired_single_pass_behavior() {
+        let mut world = SceneWorld::default();
+        world.push_debug_marker(DebugMarker {
+            kind: DebugMarkerKind::Order,
+            position_world: Vec2 { x: 1.0, y: 2.0 },
+            ttl_seconds: 1.0,
+        });
+        world.push_debug_marker(DebugMarker {
+            kind: DebugMarkerKind::Order,
+            position_world: Vec2 { x: -1.0, y: -2.0 },
+            ttl_seconds: 0.25,
+        });
+        world.push_debug_marker(DebugMarker {
+            kind: DebugMarkerKind::Order,
+            position_world: Vec2 { x: 3.0, y: 4.0 },
+            ttl_seconds: 0.5,
+        });
+
+        world.tick_debug_markers(0.5);
+
+        let markers = world.debug_markers();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].position_world, Vec2 { x: 1.0, y: 2.0 });
+        assert!((markers[0].ttl_seconds - 0.5).abs() < 0.0001);
     }
 
     #[test]

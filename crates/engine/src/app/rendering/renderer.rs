@@ -5,7 +5,9 @@ use image::ImageReader;
 use pixels::{Error, Pixels, SurfaceTexture};
 use winit::window::Window;
 
-use crate::app::{tools::draw_overlay, OverlayData, RenderableKind, SceneWorld, Vec2};
+use crate::app::{
+    tools::draw_overlay, DebugMarkerKind, OverlayData, RenderableKind, SceneWorld, Vec2,
+};
 use crate::sprite_keys::validate_sprite_key;
 
 use super::{world_to_screen_px, Viewport, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX};
@@ -19,6 +21,12 @@ const GRID_MAJOR_COLOR: [u8; 4] = [52, 58, 70, 255];
 const TILE_FALLBACK_GRASS_COLOR: [u8; 4] = [74, 112, 56, 255];
 const TILE_FALLBACK_DIRT_COLOR: [u8; 4] = [112, 83, 58, 255];
 const TILE_FALLBACK_UNKNOWN_COLOR: [u8; 4] = [68, 74, 62, 255];
+const SELECTED_HIGHLIGHT_COLOR: [u8; 4] = [80, 220, 255, 255];
+const HOVER_HIGHLIGHT_COLOR: [u8; 4] = [255, 210, 70, 255];
+const ORDER_MARKER_COLOR: [u8; 4] = [255, 120, 120, 255];
+const SELECTED_HIGHLIGHT_HALF_SIZE_PX: i32 = 10;
+const HOVER_HIGHLIGHT_HALF_SIZE_PX: i32 = 8;
+const ORDER_MARKER_HALF_SIZE_PX: i32 = 6;
 
 struct LoadedSprite {
     width: u32,
@@ -128,11 +136,69 @@ impl<'window> Renderer<'window> {
             }
         }
 
+        draw_affordances(frame, self.viewport.width, self.viewport.height, world);
+
         if let Some(data) = overlay_data {
             draw_overlay(frame, self.viewport.width, self.viewport.height, data);
         }
 
         self.pixels.render()
+    }
+}
+
+fn draw_affordances(frame: &mut [u8], width: u32, height: u32, world: &SceneWorld) {
+    let visuals = world.visual_state();
+
+    if let Some(selected_id) = visuals.selected_actor {
+        if let Some(entity) = world.find_entity(selected_id) {
+            if entity.actor {
+                let (cx, cy) =
+                    world_to_screen_px(world.camera(), (width, height), entity.transform.position);
+                draw_square_outline(
+                    frame,
+                    width,
+                    height,
+                    cx,
+                    cy,
+                    SELECTED_HIGHLIGHT_HALF_SIZE_PX,
+                    SELECTED_HIGHLIGHT_COLOR,
+                );
+            }
+        }
+    }
+
+    if let Some(hovered_id) = visuals.hovered_interactable {
+        if let Some(entity) = world.find_entity(hovered_id) {
+            if entity.interactable.is_some() {
+                let (cx, cy) =
+                    world_to_screen_px(world.camera(), (width, height), entity.transform.position);
+                draw_square_outline(
+                    frame,
+                    width,
+                    height,
+                    cx,
+                    cy,
+                    HOVER_HIGHLIGHT_HALF_SIZE_PX,
+                    HOVER_HIGHLIGHT_COLOR,
+                );
+            }
+        }
+    }
+
+    for marker in world.debug_markers() {
+        if matches!(marker.kind, DebugMarkerKind::Order) {
+            let (cx, cy) =
+                world_to_screen_px(world.camera(), (width, height), marker.position_world);
+            draw_cross(
+                frame,
+                width,
+                height,
+                cx,
+                cy,
+                ORDER_MARKER_HALF_SIZE_PX,
+                ORDER_MARKER_COLOR,
+            );
+        }
     }
 }
 
@@ -357,6 +423,47 @@ fn draw_square(
     }
 }
 
+fn draw_square_outline(
+    frame: &mut [u8],
+    width: u32,
+    _height: u32,
+    cx: i32,
+    cy: i32,
+    half_size: i32,
+    color: [u8; 4],
+) {
+    let left = cx - half_size;
+    let right = cx + half_size;
+    let top = cy - half_size;
+    let bottom = cy + half_size;
+
+    for x in left..=right {
+        write_pixel_rgba_clipped(frame, width as usize, x, top, color);
+        write_pixel_rgba_clipped(frame, width as usize, x, bottom, color);
+    }
+    for y in top..=bottom {
+        write_pixel_rgba_clipped(frame, width as usize, left, y, color);
+        write_pixel_rgba_clipped(frame, width as usize, right, y, color);
+    }
+}
+
+fn draw_cross(
+    frame: &mut [u8],
+    width: u32,
+    _height: u32,
+    cx: i32,
+    cy: i32,
+    half_size: i32,
+    color: [u8; 4],
+) {
+    for x in (cx - half_size)..=(cx + half_size) {
+        write_pixel_rgba_clipped(frame, width as usize, x, cy, color);
+    }
+    for y in (cy - half_size)..=(cy + half_size) {
+        write_pixel_rgba_clipped(frame, width as usize, cx, y, color);
+    }
+}
+
 fn draw_sprite_centered(
     frame: &mut [u8],
     width: u32,
@@ -408,7 +515,7 @@ fn draw_sprite_centered(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Camera2D, Tilemap};
+    use crate::app::{Camera2D, DebugMarker, DebugMarkerKind, EntityId, Tilemap};
     use tempfile::TempDir;
 
     #[test]
@@ -521,5 +628,30 @@ mod tests {
         let grass_path = resolve_sprite_image_path(asset_root, tile_sprite_key(0).expect("key"))
             .expect("sprite path");
         assert!(load_sprite_rgba(&grass_path).is_none());
+    }
+
+    #[test]
+    fn affordances_skip_stale_visual_ids_without_panic() {
+        let mut world = SceneWorld::default();
+        world.set_selected_actor_visual(Some(EntityId(999)));
+        world.set_hovered_interactable_visual(Some(EntityId(1000)));
+
+        let mut frame = vec![0u8; 64 * 64 * 4];
+        draw_affordances(&mut frame, 64, 64, &world);
+        assert!(frame.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn affordances_draw_order_marker_primitive() {
+        let mut world = SceneWorld::default();
+        world.push_debug_marker(DebugMarker {
+            kind: DebugMarkerKind::Order,
+            position_world: Vec2 { x: 0.0, y: 0.0 },
+            ttl_seconds: 0.75,
+        });
+
+        let mut frame = vec![0u8; 64 * 64 * 4];
+        draw_affordances(&mut frame, 64, 64, &world);
+        assert!(frame.iter().any(|byte| *byte != 0));
     }
 }

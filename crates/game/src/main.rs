@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use engine::{
     resolve_app_paths, run_app, screen_to_world_px, ContentPlanRequest, DebugInfoSnapshot,
-    DebugJobState, EntityArchetype, EntityId, InputAction, InputSnapshot, Interactable,
-    InteractableKind, JobState, LoopConfig, RenderableDesc, RenderableKind, Scene, SceneCommand,
-    SceneKey, SceneWorld, Tilemap, Transform, Vec2,
+    DebugJobState, DebugMarker, DebugMarkerKind, EntityArchetype, EntityId, InputAction,
+    InputSnapshot, Interactable, InteractableKind, JobState, LoopConfig, RenderableDesc,
+    RenderableKind, Scene, SceneCommand, SceneKey, SceneWorld, Tilemap, Transform, Vec2,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
@@ -21,6 +21,7 @@ const ENABLED_MODS_ENV_VAR: &str = "PROTOGE_ENABLED_MODS";
 const SAVE_VERSION: u32 = 1;
 const SCENE_A_SAVE_FILE: &str = "scene_a.save.json";
 const SCENE_B_SAVE_FILE: &str = "scene_b.save.json";
+const ORDER_MARKER_TTL_SECONDS: f32 = 0.75;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum SavedSceneKey {
@@ -501,6 +502,8 @@ impl Scene for GameplayScene {
             return SceneCommand::SwitchTo(self.switch_target);
         }
 
+        world.tick_debug_markers(fixed_dt_seconds);
+
         if input.left_click_pressed() {
             self.selected_entity = input.cursor_position_px().and_then(|cursor_px| {
                 world.pick_topmost_selectable_at_cursor(cursor_px, input.window_size())
@@ -521,20 +524,52 @@ impl Scene for GameplayScene {
                             .map(|entity| (id, entity.transform.position))
                     });
 
+                let mut marker_position = None::<Vec2>;
                 if let Some(entity) = world.find_entity_mut(selected_id) {
                     if entity.actor {
                         entity.job_state = JobState::Idle;
                         if let Some((target_id, target_world)) = interactable_target {
                             entity.move_target_world = Some(target_world);
                             entity.interaction_target = Some(target_id);
+                            marker_position = Some(target_world);
                         } else {
                             entity.move_target_world = Some(ground_target);
                             entity.interaction_target = None;
+                            marker_position = Some(ground_target);
                         }
                     }
                 }
+                if let Some(position_world) = marker_position {
+                    world.push_debug_marker(DebugMarker {
+                        kind: DebugMarkerKind::Order,
+                        position_world,
+                        ttl_seconds: ORDER_MARKER_TTL_SECONDS,
+                    });
+                }
             }
         }
+
+        let hovered_interactable = input.cursor_position_px().and_then(|cursor_px| {
+            world.pick_topmost_interactable_at_cursor(cursor_px, input.window_size())
+        });
+        world.set_hovered_interactable_visual(hovered_interactable);
+
+        if let Some(current_selected) = world.visual_state().selected_actor {
+            let stale_or_non_actor = match world.find_entity(current_selected) {
+                Some(entity) => !entity.actor,
+                None => true,
+            };
+            if stale_or_non_actor {
+                world.set_selected_actor_visual(None);
+            }
+        }
+        let selected_actor_visual = self.selected_entity.and_then(|id| {
+            world
+                .find_entity(id)
+                .filter(|entity| entity.actor)
+                .map(|_| id)
+        });
+        world.set_selected_actor_visual(selected_actor_visual);
 
         if let Some(player_id) = self.player_id {
             if let Some(player) = world.find_entity_mut(player_id) {
@@ -1285,6 +1320,35 @@ mod tests {
     }
 
     #[test]
+    fn right_click_selected_actor_creates_order_marker_with_ttl() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.selected_entity = Some(actor);
+
+        let click = right_click_snapshot(Vec2 { x: 672.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &click, &mut world);
+
+        let markers = world.debug_markers();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].kind, engine::DebugMarkerKind::Order);
+        assert!((markers[0].position_world.x - 1.0).abs() < 0.0001);
+        assert!(markers[0].position_world.y.abs() < 0.0001);
+        assert!((markers[0].ttl_seconds - ORDER_MARKER_TTL_SECONDS).abs() < 0.0001);
+    }
+
+    #[test]
     fn right_click_with_no_selection_is_noop() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -1333,6 +1397,30 @@ mod tests {
             .expect("non_actor")
             .move_target_world
             .is_none());
+    }
+
+    #[test]
+    fn selected_visual_clears_when_stale_or_non_actor() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        world.set_selected_actor_visual(Some(EntityId(9999)));
+        scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
+        assert_eq!(world.visual_state().selected_actor, None);
+
+        let non_actor = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "non_actor",
+            },
+        );
+        world.apply_pending();
+        scene.selected_entity = Some(non_actor);
+        scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
+        assert_eq!(world.visual_state().selected_actor, None);
     }
 
     #[test]

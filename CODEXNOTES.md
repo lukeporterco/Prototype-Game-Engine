@@ -174,6 +174,27 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 
 ---
 
+## Ticket Notes (2026-02-19, Ticket 19)
+- Interaction affordance v0 added with SceneWorld-owned transient visual state:
+  - `SceneVisualState { selected_actor, hovered_interactable }`
+  - IDs are weak references; renderer skips unresolved IDs.
+- Timed debug markers added to SceneWorld:
+  - `DebugMarker { kind, position_world, ttl_seconds }`
+  - v0 marker kind: `Order`
+  - order marker TTL constant in game: `0.75s`
+- Marker ticking contract:
+  - single-pass decrement + retain (`retain_mut`) each sim tick
+  - expired markers removed when `ttl_seconds <= 0`
+- Renderer affordance pass added after entities and before overlay:
+  - selected actor outline highlight
+  - hovered interactable outline highlight
+  - order marker cross at target world position
+- Game update contract:
+  - hover highlight source is `pick_topmost_interactable_at_cursor(...)` each tick
+  - selected visual is cleared when stale/non-actor and only set for live actors
+
+---
+
 ## Ticket Notes (2026-02-19)
 - Ticket 1 implemented: engine heartbeat and lifecycle loop with fixed-timestep simulation and decoupled metrics surface.
 - App/Loop contract added in `crates/engine/src/app/`:
