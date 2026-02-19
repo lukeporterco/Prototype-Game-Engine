@@ -2,9 +2,10 @@ use crate::app::{EntityId, LoopMetricsSnapshot};
 
 const GLYPH_WIDTH: i32 = 3;
 const GLYPH_HEIGHT: i32 = 5;
-const GLYPH_ADVANCE: i32 = GLYPH_WIDTH + 1;
-const LINE_ADVANCE: i32 = GLYPH_HEIGHT + 2;
-const OVERLAY_PADDING: i32 = 6;
+const TEXT_SCALE: i32 = 2;
+const GLYPH_ADVANCE: i32 = (GLYPH_WIDTH + 1) * TEXT_SCALE;
+const LINE_ADVANCE: i32 = (GLYPH_HEIGHT + 2) * TEXT_SCALE;
+const OVERLAY_PADDING: i32 = 6 * TEXT_SCALE;
 const OVERLAY_COLOR: [u8; 4] = [230, 240, 180, 255];
 
 #[derive(Debug, Clone, Copy)]
@@ -13,6 +14,7 @@ pub(crate) struct OverlayData {
     pub entity_count: usize,
     pub content_status: &'static str,
     pub selected_entity: Option<EntityId>,
+    pub selected_target: Option<crate::app::Vec2>,
 }
 
 pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &OverlayData) {
@@ -29,6 +31,10 @@ pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &Ove
         match data.selected_entity {
             Some(id) => format!("Sel: {}", id.0),
             None => "Sel: none".to_string(),
+        },
+        match data.selected_target {
+            Some(target) => format!("Target: {:.1},{:.1}", target.x, target.y),
+            None => "Target: idle".to_string(),
         },
     ];
 
@@ -80,28 +86,33 @@ fn draw_glyph_clipped(
     let width_i32 = width as i32;
 
     for (row_index, row_bits) in glyph.rows.iter().enumerate() {
-        let pixel_y = y + row_index as i32;
-        if pixel_y < 0 || pixel_y >= height_i32 {
-            continue;
-        }
+        let glyph_y = y + row_index as i32 * TEXT_SCALE;
 
         for col in 0..GLYPH_WIDTH {
             if (row_bits & (1 << (GLYPH_WIDTH - 1 - col))) == 0 {
                 continue;
             }
 
-            let pixel_x = x + col;
-            if pixel_x < 0 || pixel_x >= width_i32 {
-                continue;
+            let glyph_x = x + col * TEXT_SCALE;
+            for sy in 0..TEXT_SCALE {
+                let pixel_y = glyph_y + sy;
+                if pixel_y < 0 || pixel_y >= height_i32 {
+                    continue;
+                }
+                for sx in 0..TEXT_SCALE {
+                    let pixel_x = glyph_x + sx;
+                    if pixel_x < 0 || pixel_x >= width_i32 {
+                        continue;
+                    }
+                    write_pixel_rgba(
+                        frame,
+                        width as usize,
+                        pixel_x as usize,
+                        pixel_y as usize,
+                        color,
+                    );
+                }
             }
-
-            write_pixel_rgba(
-                frame,
-                width as usize,
-                pixel_x as usize,
-                pixel_y as usize,
-                color,
-            );
         }
     }
 }
@@ -225,6 +236,12 @@ fn glyph_for(ch: char) -> Option<Glyph> {
         'd' => Glyph {
             rows: [0b001, 0b001, 0b111, 0b101, 0b111],
         },
+        'g' => Glyph {
+            rows: [0b000, 0b111, 0b101, 0b111, 0b001],
+        },
+        ',' => Glyph {
+            rows: [0b000, 0b000, 0b000, 0b010, 0b100],
+        },
         _ => return None,
     })
 }
@@ -244,7 +261,7 @@ mod tests {
 
         let required: HashSet<char> = [
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ':', ' ', '-', 'F', 'P', 'S',
-            'T', 'r', 'a', 'm', 'e', 'E', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S',
+            'T', 'r', 'a', 'm', 'e', 'E', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S', 'g', ',',
         ]
         .into_iter()
         .collect();
@@ -283,5 +300,13 @@ mod tests {
 
         let mut frame_8x0 = vec![];
         draw_text_clipped(&mut frame_8x0, 8, 0, 0, 0, "Content", OVERLAY_COLOR);
+    }
+
+    #[test]
+    fn layout_metrics_follow_text_scale() {
+        assert_eq!(TEXT_SCALE, 2);
+        assert_eq!(GLYPH_ADVANCE, 8);
+        assert_eq!(LINE_ADVANCE, 14);
+        assert_eq!(OVERLAY_PADDING, 12);
     }
 }

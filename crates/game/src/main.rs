@@ -1,11 +1,13 @@
 use engine::{
-    run_app, ContentPlanRequest, EntityArchetype, EntityId, InputAction, InputSnapshot, LoopConfig,
-    RenderableDesc, Scene, SceneCommand, SceneKey, SceneWorld, Transform, Vec2,
+    run_app, screen_to_world_px, ContentPlanRequest, EntityArchetype, EntityId, InputAction,
+    InputSnapshot, LoopConfig, RenderableDesc, Scene, SceneCommand, SceneKey, SceneWorld,
+    Transform, Vec2,
 };
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 const CAMERA_SPEED_UNITS_PER_SECOND: f32 = 6.0;
+const MOVE_ARRIVAL_THRESHOLD: f32 = 0.1;
 const ENABLED_MODS_ENV_VAR: &str = "PROTOGE_ENABLED_MODS";
 
 struct GameplayScene {
@@ -34,7 +36,7 @@ impl Scene for GameplayScene {
     fn load(&mut self, world: &mut SceneWorld) {
         let player_archetype = resolve_player_archetype(world);
         self.player_move_speed = player_archetype.move_speed;
-        self.player_id = Some(world.spawn_selectable(
+        let player_id = world.spawn_actor(
             Transform {
                 position: self.player_spawn,
                 rotation_radians: None,
@@ -43,8 +45,8 @@ impl Scene for GameplayScene {
                 kind: player_archetype.renderable,
                 debug_name: "player",
             },
-        ));
-        world.spawn_selectable(
+        );
+        let unit_a = world.spawn_actor(
             Transform {
                 position: Vec2 {
                     x: self.player_spawn.x + 2.0,
@@ -57,7 +59,7 @@ impl Scene for GameplayScene {
                 debug_name: "unit_a",
             },
         );
-        world.spawn_selectable(
+        let unit_b = world.spawn_actor(
             Transform {
                 position: Vec2 {
                     x: self.player_spawn.x - 2.0,
@@ -70,7 +72,13 @@ impl Scene for GameplayScene {
                 debug_name: "unit_b",
             },
         );
+        self.player_id = Some(player_id);
         world.apply_pending();
+        for id in [player_id, unit_a, unit_b] {
+            if let Some(entity) = world.find_entity_mut(id) {
+                entity.selectable = true;
+            }
+        }
         info!(
             scene = self.scene_name,
             entity_count = world.entity_count(),
@@ -94,11 +102,44 @@ impl Scene for GameplayScene {
             });
         }
 
+        if input.right_click_pressed() {
+            if let (Some(selected_id), Some(cursor_px)) =
+                (self.selected_entity, input.cursor_position_px())
+            {
+                let target = screen_to_world_px(world.camera(), input.window_size(), cursor_px);
+                if let Some(entity) = world.find_entity_mut(selected_id) {
+                    if entity.actor {
+                        entity.move_target_world = Some(target);
+                    }
+                }
+            }
+        }
+
         if let Some(player_id) = self.player_id {
             if let Some(player) = world.find_entity_mut(player_id) {
                 let delta = movement_delta(input, fixed_dt_seconds, self.player_move_speed);
                 player.transform.position.x += delta.x;
                 player.transform.position.y += delta.y;
+            }
+        }
+
+        for entity in world.entities_mut() {
+            if !entity.actor {
+                continue;
+            }
+            let Some(target) = entity.move_target_world else {
+                continue;
+            };
+            let (next, arrived) = step_toward(
+                entity.transform.position,
+                target,
+                self.player_move_speed,
+                fixed_dt_seconds,
+                MOVE_ARRIVAL_THRESHOLD,
+            );
+            entity.transform.position = next;
+            if arrived {
+                entity.move_target_world = None;
             }
         }
 
@@ -137,6 +178,15 @@ impl Scene for GameplayScene {
 
     fn debug_selected_entity(&self) -> Option<EntityId> {
         self.selected_entity
+    }
+
+    fn debug_selected_target(&self, world: &SceneWorld) -> Option<Vec2> {
+        let selected = self.selected_entity?;
+        let entity = world.find_entity(selected)?;
+        if !entity.actor {
+            return None;
+        }
+        entity.move_target_world
     }
 }
 
@@ -215,6 +265,37 @@ fn camera_delta(input: &InputSnapshot, fixed_dt_seconds: f32, speed: f32) -> Vec
     }
 }
 
+fn step_toward(
+    current: Vec2,
+    target: Vec2,
+    speed: f32,
+    fixed_dt_seconds: f32,
+    arrival_threshold: f32,
+) -> (Vec2, bool) {
+    let dx = target.x - current.x;
+    let dy = target.y - current.y;
+    let distance_sq = dx * dx + dy * dy;
+    let threshold_sq = arrival_threshold * arrival_threshold;
+    if distance_sq <= threshold_sq {
+        return (target, true);
+    }
+
+    let distance = distance_sq.sqrt();
+    let max_step = speed * fixed_dt_seconds;
+    if max_step >= distance {
+        return (target, true);
+    }
+
+    let inv_distance = distance.recip();
+    (
+        Vec2 {
+            x: current.x + dx * inv_distance * max_step,
+            y: current.y + dy * inv_distance * max_step,
+        },
+        false,
+    )
+}
+
 fn main() {
     init_tracing();
     info!("=== Proto GE Startup ===");
@@ -274,6 +355,13 @@ mod tests {
     fn click_snapshot(cursor_px: Vec2, window_size: (u32, u32)) -> InputSnapshot {
         InputSnapshot::empty()
             .with_left_click_pressed(true)
+            .with_cursor_position_px(Some(cursor_px))
+            .with_window_size(window_size)
+    }
+
+    fn right_click_snapshot(cursor_px: Vec2, window_size: (u32, u32)) -> InputSnapshot {
+        InputSnapshot::empty()
+            .with_right_click_pressed(true)
             .with_cursor_position_px(Some(cursor_px))
             .with_window_size(window_size)
     }
@@ -414,5 +502,143 @@ mod tests {
         );
         scene.update(1.0 / 60.0, &click_b, &mut world);
         assert_eq!(scene.debug_selected_entity(), Some(b));
+    }
+
+    #[test]
+    fn step_toward_moves_by_speed_times_dt_without_overshoot() {
+        let (next, arrived) = step_toward(
+            Vec2 { x: 0.0, y: 0.0 },
+            Vec2 { x: 10.0, y: 0.0 },
+            2.0,
+            0.5,
+            0.1,
+        );
+        assert!(!arrived);
+        assert!((next.x - 1.0).abs() < 0.0001);
+        assert!((next.y - 0.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn step_toward_arrives_and_snaps_at_threshold() {
+        let (next, arrived) = step_toward(
+            Vec2 { x: 0.0, y: 0.0 },
+            Vec2 { x: 0.05, y: 0.0 },
+            5.0,
+            1.0 / 60.0,
+            0.1,
+        );
+        assert!(arrived);
+        assert!((next.x - 0.05).abs() < 0.0001);
+        assert!((next.y - 0.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn right_click_selected_actor_sets_move_target() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.selected_entity = Some(actor);
+
+        let click = right_click_snapshot(Vec2 { x: 672.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &click, &mut world);
+
+        let target = world
+            .find_entity(actor)
+            .expect("actor")
+            .move_target_world
+            .expect("target");
+        assert!((target.x - 1.0).abs() < 0.0001);
+        assert!(target.y.abs() < 0.0001);
+    }
+
+    #[test]
+    fn right_click_with_no_selection_is_noop() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+
+        let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &click, &mut world);
+        assert!(world
+            .find_entity(actor)
+            .expect("actor")
+            .move_target_world
+            .is_none());
+    }
+
+    #[test]
+    fn right_click_selected_non_actor_is_ignored() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let non_actor = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "non_actor",
+            },
+        );
+        world.apply_pending();
+        scene.selected_entity = Some(non_actor);
+
+        let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &click, &mut world);
+        assert!(world
+            .find_entity(non_actor)
+            .expect("non_actor")
+            .move_target_world
+            .is_none());
+    }
+
+    #[test]
+    fn actor_moves_to_target_and_clears_it_on_arrival() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        {
+            let entity = world.find_entity_mut(actor).expect("actor");
+            entity.move_target_world = Some(Vec2 { x: 0.2, y: 0.0 });
+        }
+
+        for _ in 0..10 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        }
+
+        let entity = world.find_entity(actor).expect("actor");
+        assert!(entity.move_target_world.is_none());
+        assert!((entity.transform.position.x - 0.2).abs() <= MOVE_ARRIVAL_THRESHOLD);
     }
 }

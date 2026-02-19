@@ -398,3 +398,28 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - `GameplayScene` now maintains `selected_entity: Option<EntityId>`.
   - left click selects entity under cursor; empty click clears selection.
   - gameplay scene now spawns 3 selectable entities for manual verification.
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 12)
+- Added right-click move-order loop with runtime order state stored on entities (not scene-local maps).
+- Input contract expanded in `InputSnapshot`:
+  - `right_click_pressed: bool` (right-press edge, one tick)
+  - builder helper: `with_right_click_pressed(...)`
+- Rendering transform seam expanded:
+  - `screen_to_world_px(camera, window_size, screen_px)` added as strict inverse of `world_to_screen_px(...)`.
+  - exported from `app/rendering/mod.rs`; re-exported upward for current game usage.
+- Runtime entity contract expanded in engine:
+  - `Entity { actor: bool, move_target_world: Option<Vec2> }`
+  - `SceneWorld::spawn_actor(...)` helper added
+  - `SceneWorld::entities_mut()` added for scene-side fixed-tick order stepping
+- Scene debug seam expanded:
+  - `Scene::debug_selected_target(&SceneWorld) -> Option<Vec2>` default method added
+  - `SceneMachine` passthrough now provides selected target for overlay
+- Overlay contract expanded:
+  - new line shows selected actor target as `Target: <x>,<y>` or `Target: idle`
+- Gameplay behavior locked for Ticket 12:
+  - right click with no selection is a no-op
+  - right click only issues move target if selected entity exists and `actor == true`
+  - fixed-tick movement steps entities with `actor == true && move_target_world.is_some()`
+  - target is cleared on arrival threshold

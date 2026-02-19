@@ -242,6 +242,7 @@ pub fn run_app_with_metrics(
                             entity_count: world.entity_count(),
                             content_status: "loaded",
                             selected_entity: scenes.debug_selected_entity_active(),
+                            selected_target: scenes.debug_selected_target_active(&world),
                         });
                         if let Err(error) = renderer.render_world(&world, overlay.as_ref()) {
                             warn!(error = %error, "renderer_draw_failed");
@@ -297,6 +298,8 @@ struct InputCollector {
     cursor_position_px: Option<super::Vec2>,
     left_mouse_is_down: bool,
     left_click_pressed_edge: bool,
+    right_mouse_is_down: bool,
+    right_click_pressed_edge: bool,
     window_width: u32,
     window_height: u32,
 }
@@ -343,11 +346,13 @@ impl InputCollector {
             self.action_states,
             self.cursor_position_px,
             self.left_click_pressed_edge,
+            self.right_click_pressed_edge,
             self.window_width,
             self.window_height,
         );
         self.switch_scene_pressed_edge = false;
         self.left_click_pressed_edge = false;
+        self.right_click_pressed_edge = false;
         snapshot
     }
 
@@ -432,18 +437,26 @@ impl InputCollector {
     }
 
     fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState) {
-        if button != MouseButton::Left {
-            return;
-        }
-
-        match state {
-            ElementState::Pressed => {
-                if !self.left_mouse_is_down {
-                    self.left_click_pressed_edge = true;
+        match button {
+            MouseButton::Left => match state {
+                ElementState::Pressed => {
+                    if !self.left_mouse_is_down {
+                        self.left_click_pressed_edge = true;
+                    }
+                    self.left_mouse_is_down = true;
                 }
-                self.left_mouse_is_down = true;
-            }
-            ElementState::Released => self.left_mouse_is_down = false,
+                ElementState::Released => self.left_mouse_is_down = false,
+            },
+            MouseButton::Right => match state {
+                ElementState::Pressed => {
+                    if !self.right_mouse_is_down {
+                        self.right_click_pressed_edge = true;
+                    }
+                    self.right_mouse_is_down = true;
+                }
+                ElementState::Released => self.right_mouse_is_down = false,
+            },
+            _ => {}
         }
     }
 }
@@ -686,5 +699,28 @@ mod tests {
         let cursor = snapshot.cursor_position_px().expect("cursor");
         assert!((cursor.x - 100.0).abs() < 0.0001);
         assert!((cursor.y - 200.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn right_click_is_edge_triggered_for_single_tick() {
+        let mut input = InputCollector::new(1280, 720);
+        input.handle_mouse_input(MouseButton::Right, ElementState::Pressed);
+        let first = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick();
+
+        assert!(first.right_click_pressed());
+        assert!(!second.right_click_pressed());
+    }
+
+    #[test]
+    fn held_right_click_does_not_repeat_pressed_edge() {
+        let mut input = InputCollector::new(1280, 720);
+        input.handle_mouse_input(MouseButton::Right, ElementState::Pressed);
+        let first = input.snapshot_for_tick();
+        input.handle_mouse_input(MouseButton::Right, ElementState::Pressed);
+        let second = input.snapshot_for_tick();
+
+        assert!(first.right_click_pressed());
+        assert!(!second.right_click_pressed());
     }
 }

@@ -21,6 +21,7 @@ pub struct InputSnapshot {
     actions: ActionStates,
     cursor_position_px: Option<Vec2>,
     left_click_pressed: bool,
+    right_click_pressed: bool,
     window_width: u32,
     window_height: u32,
 }
@@ -36,6 +37,7 @@ impl InputSnapshot {
         actions: ActionStates,
         cursor_position_px: Option<Vec2>,
         left_click_pressed: bool,
+        right_click_pressed: bool,
         window_width: u32,
         window_height: u32,
     ) -> Self {
@@ -45,6 +47,7 @@ impl InputSnapshot {
             actions,
             cursor_position_px,
             left_click_pressed,
+            right_click_pressed,
             window_width,
             window_height,
         }
@@ -77,6 +80,11 @@ impl InputSnapshot {
         self
     }
 
+    pub fn with_right_click_pressed(mut self, right_click_pressed: bool) -> Self {
+        self.right_click_pressed = right_click_pressed;
+        self
+    }
+
     pub fn with_window_size(mut self, window_size: (u32, u32)) -> Self {
         self.window_width = window_size.0;
         self.window_height = window_size.1;
@@ -89,6 +97,10 @@ impl InputSnapshot {
 
     pub fn left_click_pressed(&self) -> bool {
         self.left_click_pressed
+    }
+
+    pub fn right_click_pressed(&self) -> bool {
+        self.right_click_pressed
     }
 
     pub fn window_size(&self) -> (u32, u32) {
@@ -142,6 +154,8 @@ pub struct Entity {
     pub transform: Transform,
     pub renderable: RenderableDesc,
     pub selectable: bool,
+    pub actor: bool,
+    pub move_target_world: Option<Vec2>,
     applied_spawn_order: u64,
 }
 
@@ -171,7 +185,7 @@ pub struct SceneWorld {
 
 impl SceneWorld {
     pub fn spawn(&mut self, transform: Transform, renderable: RenderableDesc) -> EntityId {
-        self.spawn_internal(transform, renderable, false)
+        self.spawn_internal(transform, renderable, false, false)
     }
 
     pub fn spawn_selectable(
@@ -179,7 +193,11 @@ impl SceneWorld {
         transform: Transform,
         renderable: RenderableDesc,
     ) -> EntityId {
-        self.spawn_internal(transform, renderable, true)
+        self.spawn_internal(transform, renderable, true, false)
+    }
+
+    pub fn spawn_actor(&mut self, transform: Transform, renderable: RenderableDesc) -> EntityId {
+        self.spawn_internal(transform, renderable, false, true)
     }
 
     fn spawn_internal(
@@ -187,6 +205,7 @@ impl SceneWorld {
         transform: Transform,
         renderable: RenderableDesc,
         selectable: bool,
+        actor: bool,
     ) -> EntityId {
         let id = self.allocator.allocate();
         self.pending_spawns.push(Entity {
@@ -194,6 +213,8 @@ impl SceneWorld {
             transform,
             renderable,
             selectable,
+            actor,
+            move_target_world: None,
             applied_spawn_order: 0,
         });
         id
@@ -239,6 +260,10 @@ impl SceneWorld {
 
     pub fn entities(&self) -> &[Entity] {
         &self.entities
+    }
+
+    pub fn entities_mut(&mut self) -> &mut [Entity] {
+        &mut self.entities
     }
 
     pub fn find_entity(&self, id: EntityId) -> Option<&Entity> {
@@ -318,6 +343,9 @@ pub trait Scene {
     fn debug_selected_entity(&self) -> Option<EntityId> {
         None
     }
+    fn debug_selected_target(&self, _world: &SceneWorld) -> Option<Vec2> {
+        None
+    }
 }
 
 pub(crate) struct SceneMachine {
@@ -371,6 +399,10 @@ impl SceneMachine {
 
     pub(crate) fn debug_selected_entity_active(&self) -> Option<EntityId> {
         self.active_scene_ref().debug_selected_entity()
+    }
+
+    pub(crate) fn debug_selected_target_active(&self, world: &SceneWorld) -> Option<Vec2> {
+        self.active_scene_ref().debug_selected_target(world)
     }
 
     pub(crate) fn switch_to(&mut self, next_scene: SceneKey, world: &mut SceneWorld) -> bool {
@@ -632,5 +664,23 @@ mod tests {
         let picked =
             world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
         assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn spawn_actor_marks_entity_as_actor_and_without_target() {
+        let mut world = SceneWorld::default();
+        let actor_id = world.spawn_actor(
+            Transform::default(),
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+
+        let actor = world.find_entity(actor_id).expect("actor exists");
+        assert!(actor.actor);
+        assert!(!actor.selectable);
+        assert!(actor.move_target_world.is_none());
     }
 }
