@@ -173,7 +173,8 @@ mod tests {
         input_hash: &str,
     ) {
         let body = format!(
-            "{{\"pack_format_version\":1,\"compiler_version\":\"{compiler_version}\",\"game_version\":\"{game_version}\",\"mod_id\":\"{mod_id}\",\"mod_load_index\":{mod_load_index},\"enabled_mods_hash_sha256_hex\":\"{enabled_mods_hash}\",\"input_hash_sha256_hex\":\"{input_hash}\"}}"
+            "{{\"pack_format_version\":{},\"compiler_version\":\"{compiler_version}\",\"game_version\":\"{game_version}\",\"mod_id\":\"{mod_id}\",\"mod_load_index\":{mod_load_index},\"enabled_mods_hash_sha256_hex\":\"{enabled_mods_hash}\",\"input_hash_sha256_hex\":\"{input_hash}\"}}",
+            CONTENT_PACK_FORMAT_VERSION
         );
         fs::write(path, body).expect("write manifest");
     }

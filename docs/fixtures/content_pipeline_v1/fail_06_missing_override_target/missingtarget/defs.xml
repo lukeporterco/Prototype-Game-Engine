@@ -1,0 +1,6 @@
+<Defs>
+  <EntityDef>
+    <defName>proto.missing_target</defName>
+    <moveSpeed>2.5</moveSpeed>
+  </EntityDef>
+</Defs>

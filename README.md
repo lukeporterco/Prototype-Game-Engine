@@ -133,6 +133,38 @@ If no matching root is found, startup fails fast with instructions.
   - pack header fields match manifest exactly
 - Any cache inconsistency falls back to per-mod rebuild; XML compile errors are still fatal.
 
+## Override Rule MVP (Ticket 10)
+
+- `EntityDef` merge now applies field-level overrides in deterministic load order:
+  - scalar fields are last-writer-wins (`label`, `renderable`, `moveSpeed`)
+  - list field `tags` replaces the prior list when present
+  - omitted fields preserve earlier values
+- A full first definition still requires:
+  - `defName`
+  - `label`
+  - `renderable`
+- Partial defs are treated as override patches; if no earlier target exists, startup fails with a clear `MissingOverrideTarget` compile error.
+- Runtime `EntityArchetype` now includes `tags`.
+- Binary pack schema changed for Ticket 10 and cache invalidation is signaled only by `pack_format_version` (no secondary version gate).
+
+### Enabling Mods Without Code Edits
+
+Set ordered enabled mods via `PROTOGE_ENABLED_MODS` (comma-separated):
+
+PowerShell:
+
+```powershell
+$env:PROTOGE_ENABLED_MODS="betterlabels,replacetags"
+cargo run
+```
+
+Bash/zsh:
+
+```bash
+export PROTOGE_ENABLED_MODS="betterlabels,replacetags"
+cargo run
+```
+
 ## Scenes and Entities
 
 - Two hardcoded in-memory scenes are active.

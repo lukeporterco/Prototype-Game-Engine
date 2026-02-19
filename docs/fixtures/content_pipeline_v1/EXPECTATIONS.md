@@ -137,6 +137,21 @@ Expected error properties:
 3. conflicting types are `EntityDef` vs `ItemDef`.
 4. `mod_id` and `file_path` identify both participating definitions.
 
+### fail_06_missing_override_target
+
+Load order:
+
+1. `missingtarget`
+
+Expected result: FAIL.
+
+Expected error properties:
+
+1. `code` indicates missing override target.
+2. `mod_id = "missingtarget"`.
+3. `file_path` includes `missingtarget/defs.xml`.
+4. message explains this is a partial override with no earlier definition.
+
 ## 3. Invalidation Checks (metadata-focused)
 
 These checks are not separate XML fixtures; they are required behavior checks over any valid fixture set.

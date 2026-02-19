@@ -6,6 +6,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 const CAMERA_SPEED_UNITS_PER_SECOND: f32 = 6.0;
+const ENABLED_MODS_ENV_VAR: &str = "PROTOGE_ENABLED_MODS";
 
 struct GameplayScene {
     scene_name: &'static str,
@@ -183,7 +184,7 @@ fn main() {
     let scene_b = GameplayScene::new("B", SceneKey::A, Vec2 { x: 2.0, y: 2.0 });
     let config = LoopConfig {
         content_plan_request: ContentPlanRequest {
-            enabled_mods: Vec::new(),
+            enabled_mods: parse_enabled_mods_from_env(),
             compiler_version: env!("CARGO_PKG_VERSION").to_string(),
             game_version: env!("CARGO_PKG_VERSION").to_string(),
         },
@@ -204,6 +205,19 @@ fn init_tracing() {
         .with_thread_names(true)
         .compact()
         .init();
+}
+
+fn parse_enabled_mods_from_env() -> Vec<String> {
+    std::env::var(ENABLED_MODS_ENV_VAR)
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

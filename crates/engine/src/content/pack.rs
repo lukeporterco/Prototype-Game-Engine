@@ -8,10 +8,9 @@ use thiserror::Error;
 use crate::app::RenderableKind;
 
 use super::atomic_io::write_bytes_atomic;
-use super::compiler::CompiledEntityDef;
+use super::compiler::{CompiledEntityDef, SourceLocation};
 
 const MAGIC: &[u8; 4] = b"PGCP";
-const HEADER_VERSION: u16 = 1;
 
 #[derive(Debug, Clone)]
 pub struct ContentPackMeta {
@@ -27,9 +26,10 @@ pub struct ContentPackMeta {
 #[derive(Debug, Clone)]
 pub struct PackedEntityDef {
     pub def_name: String,
-    pub label: String,
-    pub renderable: RenderableKind,
-    pub move_speed: f32,
+    pub label: Option<String>,
+    pub renderable: Option<RenderableKind>,
+    pub move_speed: Option<f32>,
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +68,6 @@ pub fn write_content_pack_v1(
     let mut bytes = Vec::<u8>::new();
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&meta.pack_format_version.to_le_bytes());
-    bytes.extend_from_slice(&HEADER_VERSION.to_le_bytes());
     write_string(&mut bytes, &meta.mod_id, path)?;
     bytes.extend_from_slice(&meta.mod_load_index.to_le_bytes());
     write_string(&mut bytes, &meta.compiler_version, path)?;
@@ -99,11 +98,6 @@ pub fn read_content_pack_v1(path: &Path) -> Result<ContentPackV1, ContentPackErr
     }
 
     let pack_format_version = read_u16(&bytes, &mut cursor, path)?;
-    let header_version = read_u16(&bytes, &mut cursor, path)?;
-    if header_version != HEADER_VERSION {
-        return Err(invalid_format(path, "unsupported header version"));
-    }
-
     let mod_id = read_string(&bytes, &mut cursor, path)?;
     let mod_load_index = read_u32(&bytes, &mut cursor, path)?;
     let compiler_version = read_string(&bytes, &mut cursor, path)?;
@@ -142,12 +136,42 @@ fn encode_payload(records: &[CompiledEntityDef]) -> Result<Vec<u8>, ContentPackE
     let mut payload = Vec::<u8>::new();
     for record in records {
         write_string(&mut payload, &record.def_name, Path::new("<payload>"))?;
-        write_string(&mut payload, &record.label, Path::new("<payload>"))?;
-        let kind = match record.renderable {
-            RenderableKind::Placeholder => 0u8,
-        };
-        payload.push(kind);
-        payload.extend_from_slice(&record.move_speed.to_le_bytes());
+        let mut flags = 0u8;
+        if record.label.is_some() {
+            flags |= 1 << 0;
+        }
+        if record.renderable.is_some() {
+            flags |= 1 << 1;
+        }
+        if record.move_speed.is_some() {
+            flags |= 1 << 2;
+        }
+        if record.tags.is_some() {
+            flags |= 1 << 3;
+        }
+        payload.push(flags);
+
+        if let Some(label) = &record.label {
+            write_string(&mut payload, label, Path::new("<payload>"))?;
+        }
+        if let Some(renderable) = record.renderable {
+            let kind = match renderable {
+                RenderableKind::Placeholder => 0u8,
+            };
+            payload.push(kind);
+        }
+        if let Some(move_speed) = record.move_speed {
+            payload.extend_from_slice(&move_speed.to_le_bytes());
+        }
+        if let Some(tags) = &record.tags {
+            if tags.len() > u16::MAX as usize {
+                return Err(invalid_format(path_for_payload(), "too many tags"));
+            }
+            payload.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+            for tag in tags {
+                write_string(&mut payload, tag, path_for_payload())?;
+            }
+        }
     }
     Ok(payload)
 }
@@ -161,24 +185,52 @@ fn decode_payload(
     let mut records = Vec::<PackedEntityDef>::with_capacity(expected_count);
     for _ in 0..expected_count {
         let def_name = read_string(payload, &mut cursor, path)?;
-        let label = read_string(payload, &mut cursor, path)?;
-        let kind = *read_exact(payload, &mut cursor, 1, path)?
+        let flags = *read_exact(payload, &mut cursor, 1, path)?
             .first()
-            .ok_or_else(|| invalid_format(path, "missing renderable kind"))?;
-        let renderable = match kind {
-            0 => RenderableKind::Placeholder,
-            _ => return Err(invalid_format(path, "invalid renderable kind")),
+            .ok_or_else(|| invalid_format(path, "missing field flags"))?;
+
+        let label = if flags & (1 << 0) != 0 {
+            Some(read_string(payload, &mut cursor, path)?)
+        } else {
+            None
         };
-        let move_speed = f32::from_le_bytes(
-            read_exact(payload, &mut cursor, 4, path)?
-                .try_into()
-                .map_err(|_| invalid_format(path, "invalid f32 encoding"))?,
-        );
+        let renderable = if flags & (1 << 1) != 0 {
+            let kind = *read_exact(payload, &mut cursor, 1, path)?
+                .first()
+                .ok_or_else(|| invalid_format(path, "missing renderable kind"))?;
+            Some(match kind {
+                0 => RenderableKind::Placeholder,
+                _ => return Err(invalid_format(path, "invalid renderable kind")),
+            })
+        } else {
+            None
+        };
+        let move_speed = if flags & (1 << 2) != 0 {
+            Some(f32::from_le_bytes(
+                read_exact(payload, &mut cursor, 4, path)?
+                    .try_into()
+                    .map_err(|_| invalid_format(path, "invalid f32 encoding"))?,
+            ))
+        } else {
+            None
+        };
+        let tags = if flags & (1 << 3) != 0 {
+            let count = read_u16(payload, &mut cursor, path)? as usize;
+            let mut out = Vec::<String>::with_capacity(count);
+            for _ in 0..count {
+                out.push(read_string(payload, &mut cursor, path)?);
+            }
+            Some(out)
+        } else {
+            None
+        };
+
         records.push(PackedEntityDef {
             def_name,
             label,
             renderable,
             move_speed,
+            tags,
         });
     }
     if cursor != payload.len() {
@@ -295,18 +347,40 @@ fn invalid_format(path: &Path, message: &str) -> ContentPackError {
     }
 }
 
+fn path_for_payload() -> &'static Path {
+    Path::new("<payload>")
+}
+
+pub fn compiled_from_packed(
+    packed: PackedEntityDef,
+    mod_id: &str,
+    source_path: &Path,
+) -> CompiledEntityDef {
+    CompiledEntityDef {
+        def_name: packed.def_name,
+        label: packed.label,
+        renderable: packed.renderable,
+        move_speed: packed.move_speed,
+        tags: packed.tags,
+        source_mod_id: mod_id.to_string(),
+        source_file_path: source_path.to_path_buf(),
+        source_location: None::<SourceLocation>,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::content::manifest::CONTENT_PACK_FORMAT_VERSION;
 
     #[test]
     fn pack_roundtrip_preserves_records() {
         let temp = TempDir::new().expect("temp");
         let path = temp.path().join("a.pack");
         let meta = ContentPackMeta {
-            pack_format_version: 1,
+            pack_format_version: CONTENT_PACK_FORMAT_VERSION,
             compiler_version: "1".to_string(),
             game_version: "1".to_string(),
             mod_id: "base".to_string(),
@@ -316,14 +390,19 @@ mod tests {
         };
         let records = vec![CompiledEntityDef {
             def_name: "proto.player".to_string(),
-            label: "Player".to_string(),
-            renderable: RenderableKind::Placeholder,
-            move_speed: 5.0,
+            label: Some("Player".to_string()),
+            renderable: Some(RenderableKind::Placeholder),
+            move_speed: Some(5.0),
+            tags: Some(vec!["colonist".to_string()]),
+            source_mod_id: "base".to_string(),
+            source_file_path: Path::new("defs.xml").to_path_buf(),
+            source_location: None,
         }];
         write_content_pack_v1(&path, &meta, &records).expect("write");
         let loaded = read_content_pack_v1(&path).expect("read");
         assert_eq!(loaded.meta.mod_id, "base");
         assert_eq!(loaded.records.len(), 1);
         assert_eq!(loaded.records[0].def_name, "proto.player");
+        assert_eq!(loaded.records[0].tags, Some(vec!["colonist".to_string()]));
     }
 }

@@ -342,3 +342,26 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - cache read/validation failures are recoverable per mod (recompile)
   - XML compile failures remain fatal and fail startup
   - atomic write failures are fatal for startup
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 10)
+- Override merge semantics for `EntityDef` moved from whole-def replacement to field-level patch merge.
+- Locked override rules:
+  - scalar fields (`label`, `renderable`, `moveSpeed`) are last-writer-wins in mod load order
+  - list field (`tags`) is full replacement when provided
+  - omitted fields keep previously merged values
+- Missing target behavior locked:
+  - partial override with no earlier definition now fails fast with `MissingOverrideTarget`
+  - error includes mod id + file path + best-effort location
+- `label` rule locked:
+  - full initial definition still requires `label` and `renderable` (with `defName`)
+- Runtime archetype model updated:
+  - `EntityArchetype` now carries `tags: Vec<String>`
+- Content pack schema updated for optional patch fields + tags.
+- Versioning decision locked:
+  - cache/schema change is signaled only by `pack_format_version` (single source of truth)
+  - no separate header-version bump path is used
+- Game startup config QoL:
+  - `PROTOGE_ENABLED_MODS` (comma-separated, ordered) now feeds `ContentPlanRequest.enabled_mods`
+  - allows override verification without code edits.

@@ -12,6 +12,7 @@ pub struct EntityArchetype {
     pub label: String,
     pub renderable: RenderableKind,
     pub move_speed: f32,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone)]

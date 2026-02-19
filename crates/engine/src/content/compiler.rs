@@ -30,6 +30,7 @@ pub enum ContentErrorCode {
     MissingField,
     InvalidValue,
     DuplicateDefInMod,
+    MissingOverrideTarget,
 }
 
 #[derive(Debug, Clone)]
@@ -71,9 +72,21 @@ impl std::error::Error for ContentCompileError {}
 #[derive(Debug, Clone)]
 pub struct CompiledEntityDef {
     pub def_name: String,
-    pub label: String,
-    pub renderable: RenderableKind,
-    pub move_speed: f32,
+    pub label: Option<String>,
+    pub renderable: Option<RenderableKind>,
+    pub move_speed: Option<f32>,
+    pub tags: Option<Vec<String>>,
+    pub source_mod_id: String,
+    pub source_file_path: PathBuf,
+    pub source_location: Option<SourceLocation>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct MergedEntityDef {
+    label: Option<String>,
+    renderable: Option<RenderableKind>,
+    move_speed: Option<f32>,
+    tags: Option<Vec<String>>,
 }
 
 pub fn compile_mod_entity_defs(
@@ -115,29 +128,85 @@ pub fn compile_def_database(
 ) -> Result<DefDatabase, ContentCompileError> {
     let sources = discover_mod_sources(app_paths, request)
         .map_err(|error| map_discovery_error(error, &app_paths.root))?;
-    let mut merged = BTreeMap::<String, CompiledEntityDef>::new();
+    let mut defs = Vec::<CompiledEntityDef>::new();
     for source in sources {
-        let defs = compile_mod_entity_defs(&source.source_dir, &source.mod_id)?;
-        for def in defs {
-            // Cross-mod duplicates are intentional override points (last mod wins).
-            merged.insert(def.def_name.clone(), def);
-        }
+        defs.extend(compile_mod_entity_defs(&source.source_dir, &source.mod_id)?);
     }
-    Ok(def_database_from_merged(merged))
+    def_database_from_compiled_defs(defs)
 }
 
-pub(crate) fn def_database_from_merged(merged: BTreeMap<String, CompiledEntityDef>) -> DefDatabase {
+pub(crate) fn def_database_from_compiled_defs(
+    defs: Vec<CompiledEntityDef>,
+) -> Result<DefDatabase, ContentCompileError> {
+    let merged = merge_compiled_entity_defs(defs)?;
+    Ok(materialize_database(merged))
+}
+
+fn merge_compiled_entity_defs(
+    defs: Vec<CompiledEntityDef>,
+) -> Result<BTreeMap<String, MergedEntityDef>, ContentCompileError> {
+    let mut merged = BTreeMap::<String, MergedEntityDef>::new();
+    for def in defs {
+        match merged.get_mut(&def.def_name) {
+            Some(existing) => apply_patch(existing, &def),
+            None => {
+                if def.label.is_none() || def.renderable.is_none() {
+                    return Err(missing_override_target_error(&def));
+                }
+                let mut initial = MergedEntityDef::default();
+                apply_patch(&mut initial, &def);
+                merged.insert(def.def_name.clone(), initial);
+            }
+        }
+    }
+    Ok(merged)
+}
+
+fn apply_patch(target: &mut MergedEntityDef, patch: &CompiledEntityDef) {
+    if let Some(label) = &patch.label {
+        target.label = Some(label.clone());
+    }
+    if let Some(renderable) = patch.renderable {
+        target.renderable = Some(renderable);
+    }
+    if let Some(move_speed) = patch.move_speed {
+        target.move_speed = Some(move_speed);
+    }
+    if let Some(tags) = &patch.tags {
+        target.tags = Some(tags.clone());
+    }
+}
+
+fn materialize_database(merged: BTreeMap<String, MergedEntityDef>) -> DefDatabase {
     let defs = merged
-        .into_values()
-        .map(|def| EntityArchetype {
+        .into_iter()
+        .map(|(def_name, merged)| EntityArchetype {
             id: EntityDefId(0),
-            def_name: def.def_name,
-            label: def.label,
-            renderable: def.renderable,
-            move_speed: def.move_speed,
+            def_name,
+            label: merged
+                .label
+                .expect("merged defs always include label after validation"),
+            renderable: merged
+                .renderable
+                .expect("merged defs always include renderable after validation"),
+            move_speed: merged.move_speed.unwrap_or(5.0),
+            tags: merged.tags.unwrap_or_default(),
         })
         .collect::<Vec<_>>();
     DefDatabase::from_entity_defs(defs)
+}
+
+fn missing_override_target_error(def: &CompiledEntityDef) -> ContentCompileError {
+    ContentCompileError {
+        code: ContentErrorCode::MissingOverrideTarget,
+        message: format!(
+            "EntityDef '{}' is a partial override but no earlier definition exists; define it in base or an earlier mod, or provide full fields (label, renderable)",
+            def.def_name
+        ),
+        mod_id: def.source_mod_id.clone(),
+        file_path: def.source_file_path.clone(),
+        location: def.source_location,
+    }
 }
 
 fn parse_defs_document(
@@ -200,6 +269,7 @@ fn parse_entity_def(
     let mut label = None::<String>;
     let mut renderable = None::<RenderableKind>;
     let mut move_speed = None::<f32>;
+    let mut tags = None::<Vec<String>>;
 
     for field in node.children().filter(|child| child.is_element()) {
         let field_name = field.tag_name().name().to_string();
@@ -261,8 +331,7 @@ fn parse_entity_def(
                 }
                 move_speed = Some(parsed);
             }
-            // Accepted for compatibility with existing Ticket 6 fixtures.
-            "tags" => {}
+            "tags" => tags = Some(parse_tags(mod_id, file_path, doc, field)?),
             _ => {
                 return Err(error_at_node(
                     ContentErrorCode::UnknownField,
@@ -286,33 +355,46 @@ fn parse_entity_def(
             node,
         ));
     };
-    let Some(label) = label else {
-        return Err(error_at_node(
-            ContentErrorCode::MissingField,
-            "missing required field <label> in <EntityDef>".to_string(),
-            mod_id,
-            file_path,
-            doc,
-            node,
-        ));
-    };
-    let Some(renderable) = renderable else {
-        return Err(error_at_node(
-            ContentErrorCode::MissingField,
-            "missing required field <renderable> in <EntityDef>".to_string(),
-            mod_id,
-            file_path,
-            doc,
-            node,
-        ));
-    };
-
+    let pos = doc.text_pos_at(node.range().start);
     Ok(CompiledEntityDef {
         def_name,
         label,
         renderable,
-        move_speed: move_speed.unwrap_or(5.0),
+        move_speed,
+        tags,
+        source_mod_id: mod_id.to_string(),
+        source_file_path: file_path.to_path_buf(),
+        source_location: Some(SourceLocation {
+            line: pos.row as usize,
+            column: pos.col as usize,
+        }),
     })
+}
+
+fn parse_tags(
+    mod_id: &str,
+    file_path: &Path,
+    doc: &Document<'_>,
+    tags_node: Node<'_, '_>,
+) -> Result<Vec<String>, ContentCompileError> {
+    let mut tags = Vec::<String>::new();
+    for child in tags_node.children().filter(|child| child.is_element()) {
+        if child.tag_name().name() != "li" {
+            return Err(error_at_node(
+                ContentErrorCode::UnknownField,
+                format!(
+                    "unknown field <{}> inside <tags>; expected <li>",
+                    child.tag_name().name()
+                ),
+                mod_id,
+                file_path,
+                doc,
+                child,
+            ));
+        }
+        tags.push(required_text(mod_id, file_path, doc, child, "li")?);
+    }
+    Ok(tags)
 }
 
 fn required_text(
@@ -442,7 +524,6 @@ fn map_discovery_error(error: ContentPlanError, root: &Path) -> ContentCompileEr
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
 
@@ -515,6 +596,19 @@ mod tests {
     }
 
     #[test]
+    fn missing_label_for_full_definition_fails() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>x</defName><renderable>Placeholder</renderable></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::MissingOverrideTarget);
+        assert_eq!(err.mod_id, "base");
+    }
+
+    #[test]
     fn missing_def_name_reports_mod_file_and_location() {
         let temp = TempDir::new().expect("temp");
         let app = setup_app_paths(temp.path());
@@ -584,17 +678,17 @@ mod tests {
     }
 
     #[test]
-    fn cross_mod_duplicate_is_last_mod_wins() {
+    fn cross_mod_duplicate_is_last_mod_wins_and_tags_preserve_when_omitted() {
         let temp = TempDir::new().expect("temp");
         let app = setup_app_paths(temp.path());
         fs::create_dir_all(app.mods_dir.join("moda")).expect("mkdir");
         write_file(
             &app.base_content_dir.join("defs.xml"),
-            r#"<Defs><EntityDef><defName>proto.player</defName><label>Base</label><renderable>Placeholder</renderable><moveSpeed>1.0</moveSpeed></EntityDef></Defs>"#,
+            r#"<Defs><EntityDef><defName>proto.player</defName><label>Base</label><renderable>Placeholder</renderable><moveSpeed>1.0</moveSpeed><tags><li>human</li></tags></EntityDef></Defs>"#,
         );
         write_file(
             &app.mods_dir.join("moda").join("defs.xml"),
-            r#"<Defs><EntityDef><defName>proto.player</defName><label>Mod</label><renderable>Placeholder</renderable><moveSpeed>7.0</moveSpeed></EntityDef></Defs>"#,
+            r#"<Defs><EntityDef><defName>proto.player</defName><label>Mod</label><moveSpeed>7.0</moveSpeed></EntityDef></Defs>"#,
         );
         let db = compile_def_database(
             &app,
@@ -609,6 +703,47 @@ mod tests {
         let def = db.entity_def(id).expect("def");
         assert_eq!(def.label, "Mod");
         assert!((def.move_speed - 7.0).abs() < f32::EPSILON);
+        assert_eq!(def.tags, vec!["human".to_string()]);
+    }
+
+    #[test]
+    fn list_replace_overrides_previous_list() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        fs::create_dir_all(app.mods_dir.join("moda")).expect("mkdir");
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>proto.player</defName><label>Base</label><renderable>Placeholder</renderable><tags><li>one</li><li>two</li></tags></EntityDef></Defs>"#,
+        );
+        write_file(
+            &app.mods_dir.join("moda").join("defs.xml"),
+            r#"<Defs><EntityDef><defName>proto.player</defName><tags><li>replaced</li></tags></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(
+            &app,
+            &ContentPlanRequest {
+                enabled_mods: vec!["moda".to_string()],
+                compiler_version: "dev".to_string(),
+                game_version: "dev".to_string(),
+            },
+        )
+        .expect("compile");
+        let id = db.entity_def_id_by_name("proto.player").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(def.tags, vec!["replaced".to_string()]);
+    }
+
+    #[test]
+    fn partial_override_without_target_fails_clearly() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>proto.ghost</defName><moveSpeed>3.0</moveSpeed></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::MissingOverrideTarget);
+        assert!(err.message.contains("partial override"));
     }
 
     #[test]
@@ -634,7 +769,12 @@ mod tests {
             &app.base_content_dir,
         );
         let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
-        assert!(db.entity_def_id_by_name("proto.player").is_some());
+        let id = db.entity_def_id_by_name("proto.player").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(
+            def.tags,
+            vec!["colonist".to_string(), "starter".to_string()]
+        );
     }
 
     #[test]
@@ -679,32 +819,5 @@ mod tests {
         .expect_err("error");
         assert_eq!(err.code, ContentErrorCode::UnknownField);
         assert_eq!(err.mod_id, "unknownfield");
-    }
-
-    #[test]
-    fn def_database_from_merged_sorts_ids_by_def_name() {
-        let mut merged = BTreeMap::<String, CompiledEntityDef>::new();
-        merged.insert(
-            "z".to_string(),
-            CompiledEntityDef {
-                def_name: "z".to_string(),
-                label: "Z".to_string(),
-                renderable: RenderableKind::Placeholder,
-                move_speed: 1.0,
-            },
-        );
-        merged.insert(
-            "a".to_string(),
-            CompiledEntityDef {
-                def_name: "a".to_string(),
-                label: "A".to_string(),
-                renderable: RenderableKind::Placeholder,
-                move_speed: 1.0,
-            },
-        );
-        let db = def_database_from_merged(merged);
-        let a = db.entity_def_id_by_name("a").expect("a");
-        let z = db.entity_def_id_by_name("z").expect("z");
-        assert!(a.0 < z.0);
     }
 }

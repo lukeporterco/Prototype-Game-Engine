@@ -1,12 +1,11 @@
-use std::collections::BTreeMap;
-
 use thiserror::Error;
 use tracing::{info, warn};
 
 use crate::AppPaths;
 
 use super::compiler::{
-    compile_mod_entity_defs, def_database_from_merged, CompiledEntityDef, ContentCompileError,
+    compile_mod_entity_defs, def_database_from_compiled_defs, CompiledEntityDef,
+    ContentCompileError,
 };
 use super::database::DefDatabase;
 use super::manifest::{
@@ -14,7 +13,8 @@ use super::manifest::{
     CONTENT_PACK_FORMAT_VERSION,
 };
 use super::pack::{
-    read_content_pack_v1, write_content_pack_v1, ContentPackError, ContentPackMeta, PackedEntityDef,
+    compiled_from_packed, read_content_pack_v1, write_content_pack_v1, ContentPackError,
+    ContentPackMeta,
 };
 use super::planner::build_compile_plan;
 use super::types::{CompileAction, ContentPlanError, ContentPlanRequest, ModCompileDecision};
@@ -47,7 +47,7 @@ pub fn build_or_load_def_database(
             "content_compile_plan_decision"
         );
     }
-    let mut merged = BTreeMap::<String, CompiledEntityDef>::new();
+    let mut merged = Vec::<CompiledEntityDef>::new();
 
     for decision in &compile_plan.decisions {
         let defs = match decision.action {
@@ -78,9 +78,7 @@ pub fn build_or_load_def_database(
             },
         };
 
-        for def in defs {
-            merged.insert(def.def_name.clone(), def);
-        }
+        merged.extend(defs);
     }
 
     let summary = compile_plan.summary;
@@ -93,7 +91,7 @@ pub fn build_or_load_def_database(
         "content_pipeline_summary"
     );
 
-    Ok(def_database_from_merged(merged))
+    Ok(def_database_from_compiled_defs(merged)?)
 }
 
 fn compile_and_write_mod(
@@ -128,7 +126,11 @@ fn try_load_cached_mod(
         .map_err(|error| format!("failed to read pack: {error}"))?;
     validate_pack_meta_matches_manifest(&pack.meta, &manifest)?;
 
-    Ok(pack.records.into_iter().map(compiled_from_packed).collect())
+    Ok(pack
+        .records
+        .into_iter()
+        .map(|packed| compiled_from_packed(packed, &decision.mod_id, &decision.pack_path))
+        .collect())
 }
 
 fn expected_manifest(
@@ -213,15 +215,6 @@ fn validate_pack_meta_matches_manifest(
         return Err("pack header input_hash mismatch vs manifest".to_string());
     }
     Ok(())
-}
-
-fn compiled_from_packed(packed: PackedEntityDef) -> CompiledEntityDef {
-    CompiledEntityDef {
-        def_name: packed.def_name,
-        label: packed.label,
-        renderable: packed.renderable,
-        move_speed: packed.move_speed,
-    }
 }
 
 #[cfg(test)]
@@ -336,7 +329,7 @@ mod tests {
 
         let base_pack = app.cache_dir.join("content_packs").join("base.pack");
         let mut bytes = fs::read(&base_pack).expect("read base pack");
-        bytes[14] = 1; // corrupt mod_load_index in header (base should be 0)
+        bytes[12] = 1; // corrupt mod_load_index in header (base should be 0)
         fs::write(&base_pack, &bytes).expect("write corrupt base pack");
 
         let _ = build_or_load_def_database(&app, &req).expect("rebuild");
