@@ -23,6 +23,8 @@ pub struct InputSnapshot {
     cursor_position_px: Option<Vec2>,
     left_click_pressed: bool,
     right_click_pressed: bool,
+    save_pressed: bool,
+    load_pressed: bool,
     window_width: u32,
     window_height: u32,
 }
@@ -39,6 +41,8 @@ impl InputSnapshot {
         cursor_position_px: Option<Vec2>,
         left_click_pressed: bool,
         right_click_pressed: bool,
+        save_pressed: bool,
+        load_pressed: bool,
         window_width: u32,
         window_height: u32,
     ) -> Self {
@@ -49,6 +53,8 @@ impl InputSnapshot {
             cursor_position_px,
             left_click_pressed,
             right_click_pressed,
+            save_pressed,
+            load_pressed,
             window_width,
             window_height,
         }
@@ -86,6 +92,16 @@ impl InputSnapshot {
         self
     }
 
+    pub fn with_save_pressed(mut self, save_pressed: bool) -> Self {
+        self.save_pressed = save_pressed;
+        self
+    }
+
+    pub fn with_load_pressed(mut self, load_pressed: bool) -> Self {
+        self.load_pressed = load_pressed;
+        self
+    }
+
     pub fn with_window_size(mut self, window_size: (u32, u32)) -> Self {
         self.window_width = window_size.0;
         self.window_height = window_size.1;
@@ -102,6 +118,14 @@ impl InputSnapshot {
 
     pub fn right_click_pressed(&self) -> bool {
         self.right_click_pressed
+    }
+
+    pub fn save_pressed(&self) -> bool {
+        self.save_pressed
+    }
+
+    pub fn load_pressed(&self) -> bool {
+        self.load_pressed
     }
 
     pub fn window_size(&self) -> (u32, u32) {

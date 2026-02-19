@@ -532,3 +532,29 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - uses clipping-safe per-pixel writes with checked indexing
   - handles zero/tiny viewports without panic
 - No content pipeline, renderable type, or public API contract changes.
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 16)
+- Added save/load v0 key seam in engine input:
+  - `F5` save edge
+  - `F9` load edge
+  - `InputSnapshot` now includes `save_pressed` and `load_pressed` getters/builders.
+- Save/load implementation is game-local (no new engine-wide save API).
+- Save file contract:
+  - JSON format with `save_version` integer
+  - per-scene files under `cache/saves/`:
+    - `scene_a.save.json`
+    - `scene_b.save.json`
+- Schema is runtime-focused:
+  - camera position
+  - entity runtime state (transform, selectable/actor, move target, interaction target, job state, interactable runtime fields)
+  - selected/player entity refs and `resource_count`
+  - references use **saved entity indices** for remap.
+- Load safety contract:
+  - parse, version, scene key, and all index refs are validated **before** clearing/mutating world/scene state.
+- Reconstruction contract:
+  - static renderable/config is rebuilt from defs/archetypes when needed
+    - actors -> `proto.player` archetype renderable/move speed
+    - interactables -> `proto.resource_pile` archetype renderable
+  - non-role entities use placeholder renderable fallback.

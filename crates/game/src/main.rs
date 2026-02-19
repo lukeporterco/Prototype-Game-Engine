@@ -1,10 +1,15 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+
 use engine::{
-    run_app, screen_to_world_px, ContentPlanRequest, DebugInfoSnapshot, DebugJobState,
-    EntityArchetype, EntityId, InputAction, InputSnapshot, Interactable, InteractableKind,
-    JobState, LoopConfig, RenderableDesc, Scene, SceneCommand, SceneKey, SceneWorld, Transform,
-    Vec2,
+    resolve_app_paths, run_app, screen_to_world_px, ContentPlanRequest, DebugInfoSnapshot,
+    DebugJobState, EntityArchetype, EntityId, InputAction, InputSnapshot, Interactable,
+    InteractableKind, JobState, LoopConfig, RenderableDesc, RenderableKind, Scene, SceneCommand,
+    SceneKey, SceneWorld, Transform, Vec2,
 };
-use tracing::{error, info};
+use serde::{Deserialize, Serialize};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 const CAMERA_SPEED_UNITS_PER_SECOND: f32 = 6.0;
@@ -13,6 +18,92 @@ const JOB_DURATION_SECONDS: f32 = 2.0;
 const RESOURCE_PILE_INTERACTION_RADIUS: f32 = 0.75;
 const RESOURCE_PILE_STARTING_USES: u32 = 3;
 const ENABLED_MODS_ENV_VAR: &str = "PROTOGE_ENABLED_MODS";
+const SAVE_VERSION: u32 = 1;
+const SCENE_A_SAVE_FILE: &str = "scene_a.save.json";
+const SCENE_B_SAVE_FILE: &str = "scene_b.save.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SavedSceneKey {
+    A,
+    B,
+}
+
+impl SavedSceneKey {
+    fn from_scene_key(scene_key: SceneKey) -> Self {
+        match scene_key {
+            SceneKey::A => Self::A,
+            SceneKey::B => Self::B,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct SavedVec2 {
+    x: f32,
+    y: f32,
+}
+
+impl SavedVec2 {
+    fn from_vec2(value: Vec2) -> Self {
+        Self {
+            x: value.x,
+            y: value.y,
+        }
+    }
+
+    fn to_vec2(self) -> Vec2 {
+        Vec2 {
+            x: self.x,
+            y: self.y,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SavedInteractableKind {
+    ResourcePile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct SavedInteractableRuntime {
+    kind: SavedInteractableKind,
+    interaction_radius: f32,
+    remaining_uses: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+enum SavedJobState {
+    Idle,
+    Working {
+        target_index: usize,
+        remaining_time: f32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SavedEntityRuntime {
+    position: SavedVec2,
+    rotation_radians: Option<f32>,
+    selectable: bool,
+    actor: bool,
+    move_target_world: Option<SavedVec2>,
+    interaction_target_index: Option<usize>,
+    job_state: SavedJobState,
+    interactable: Option<SavedInteractableRuntime>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SaveGame {
+    save_version: u32,
+    scene_key: SavedSceneKey,
+    camera_position: SavedVec2,
+    selected_entity_index: Option<usize>,
+    player_entity_index: Option<usize>,
+    resource_count: u32,
+    entities: Vec<SavedEntityRuntime>,
+}
+
+type SaveLoadResult<T> = Result<T, String>;
 
 struct GameplayScene {
     scene_name: &'static str,
@@ -39,6 +130,247 @@ impl GameplayScene {
             interactable_cache: Vec::new(),
             completed_target_ids: Vec::new(),
         }
+    }
+
+    fn scene_key(&self) -> SceneKey {
+        match self.switch_target {
+            SceneKey::A => SceneKey::B,
+            SceneKey::B => SceneKey::A,
+        }
+    }
+
+    fn save_file_path(&self) -> SaveLoadResult<PathBuf> {
+        let app_paths =
+            resolve_app_paths().map_err(|error| format!("resolve app paths: {error}"))?;
+        let file_name = match self.scene_key() {
+            SceneKey::A => SCENE_A_SAVE_FILE,
+            SceneKey::B => SCENE_B_SAVE_FILE,
+        };
+        Ok(app_paths.cache_dir.join("saves").join(file_name))
+    }
+
+    fn save_to_disk(&self, world: &SceneWorld) -> SaveLoadResult<PathBuf> {
+        let save = self.build_save_game(world);
+        let path = self.save_file_path()?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("create save dir '{}': {error}", parent.display()))?;
+        }
+        let json = serde_json::to_string_pretty(&save)
+            .map_err(|error| format!("encode save json: {error}"))?;
+        fs::write(&path, json)
+            .map_err(|error| format!("write save '{}': {error}", path.display()))?;
+        Ok(path)
+    }
+
+    fn load_and_validate_save(&self, expected_scene: SavedSceneKey) -> SaveLoadResult<SaveGame> {
+        let path = self.save_file_path()?;
+        let raw = fs::read_to_string(&path)
+            .map_err(|error| format!("read save '{}': {error}", path.display()))?;
+        let save: SaveGame =
+            serde_json::from_str(&raw).map_err(|error| format!("parse save json: {error}"))?;
+        Self::validate_save_game(&save, expected_scene)?;
+        Ok(save)
+    }
+
+    fn validate_save_game(save: &SaveGame, expected_scene: SavedSceneKey) -> SaveLoadResult<()> {
+        if save.save_version != SAVE_VERSION {
+            return Err(format!(
+                "save version mismatch: expected {}, got {}",
+                SAVE_VERSION, save.save_version
+            ));
+        }
+        if save.scene_key != expected_scene {
+            return Err(format!(
+                "save scene mismatch: expected {:?}, got {:?}",
+                expected_scene, save.scene_key
+            ));
+        }
+
+        let len = save.entities.len();
+        let validate_idx = |label: &str, index: Option<usize>| -> SaveLoadResult<()> {
+            if let Some(idx) = index {
+                if idx >= len {
+                    return Err(format!(
+                        "invalid {label} index {idx} for entity count {len}"
+                    ));
+                }
+            }
+            Ok(())
+        };
+
+        validate_idx("selected_entity", save.selected_entity_index)?;
+        validate_idx("player_entity", save.player_entity_index)?;
+        for (entity_index, entity) in save.entities.iter().enumerate() {
+            validate_idx("interaction_target", entity.interaction_target_index)?;
+            if let SavedJobState::Working { target_index, .. } = entity.job_state {
+                if target_index >= len {
+                    return Err(format!(
+                        "invalid job target index {target_index} on entity {entity_index} for entity count {len}"
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn build_save_game(&self, world: &SceneWorld) -> SaveGame {
+        let mut index_by_id = HashMap::new();
+        for (index, entity) in world.entities().iter().enumerate() {
+            index_by_id.insert(entity.id, index);
+        }
+
+        let entities = world
+            .entities()
+            .iter()
+            .map(|entity| SavedEntityRuntime {
+                position: SavedVec2::from_vec2(entity.transform.position),
+                rotation_radians: entity.transform.rotation_radians,
+                selectable: entity.selectable,
+                actor: entity.actor,
+                move_target_world: entity.move_target_world.map(SavedVec2::from_vec2),
+                interaction_target_index: entity
+                    .interaction_target
+                    .and_then(|id| index_by_id.get(&id).copied()),
+                job_state: match entity.job_state {
+                    JobState::Idle => SavedJobState::Idle,
+                    JobState::Working {
+                        target,
+                        remaining_time,
+                    } => index_by_id
+                        .get(&target)
+                        .copied()
+                        .map(|target_index| SavedJobState::Working {
+                            target_index,
+                            remaining_time,
+                        })
+                        .unwrap_or(SavedJobState::Idle),
+                },
+                interactable: entity
+                    .interactable
+                    .map(|interactable| SavedInteractableRuntime {
+                        kind: match interactable.kind {
+                            InteractableKind::ResourcePile => SavedInteractableKind::ResourcePile,
+                        },
+                        interaction_radius: interactable.interaction_radius,
+                        remaining_uses: interactable.remaining_uses,
+                    }),
+            })
+            .collect();
+
+        SaveGame {
+            save_version: SAVE_VERSION,
+            scene_key: SavedSceneKey::from_scene_key(self.scene_key()),
+            camera_position: SavedVec2::from_vec2(world.camera().position),
+            selected_entity_index: self
+                .selected_entity
+                .and_then(|id| index_by_id.get(&id).copied()),
+            player_entity_index: self.player_id.and_then(|id| index_by_id.get(&id).copied()),
+            resource_count: self.resource_count,
+            entities,
+        }
+    }
+
+    fn apply_save_game(&mut self, save: SaveGame, world: &mut SceneWorld) -> SaveLoadResult<()> {
+        let needs_actor_archetype = save.entities.iter().any(|entity| entity.actor);
+        let needs_pile_archetype = save
+            .entities
+            .iter()
+            .any(|entity| entity.interactable.is_some());
+        let player_archetype = if needs_actor_archetype {
+            Some(try_resolve_player_archetype(world)?)
+        } else {
+            None
+        };
+        let pile_archetype = if needs_pile_archetype {
+            Some(try_resolve_resource_pile_archetype(world)?)
+        } else {
+            None
+        };
+        if let Some(archetype) = &player_archetype {
+            self.player_move_speed = archetype.move_speed;
+        }
+
+        world.clear();
+        self.interactable_cache.clear();
+        self.completed_target_ids.clear();
+        world.camera_mut().position = save.camera_position.to_vec2();
+
+        let mut spawned_ids = Vec::with_capacity(save.entities.len());
+        for saved_entity in &save.entities {
+            let renderable_kind = if saved_entity.interactable.is_some() {
+                pile_archetype
+                    .as_ref()
+                    .map(|archetype| archetype.renderable)
+                    .unwrap_or(RenderableKind::Placeholder)
+            } else if saved_entity.actor {
+                player_archetype
+                    .as_ref()
+                    .map(|archetype| archetype.renderable)
+                    .unwrap_or(RenderableKind::Placeholder)
+            } else {
+                RenderableKind::Placeholder
+            };
+            let id = world.spawn(
+                Transform {
+                    position: saved_entity.position.to_vec2(),
+                    rotation_radians: saved_entity.rotation_radians,
+                },
+                RenderableDesc {
+                    kind: renderable_kind,
+                    debug_name: "saved",
+                },
+            );
+            spawned_ids.push(id);
+        }
+        world.apply_pending();
+
+        for (index, saved_entity) in save.entities.iter().enumerate() {
+            let id = spawned_ids[index];
+            let Some(entity) = world.find_entity_mut(id) else {
+                return Err(format!("spawned entity missing at index {index}"));
+            };
+
+            entity.transform.position = saved_entity.position.to_vec2();
+            entity.transform.rotation_radians = saved_entity.rotation_radians;
+            entity.selectable = saved_entity.selectable;
+            entity.actor = saved_entity.actor;
+            entity.move_target_world = saved_entity.move_target_world.map(SavedVec2::to_vec2);
+            entity.interactable = saved_entity.interactable.map(|interactable| Interactable {
+                kind: match interactable.kind {
+                    SavedInteractableKind::ResourcePile => InteractableKind::ResourcePile,
+                },
+                interaction_radius: interactable.interaction_radius,
+                remaining_uses: interactable.remaining_uses,
+            });
+            entity.interaction_target = saved_entity
+                .interaction_target_index
+                .and_then(|target_index| spawned_ids.get(target_index).copied());
+            entity.job_state = match saved_entity.job_state {
+                SavedJobState::Idle => JobState::Idle,
+                SavedJobState::Working {
+                    target_index,
+                    remaining_time,
+                } => spawned_ids
+                    .get(target_index)
+                    .copied()
+                    .map(|target| JobState::Working {
+                        target,
+                        remaining_time,
+                    })
+                    .unwrap_or(JobState::Idle),
+            };
+        }
+
+        self.selected_entity = save
+            .selected_entity_index
+            .and_then(|index| spawned_ids.get(index).copied());
+        self.player_id = save
+            .player_entity_index
+            .and_then(|index| spawned_ids.get(index).copied());
+        self.resource_count = save.resource_count;
+        Ok(())
     }
 }
 
@@ -127,6 +459,43 @@ impl Scene for GameplayScene {
         input: &InputSnapshot,
         world: &mut SceneWorld,
     ) -> SceneCommand {
+        if input.save_pressed() {
+            match self.save_to_disk(world) {
+                Ok(path) => info!(
+                    scene = self.scene_name,
+                    path = %path.display(),
+                    "save_written"
+                ),
+                Err(error) => warn!(
+                    scene = self.scene_name,
+                    error = %error,
+                    "save_failed"
+                ),
+            }
+        }
+
+        if input.load_pressed() {
+            let expected_scene = SavedSceneKey::from_scene_key(self.scene_key());
+            match self.load_and_validate_save(expected_scene) {
+                Ok(save) => {
+                    if let Err(error) = self.apply_save_game(save, world) {
+                        warn!(
+                            scene = self.scene_name,
+                            error = %error,
+                            "load_apply_failed"
+                        );
+                    } else {
+                        info!(scene = self.scene_name, "save_loaded");
+                    }
+                }
+                Err(error) => warn!(
+                    scene = self.scene_name,
+                    error = %error,
+                    "load_failed"
+                ),
+            }
+        }
+
         if input.switch_scene_pressed() {
             return SceneCommand::SwitchTo(self.switch_target);
         }
@@ -392,44 +761,54 @@ impl Scene for GameplayScene {
 }
 
 fn resolve_player_archetype(world: &SceneWorld) -> EntityArchetype {
+    try_resolve_player_archetype(world).unwrap_or_else(|error| panic!("{error}"))
+}
+
+fn try_resolve_player_archetype(world: &SceneWorld) -> SaveLoadResult<EntityArchetype> {
     let def_db = world
         .def_database()
-        .unwrap_or_else(|| panic!("DefDatabase not set on SceneWorld before scene load"));
-    let player_id = def_db.entity_def_id_by_name("proto.player").unwrap_or_else(|| {
-        panic!(
+        .ok_or_else(|| "DefDatabase not set on SceneWorld before scene load".to_string())?;
+    let player_id = def_db
+        .entity_def_id_by_name("proto.player")
+        .ok_or_else(|| {
             "missing EntityDef 'proto.player'; add it to assets/base or enabled mods and fix XML compile errors"
-        )
-    });
+                .to_string()
+        })?;
     def_db
         .entity_def(player_id)
-        .unwrap_or_else(|| panic!("EntityDef id for 'proto.player' is missing from DefDatabase"))
-        .clone()
+        .ok_or_else(|| "EntityDef id for 'proto.player' is missing from DefDatabase".to_string())
+        .cloned()
 }
 
 fn resolve_resource_pile_archetype(world: &SceneWorld) -> EntityArchetype {
+    try_resolve_resource_pile_archetype(world).unwrap_or_else(|error| panic!("{error}"))
+}
+
+fn try_resolve_resource_pile_archetype(world: &SceneWorld) -> SaveLoadResult<EntityArchetype> {
     let def_db = world
         .def_database()
-        .unwrap_or_else(|| panic!("DefDatabase not set on SceneWorld before scene load"));
+        .ok_or_else(|| "DefDatabase not set on SceneWorld before scene load".to_string())?;
     let pile_id = def_db
         .entity_def_id_by_name("proto.resource_pile")
-        .unwrap_or_else(|| {
-            panic!(
-                "missing EntityDef 'proto.resource_pile'; add it to assets/base or enabled mods and fix XML compile errors"
-            )
-        });
+        .ok_or_else(|| {
+            "missing EntityDef 'proto.resource_pile'; add it to assets/base or enabled mods and fix XML compile errors"
+                .to_string()
+        })?;
     let pile = def_db
         .entity_def(pile_id)
-        .unwrap_or_else(|| {
-            panic!("EntityDef id for 'proto.resource_pile' is missing from DefDatabase")
-        })
+        .ok_or_else(|| {
+            "EntityDef id for 'proto.resource_pile' is missing from DefDatabase".to_string()
+        })?
         .clone();
     let has_interactable_tag = pile.tags.iter().any(|tag| tag == "interactable");
     let has_resource_pile_tag = pile.tags.iter().any(|tag| tag == "resource_pile");
-    assert!(
-        has_interactable_tag && has_resource_pile_tag,
-        "EntityDef 'proto.resource_pile' must include tags 'interactable' and 'resource_pile'"
-    );
-    pile
+    if !(has_interactable_tag && has_resource_pile_tag) {
+        return Err(
+            "EntityDef 'proto.resource_pile' must include tags 'interactable' and 'resource_pile'"
+                .to_string(),
+        );
+    }
+    Ok(pile)
 }
 
 fn interactable_target_info(
@@ -629,6 +1008,57 @@ mod tests {
             remaining_uses,
         });
         pile_id
+    }
+
+    fn seed_def_database(world: &mut SceneWorld) {
+        let paths = resolve_app_paths().expect("app paths");
+        let request = ContentPlanRequest {
+            enabled_mods: Vec::new(),
+            compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+            game_version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        let defs = engine::build_or_load_def_database(&paths, &request).expect("def db");
+        world.set_def_database(defs);
+    }
+
+    fn sample_save_game(scene_key: SavedSceneKey) -> SaveGame {
+        SaveGame {
+            save_version: SAVE_VERSION,
+            scene_key,
+            camera_position: SavedVec2 { x: 3.0, y: -1.0 },
+            selected_entity_index: Some(0),
+            player_entity_index: Some(0),
+            resource_count: 2,
+            entities: vec![
+                SavedEntityRuntime {
+                    position: SavedVec2 { x: 1.0, y: 2.0 },
+                    rotation_radians: None,
+                    selectable: true,
+                    actor: true,
+                    move_target_world: Some(SavedVec2 { x: 4.0, y: 2.0 }),
+                    interaction_target_index: Some(1),
+                    job_state: SavedJobState::Working {
+                        target_index: 1,
+                        remaining_time: 1.5,
+                    },
+                    interactable: None,
+                },
+                SavedEntityRuntime {
+                    position: SavedVec2 { x: 5.0, y: 6.0 },
+                    rotation_radians: None,
+                    selectable: false,
+                    actor: false,
+                    move_target_world: None,
+                    interaction_target_index: None,
+                    job_state: SavedJobState::Idle,
+                    interactable: Some(SavedInteractableRuntime {
+                        kind: SavedInteractableKind::ResourcePile,
+                        interaction_radius: 0.75,
+                        remaining_uses: 2,
+                    }),
+                },
+            ],
+        }
     }
 
     #[test]
@@ -1175,5 +1605,125 @@ mod tests {
         assert_eq!(snapshot.selected_position_world, None);
         assert_eq!(snapshot.selected_order_world, None);
         assert_eq!(snapshot.selected_job_state, DebugJobState::None);
+    }
+
+    #[test]
+    fn save_game_roundtrip_json_preserves_runtime_fields() {
+        let save = sample_save_game(SavedSceneKey::A);
+        let json = serde_json::to_string(&save).expect("serialize");
+        let decoded: SaveGame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, save);
+    }
+
+    #[test]
+    fn load_validation_rejects_bad_version_or_scene_without_mutation() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+        scene.selected_entity = Some(world.entities()[0].id);
+        let before_resource_count = scene.resource_count;
+        let before_entity_count = world.entity_count();
+        let before_first_pos = world.entities()[0].transform.position;
+
+        let mut bad_version = sample_save_game(SavedSceneKey::A);
+        bad_version.save_version = SAVE_VERSION + 1;
+        assert!(GameplayScene::validate_save_game(&bad_version, SavedSceneKey::A).is_err());
+        assert_eq!(world.entity_count(), before_entity_count);
+        assert_eq!(world.entities()[0].transform.position, before_first_pos);
+        assert_eq!(scene.resource_count, before_resource_count);
+
+        let bad_scene = sample_save_game(SavedSceneKey::B);
+        assert!(GameplayScene::validate_save_game(&bad_scene, SavedSceneKey::A).is_err());
+        assert_eq!(world.entity_count(), before_entity_count);
+        assert_eq!(world.entities()[0].transform.position, before_first_pos);
+        assert_eq!(scene.resource_count, before_resource_count);
+    }
+
+    #[test]
+    fn index_based_remap_restores_refs_correctly() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+
+        let save = sample_save_game(SavedSceneKey::A);
+        GameplayScene::validate_save_game(&save, SavedSceneKey::A).expect("valid");
+        scene.apply_save_game(save, &mut world).expect("apply");
+
+        let entities = world.entities();
+        assert_eq!(entities.len(), 2);
+        let actor = &entities[0];
+        let target = &entities[1];
+        assert!(actor.actor);
+        assert_eq!(scene.selected_entity, Some(actor.id));
+        assert_eq!(scene.player_id, Some(actor.id));
+        assert_eq!(actor.interaction_target, Some(target.id));
+        assert_eq!(
+            actor.job_state,
+            JobState::Working {
+                target: target.id,
+                remaining_time: 1.5
+            }
+        );
+        assert_eq!(scene.resource_count, 2);
+    }
+
+    #[test]
+    fn save_mid_move_then_load_restores_resumable_state() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        {
+            let entity = world.find_entity_mut(actor).expect("actor");
+            entity.selectable = true;
+            entity.move_target_world = Some(Vec2 { x: 2.0, y: 0.0 });
+        }
+        scene.player_id = Some(actor);
+        scene.selected_entity = Some(actor);
+        scene.resource_count = 5;
+        world.camera_mut().position = Vec2 { x: 1.0, y: -1.0 };
+
+        let save = scene.build_save_game(&world);
+        {
+            let entity = world.find_entity_mut(actor).expect("actor");
+            entity.transform.position = Vec2 { x: 9.0, y: 9.0 };
+            entity.move_target_world = None;
+        }
+        scene.selected_entity = None;
+        scene.resource_count = 0;
+        world.camera_mut().position = Vec2 { x: -4.0, y: 7.0 };
+
+        GameplayScene::validate_save_game(&save, SavedSceneKey::A).expect("valid");
+        scene.apply_save_game(save, &mut world).expect("apply");
+
+        let restored_actor = world
+            .find_entity(scene.player_id.expect("player"))
+            .expect("actor");
+        assert_eq!(scene.selected_entity, Some(restored_actor.id));
+        assert_eq!(scene.resource_count, 5);
+        assert_eq!(world.camera().position, Vec2 { x: 1.0, y: -1.0 });
+        assert_eq!(restored_actor.transform.position, Vec2 { x: 0.0, y: 0.0 });
+        assert_eq!(
+            restored_actor.move_target_world,
+            Some(Vec2 { x: 2.0, y: 0.0 })
+        );
+        let restored_actor_id = restored_actor.id;
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        let advanced_actor = world.find_entity(restored_actor_id).expect("actor");
+        assert!(advanced_actor.transform.position.x > 0.0);
     }
 }

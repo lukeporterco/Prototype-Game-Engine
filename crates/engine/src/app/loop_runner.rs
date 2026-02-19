@@ -298,6 +298,10 @@ struct InputCollector {
     switch_scene_pressed_edge: bool,
     overlay_toggle_is_down: bool,
     overlay_toggle_pressed_edge: bool,
+    save_key_is_down: bool,
+    save_pressed_edge: bool,
+    load_key_is_down: bool,
+    load_pressed_edge: bool,
     action_states: super::input::ActionStates,
     cursor_position_px: Option<super::Vec2>,
     left_mouse_is_down: bool,
@@ -325,6 +329,8 @@ impl InputCollector {
         self.update_action_state_from_key_event(key_event);
         self.handle_key_state(is_tab_key(key_event), key_event.state);
         self.handle_overlay_toggle_key_state(is_overlay_toggle_key(key_event), key_event.state);
+        self.handle_save_key_state(is_save_key(key_event), key_event.state);
+        self.handle_load_key_state(is_load_key(key_event), key_event.state);
     }
 
     fn handle_key_state(&mut self, is_tab: bool, state: ElementState) {
@@ -351,12 +357,16 @@ impl InputCollector {
             self.cursor_position_px,
             self.left_click_pressed_edge,
             self.right_click_pressed_edge,
+            self.save_pressed_edge,
+            self.load_pressed_edge,
             self.window_width,
             self.window_height,
         );
         self.switch_scene_pressed_edge = false;
         self.left_click_pressed_edge = false;
         self.right_click_pressed_edge = false;
+        self.save_pressed_edge = false;
+        self.load_pressed_edge = false;
         snapshot
     }
 
@@ -424,6 +434,36 @@ impl InputCollector {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn handle_save_key_state(&mut self, is_save_key: bool, state: ElementState) {
+        if !is_save_key {
+            return;
+        }
+        match state {
+            ElementState::Pressed => {
+                if !self.save_key_is_down {
+                    self.save_pressed_edge = true;
+                }
+                self.save_key_is_down = true;
+            }
+            ElementState::Released => self.save_key_is_down = false,
+        }
+    }
+
+    fn handle_load_key_state(&mut self, is_load_key: bool, state: ElementState) {
+        if !is_load_key {
+            return;
+        }
+        match state {
+            ElementState::Pressed => {
+                if !self.load_key_is_down {
+                    self.load_pressed_edge = true;
+                }
+                self.load_key_is_down = true;
+            }
+            ElementState::Released => self.load_key_is_down = false,
         }
     }
 
@@ -544,6 +584,14 @@ fn is_tab_key(key_event: &winit::event::KeyEvent) -> bool {
 
 fn is_overlay_toggle_key(key_event: &winit::event::KeyEvent) -> bool {
     matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F3))
+}
+
+fn is_save_key(key_event: &winit::event::KeyEvent) -> bool {
+    matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F5))
+}
+
+fn is_load_key(key_event: &winit::event::KeyEvent) -> bool {
+    matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F9))
 }
 
 #[cfg(test)]
@@ -726,5 +774,48 @@ mod tests {
 
         assert!(first.right_click_pressed());
         assert!(!second.right_click_pressed());
+    }
+
+    #[test]
+    fn save_key_edge_is_single_tick() {
+        let mut input = InputCollector::new(1280, 720);
+        input.handle_save_key_state(true, ElementState::Pressed);
+        let first = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick();
+
+        assert!(first.save_pressed());
+        assert!(!second.save_pressed());
+    }
+
+    #[test]
+    fn load_key_edge_is_single_tick() {
+        let mut input = InputCollector::new(1280, 720);
+        input.handle_load_key_state(true, ElementState::Pressed);
+        let first = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick();
+
+        assert!(first.load_pressed());
+        assert!(!second.load_pressed());
+    }
+
+    #[test]
+    fn held_save_load_do_not_retrigger_without_release() {
+        let mut input = InputCollector::new(1280, 720);
+
+        input.handle_save_key_state(true, ElementState::Pressed);
+        assert!(input.snapshot_for_tick().save_pressed());
+        input.handle_save_key_state(true, ElementState::Pressed);
+        assert!(!input.snapshot_for_tick().save_pressed());
+        input.handle_save_key_state(true, ElementState::Released);
+        input.handle_save_key_state(true, ElementState::Pressed);
+        assert!(input.snapshot_for_tick().save_pressed());
+
+        input.handle_load_key_state(true, ElementState::Pressed);
+        assert!(input.snapshot_for_tick().load_pressed());
+        input.handle_load_key_state(true, ElementState::Pressed);
+        assert!(!input.snapshot_for_tick().load_pressed());
+        input.handle_load_key_state(true, ElementState::Released);
+        input.handle_load_key_state(true, ElementState::Pressed);
+        assert!(input.snapshot_for_tick().load_pressed());
     }
 }
