@@ -18,7 +18,7 @@ const JOB_DURATION_SECONDS: f32 = 2.0;
 const RESOURCE_PILE_INTERACTION_RADIUS: f32 = 0.75;
 const RESOURCE_PILE_STARTING_USES: u32 = 3;
 const ENABLED_MODS_ENV_VAR: &str = "PROTOGE_ENABLED_MODS";
-const SAVE_VERSION: u32 = 1;
+const SAVE_VERSION: u32 = 2;
 const SCENE_A_SAVE_FILE: &str = "scene_a.save.json";
 const SCENE_B_SAVE_FILE: &str = "scene_b.save.json";
 const ORDER_MARKER_TTL_SECONDS: f32 = 0.75;
@@ -98,6 +98,7 @@ struct SaveGame {
     save_version: u32,
     scene_key: SavedSceneKey,
     camera_position: SavedVec2,
+    camera_zoom: f32,
     selected_entity_index: Option<usize>,
     player_entity_index: Option<usize>,
     resource_count: u32,
@@ -187,6 +188,9 @@ impl GameplayScene {
                 expected_scene, save.scene_key
             ));
         }
+        if !save.camera_zoom.is_finite() {
+            return Err("invalid camera zoom: non-finite".to_string());
+        }
 
         let len = save.entities.len();
         let validate_idx = |label: &str, index: Option<usize>| -> SaveLoadResult<()> {
@@ -264,6 +268,7 @@ impl GameplayScene {
             save_version: SAVE_VERSION,
             scene_key: SavedSceneKey::from_scene_key(self.scene_key()),
             camera_position: SavedVec2::from_vec2(world.camera().position),
+            camera_zoom: world.camera().zoom,
             selected_entity_index: self
                 .selected_entity
                 .and_then(|id| index_by_id.get(&id).copied()),
@@ -297,6 +302,7 @@ impl GameplayScene {
         self.interactable_cache.clear();
         self.completed_target_ids.clear();
         world.camera_mut().position = save.camera_position.to_vec2();
+        world.camera_mut().set_zoom_clamped(save.camera_zoom);
 
         let mut spawned_ids = Vec::with_capacity(save.entities.len());
         for saved_entity in &save.entities {
@@ -502,6 +508,9 @@ impl Scene for GameplayScene {
             return SceneCommand::SwitchTo(self.switch_target);
         }
 
+        world
+            .camera_mut()
+            .apply_zoom_steps(input.zoom_delta_steps());
         world.tick_debug_markers(fixed_dt_seconds);
 
         if input.left_click_pressed() {
@@ -1088,6 +1097,7 @@ mod tests {
             save_version: SAVE_VERSION,
             scene_key,
             camera_position: SavedVec2 { x: 3.0, y: -1.0 },
+            camera_zoom: 1.4,
             selected_entity_index: Some(0),
             player_entity_index: Some(0),
             resource_count: 2,
@@ -1316,6 +1326,40 @@ mod tests {
             .move_target_world
             .expect("target");
         assert!((target.x - 1.0).abs() < 0.0001);
+        assert!(target.y.abs() < 0.0001);
+    }
+
+    #[test]
+    fn zoom_steps_apply_before_right_click_screen_to_world_targeting() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        scene.selected_entity = Some(actor);
+
+        let input = InputSnapshot::empty()
+            .with_right_click_pressed(true)
+            .with_zoom_delta_steps(1)
+            .with_cursor_position_px(Some(Vec2 { x: 672.0, y: 360.0 }))
+            .with_window_size((1280, 720));
+        scene.update(1.0 / 60.0, &input, &mut world);
+
+        let target = world
+            .find_entity(actor)
+            .expect("actor")
+            .move_target_world
+            .expect("target");
+        assert!((world.camera().zoom - 1.1).abs() < 0.0001);
+        assert!((target.x - (32.0 / (32.0 * 1.1))).abs() < 0.0001);
         assert!(target.y.abs() < 0.0001);
     }
 
@@ -1757,6 +1801,13 @@ mod tests {
     }
 
     #[test]
+    fn load_validation_rejects_non_finite_camera_zoom() {
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.camera_zoom = f32::NAN;
+        assert!(GameplayScene::validate_save_game(&save, SavedSceneKey::A).is_err());
+    }
+
+    #[test]
     fn index_based_remap_restores_refs_correctly() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -1810,6 +1861,7 @@ mod tests {
         scene.selected_entity = Some(actor);
         scene.resource_count = 5;
         world.camera_mut().position = Vec2 { x: 1.0, y: -1.0 };
+        world.camera_mut().set_zoom_clamped(1.6);
 
         let save = scene.build_save_game(&world);
         {
@@ -1820,6 +1872,7 @@ mod tests {
         scene.selected_entity = None;
         scene.resource_count = 0;
         world.camera_mut().position = Vec2 { x: -4.0, y: 7.0 };
+        world.camera_mut().set_zoom_clamped(0.7);
 
         GameplayScene::validate_save_game(&save, SavedSceneKey::A).expect("valid");
         scene.apply_save_game(save, &mut world).expect("apply");
@@ -1830,6 +1883,7 @@ mod tests {
         assert_eq!(scene.selected_entity, Some(restored_actor.id));
         assert_eq!(scene.resource_count, 5);
         assert_eq!(world.camera().position, Vec2 { x: 1.0, y: -1.0 });
+        assert!((world.camera().zoom - 1.6).abs() < 0.0001);
         assert_eq!(restored_actor.transform.position, Vec2 { x: 0.0, y: 0.0 });
         assert_eq!(
             restored_actor.move_target_world,

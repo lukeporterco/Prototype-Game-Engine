@@ -14,7 +14,8 @@ pub use app::{
     InputSnapshot, Interactable, InteractableKind, JobState, LoopConfig, LoopMetricsSnapshot,
     MetricsHandle, RenderableDesc, RenderableKind, Renderer, Scene, SceneCommand, SceneKey,
     SceneVisualState, SceneWorld, Tilemap, TilemapError, Transform, Vec2, Viewport,
-    PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX, SLOW_FRAME_ENV_VAR,
+    CAMERA_ZOOM_DEFAULT, CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN, CAMERA_ZOOM_STEP, PIXELS_PER_WORLD,
+    PLACEHOLDER_HALF_SIZE_PX, SLOW_FRAME_ENV_VAR,
 };
 pub use content::{
     build_compile_plan, build_or_load_def_database, compile_def_database, CompileAction,

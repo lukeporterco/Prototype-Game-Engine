@@ -26,6 +26,7 @@ pub struct InputSnapshot {
     right_click_pressed: bool,
     save_pressed: bool,
     load_pressed: bool,
+    zoom_delta_steps: i32,
     window_width: u32,
     window_height: u32,
 }
@@ -44,6 +45,7 @@ impl InputSnapshot {
         right_click_pressed: bool,
         save_pressed: bool,
         load_pressed: bool,
+        zoom_delta_steps: i32,
         window_width: u32,
         window_height: u32,
     ) -> Self {
@@ -56,6 +58,7 @@ impl InputSnapshot {
             right_click_pressed,
             save_pressed,
             load_pressed,
+            zoom_delta_steps,
             window_width,
             window_height,
         }
@@ -103,6 +106,11 @@ impl InputSnapshot {
         self
     }
 
+    pub fn with_zoom_delta_steps(mut self, zoom_delta_steps: i32) -> Self {
+        self.zoom_delta_steps = zoom_delta_steps;
+        self
+    }
+
     pub fn with_window_size(mut self, window_size: (u32, u32)) -> Self {
         self.window_width = window_size.0;
         self.window_height = window_size.1;
@@ -129,6 +137,10 @@ impl InputSnapshot {
         self.load_pressed
     }
 
+    pub fn zoom_delta_steps(&self) -> i32 {
+        self.zoom_delta_steps
+    }
+
     pub fn window_size(&self) -> (u32, u32) {
         (self.window_width, self.window_height)
     }
@@ -143,9 +155,49 @@ pub struct Vec2 {
     pub y: f32,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+pub const CAMERA_ZOOM_DEFAULT: f32 = 1.0;
+pub const CAMERA_ZOOM_MIN: f32 = 0.5;
+pub const CAMERA_ZOOM_MAX: f32 = 2.0;
+pub const CAMERA_ZOOM_STEP: f32 = 0.1;
+
+#[derive(Debug, Clone, Copy)]
 pub struct Camera2D {
     pub position: Vec2,
+    pub zoom: f32,
+}
+
+impl Default for Camera2D {
+    fn default() -> Self {
+        Self {
+            position: Vec2::default(),
+            zoom: CAMERA_ZOOM_DEFAULT,
+        }
+    }
+}
+
+impl Camera2D {
+    pub fn effective_zoom(&self) -> f32 {
+        clamp_camera_zoom(self.zoom)
+    }
+
+    pub fn set_zoom_clamped(&mut self, zoom: f32) {
+        self.zoom = clamp_camera_zoom(zoom);
+    }
+
+    pub fn apply_zoom_steps(&mut self, steps: i32) {
+        if steps == 0 {
+            return;
+        }
+        let target_zoom = self.zoom + steps as f32 * CAMERA_ZOOM_STEP;
+        self.set_zoom_clamped(target_zoom);
+    }
+}
+
+fn clamp_camera_zoom(zoom: f32) -> f32 {
+    if !zoom.is_finite() {
+        return CAMERA_ZOOM_DEFAULT;
+    }
+    zoom.clamp(CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1039,6 +1091,17 @@ mod tests {
         let camera = world.camera();
         assert_eq!(camera.position.x, 3.0);
         assert_eq!(camera.position.y, -7.0);
+        assert!((camera.zoom - CAMERA_ZOOM_DEFAULT).abs() < 0.0001);
+    }
+
+    #[test]
+    fn camera_apply_zoom_steps_clamps_at_bounds() {
+        let mut camera = Camera2D::default();
+        camera.apply_zoom_steps(200);
+        assert!((camera.zoom - CAMERA_ZOOM_MAX).abs() < 0.0001);
+
+        camera.apply_zoom_steps(-400);
+        assert!((camera.zoom - CAMERA_ZOOM_MIN).abs() < 0.0001);
     }
 
     #[test]

@@ -662,3 +662,26 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Purpose:
   - improve debug runtime responsiveness/FPS without switching to full release mode
   - keep debuginfo and normal debug behavior intact.
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 20)
+- Camera zoom contract added for MVP discrete zoom:
+  - `Camera2D { position, zoom }`
+  - constants: `CAMERA_ZOOM_DEFAULT=1.0`, `CAMERA_ZOOM_MIN=0.5`, `CAMERA_ZOOM_MAX=2.0`, `CAMERA_ZOOM_STEP=0.1`
+  - methods: `set_zoom_clamped`, `apply_zoom_steps`, `effective_zoom`
+- Input zoom contract (engine loop/input seam):
+  - `InputSnapshot.zoom_delta_steps: i32`
+  - `InputCollector` only accumulates pending zoom steps from mouse wheel + zoom keys
+  - zoom keys are edge-triggered only (`=`/`-` and numpad add/subtract), no held-repeat behavior
+  - `snapshot_for_tick` copies and resets pending zoom steps each tick
+- Ownership rule locked:
+  - camera zoom mutation occurs only in `GameplayScene::update` via `world.camera_mut().apply_zoom_steps(...)`
+  - mutation is applied before any `screen_to_world_px(...)` conversions in update
+- Projection math contract:
+  - `world_to_screen_px` and `screen_to_world_px` both use `camera_pixels_per_world(camera)` and remain inverse within pixel-rounding tolerance
+- Save/load contract bumped to v2:
+  - `SAVE_VERSION = 2`
+  - `SaveGame` now stores `camera_zoom`
+  - load validation rejects non-finite zoom
+  - load applies zoom through clamped setter

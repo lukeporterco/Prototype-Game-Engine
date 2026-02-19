@@ -7,7 +7,7 @@ use thiserror::Error;
 use tracing::{info, warn};
 use winit::dpi::LogicalSize;
 use winit::error::{EventLoopError, OsError};
-use winit::event::{ElementState, Event, MouseButton, WindowEvent};
+use winit::event::{ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::WindowBuilder;
@@ -189,6 +189,9 @@ pub fn run_app_with_metrics(
                     WindowEvent::MouseInput { state, button, .. } => {
                         input_collector.handle_mouse_input(button, state);
                     }
+                    WindowEvent::MouseWheel { delta, .. } => {
+                        input_collector.handle_mouse_wheel(delta);
+                    }
                     WindowEvent::KeyboardInput { event, .. } => {
                         input_collector.handle_keyboard_input(&event);
                         if input_collector.quit_requested {
@@ -323,6 +326,9 @@ struct InputCollector {
     save_pressed_edge: bool,
     load_key_is_down: bool,
     load_pressed_edge: bool,
+    zoom_in_key_is_down: bool,
+    zoom_out_key_is_down: bool,
+    pending_zoom_steps: i32,
     action_states: super::input::ActionStates,
     cursor_position_px: Option<super::Vec2>,
     left_mouse_is_down: bool,
@@ -352,6 +358,8 @@ impl InputCollector {
         self.handle_overlay_toggle_key_state(is_overlay_toggle_key(key_event), key_event.state);
         self.handle_save_key_state(is_save_key(key_event), key_event.state);
         self.handle_load_key_state(is_load_key(key_event), key_event.state);
+        self.handle_zoom_in_key_state(is_zoom_in_key(key_event), key_event.state);
+        self.handle_zoom_out_key_state(is_zoom_out_key(key_event), key_event.state);
     }
 
     fn handle_key_state(&mut self, is_tab: bool, state: ElementState) {
@@ -380,6 +388,7 @@ impl InputCollector {
             self.right_click_pressed_edge,
             self.save_pressed_edge,
             self.load_pressed_edge,
+            self.pending_zoom_steps,
             self.window_width,
             self.window_height,
         );
@@ -388,6 +397,7 @@ impl InputCollector {
         self.right_click_pressed_edge = false;
         self.save_pressed_edge = false;
         self.load_pressed_edge = false;
+        self.pending_zoom_steps = 0;
         snapshot
     }
 
@@ -488,6 +498,36 @@ impl InputCollector {
         }
     }
 
+    fn handle_zoom_in_key_state(&mut self, is_zoom_in_key: bool, state: ElementState) {
+        if !is_zoom_in_key {
+            return;
+        }
+        match state {
+            ElementState::Pressed => {
+                if !self.zoom_in_key_is_down {
+                    self.pending_zoom_steps = self.pending_zoom_steps.saturating_add(1);
+                }
+                self.zoom_in_key_is_down = true;
+            }
+            ElementState::Released => self.zoom_in_key_is_down = false,
+        }
+    }
+
+    fn handle_zoom_out_key_state(&mut self, is_zoom_out_key: bool, state: ElementState) {
+        if !is_zoom_out_key {
+            return;
+        }
+        match state {
+            ElementState::Pressed => {
+                if !self.zoom_out_key_is_down {
+                    self.pending_zoom_steps = self.pending_zoom_steps.saturating_sub(1);
+                }
+                self.zoom_out_key_is_down = true;
+            }
+            ElementState::Released => self.zoom_out_key_is_down = false,
+        }
+    }
+
     fn set_window_size(&mut self, width: u32, height: u32) {
         self.window_width = width;
         self.window_height = height;
@@ -499,6 +539,11 @@ impl InputCollector {
 
     fn clear_cursor_position(&mut self) {
         self.cursor_position_px = None;
+    }
+
+    fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
+        let steps = zoom_steps_from_scroll_delta(delta);
+        self.pending_zoom_steps = self.pending_zoom_steps.saturating_add(steps);
     }
 
     fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState) {
@@ -635,6 +680,35 @@ fn is_save_key(key_event: &winit::event::KeyEvent) -> bool {
 
 fn is_load_key(key_event: &winit::event::KeyEvent) -> bool {
     matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F9))
+}
+
+fn is_zoom_in_key(key_event: &winit::event::KeyEvent) -> bool {
+    matches!(
+        key_event.physical_key,
+        PhysicalKey::Code(KeyCode::Equal) | PhysicalKey::Code(KeyCode::NumpadAdd)
+    )
+}
+
+fn is_zoom_out_key(key_event: &winit::event::KeyEvent) -> bool {
+    matches!(
+        key_event.physical_key,
+        PhysicalKey::Code(KeyCode::Minus) | PhysicalKey::Code(KeyCode::NumpadSubtract)
+    )
+}
+
+fn zoom_steps_from_scroll_delta(delta: MouseScrollDelta) -> i32 {
+    match delta {
+        MouseScrollDelta::LineDelta(_, y) => y.round() as i32,
+        MouseScrollDelta::PixelDelta(position) => {
+            if position.y > 0.0 {
+                1
+            } else if position.y < 0.0 {
+                -1
+            } else {
+                0
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -860,6 +934,54 @@ mod tests {
         input.handle_load_key_state(true, ElementState::Released);
         input.handle_load_key_state(true, ElementState::Pressed);
         assert!(input.snapshot_for_tick().load_pressed());
+    }
+
+    #[test]
+    fn zoom_keys_are_edge_triggered_only() {
+        let mut input = InputCollector::new(1280, 720);
+
+        input.handle_zoom_in_key_state(true, ElementState::Pressed);
+        assert_eq!(input.snapshot_for_tick().zoom_delta_steps(), 1);
+
+        input.handle_zoom_in_key_state(true, ElementState::Pressed);
+        assert_eq!(input.snapshot_for_tick().zoom_delta_steps(), 0);
+
+        input.handle_zoom_in_key_state(true, ElementState::Released);
+        input.handle_zoom_in_key_state(true, ElementState::Pressed);
+        assert_eq!(input.snapshot_for_tick().zoom_delta_steps(), 1);
+
+        input.handle_zoom_out_key_state(true, ElementState::Pressed);
+        assert_eq!(input.snapshot_for_tick().zoom_delta_steps(), -1);
+    }
+
+    #[test]
+    fn mouse_wheel_adds_zoom_steps_and_snapshot_resets_pending() {
+        let mut input = InputCollector::new(1280, 720);
+        input.handle_mouse_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
+        input.handle_mouse_wheel(MouseScrollDelta::LineDelta(0.0, -2.0));
+
+        let first = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick();
+
+        assert_eq!(first.zoom_delta_steps(), -1);
+        assert_eq!(second.zoom_delta_steps(), 0);
+    }
+
+    #[test]
+    fn pixel_wheel_delta_maps_to_single_discrete_step_direction() {
+        let positive = zoom_steps_from_scroll_delta(MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(0.0, 3.0),
+        ));
+        let negative = zoom_steps_from_scroll_delta(MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(0.0, -5.0),
+        ));
+        let none = zoom_steps_from_scroll_delta(MouseScrollDelta::PixelDelta(
+            winit::dpi::PhysicalPosition::new(0.0, 0.0),
+        ));
+
+        assert_eq!(positive, 1);
+        assert_eq!(negative, -1);
+        assert_eq!(none, 0);
     }
 
     #[test]

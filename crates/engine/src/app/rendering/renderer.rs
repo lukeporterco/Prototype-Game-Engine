@@ -10,7 +10,8 @@ use crate::app::{
 };
 use crate::sprite_keys::validate_sprite_key;
 
-use super::{world_to_screen_px, Viewport, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX};
+use super::transform::camera_pixels_per_world;
+use super::{world_to_screen_px, Viewport, PLACEHOLDER_HALF_SIZE_PX};
 
 const CLEAR_COLOR: [u8; 4] = [20, 22, 28, 255];
 const PLACEHOLDER_COLOR: [u8; 4] = [220, 220, 240, 255];
@@ -213,6 +214,7 @@ fn draw_tilemap(
     let Some(tilemap) = world.tilemap() else {
         return;
     };
+    let pixels_per_world = camera_pixels_per_world(world.camera());
 
     for y in 0..tilemap.height() {
         for x in 0..tilemap.width() {
@@ -229,7 +231,7 @@ fn draw_tilemap(
                     continue;
                 }
             }
-            draw_tile_fallback(frame, width, height, cx, cy, tile_id);
+            draw_tile_fallback(frame, width, height, cx, cy, tile_id, pixels_per_world);
         }
     }
 }
@@ -249,13 +251,14 @@ fn draw_tile_fallback(
     center_x: i32,
     center_y: i32,
     tile_id: u16,
+    pixels_per_world: f32,
 ) {
     let color = match tile_id {
         0 => TILE_FALLBACK_GRASS_COLOR,
         1 => TILE_FALLBACK_DIRT_COLOR,
         _ => TILE_FALLBACK_UNKNOWN_COLOR,
     };
-    let half_size = (PIXELS_PER_WORLD / 2.0).round() as i32;
+    let half_size = (pixels_per_world / 2.0).round() as i32;
     draw_square(
         frame,
         width,
@@ -306,8 +309,9 @@ fn draw_world_grid(frame: &mut [u8], width: u32, height: u32, world: &SceneWorld
         return;
     }
 
+    let pixels_per_world = camera_pixels_per_world(world.camera());
     let (ix_start, ix_end, iy_start, iy_end) =
-        visible_grid_index_bounds(world.camera().position, width, height);
+        visible_grid_index_bounds(world.camera().position, width, height, pixels_per_world);
 
     for ix in ix_start..=ix_end {
         let world_x = ix as f32 * GRID_CELL_WORLD;
@@ -346,9 +350,14 @@ fn draw_world_grid(frame: &mut [u8], width: u32, height: u32, world: &SceneWorld
     }
 }
 
-fn visible_grid_index_bounds(camera_pos: Vec2, width: u32, height: u32) -> (i32, i32, i32, i32) {
-    let half_w_world = width as f32 / (2.0 * PIXELS_PER_WORLD);
-    let half_h_world = height as f32 / (2.0 * PIXELS_PER_WORLD);
+fn visible_grid_index_bounds(
+    camera_pos: Vec2,
+    width: u32,
+    height: u32,
+    pixels_per_world: f32,
+) -> (i32, i32, i32, i32) {
+    let half_w_world = width as f32 / (2.0 * pixels_per_world);
+    let half_h_world = height as f32 / (2.0 * pixels_per_world);
     let min_x = camera_pos.x - half_w_world;
     let max_x = camera_pos.x + half_w_world;
     let min_y = camera_pos.y - half_h_world;
@@ -529,7 +538,8 @@ mod tests {
     #[test]
     fn grid_bounds_iteration_is_finite_and_viewport_scoped() {
         let camera_pos = Vec2 { x: 3.25, y: -1.75 };
-        let (ix_start, ix_end, iy_start, iy_end) = visible_grid_index_bounds(camera_pos, 1280, 720);
+        let (ix_start, ix_end, iy_start, iy_end) =
+            visible_grid_index_bounds(camera_pos, 1280, 720, crate::app::PIXELS_PER_WORLD);
         assert!(ix_start < ix_end);
         assert!(iy_start < iy_end);
         let x_count = ix_end - ix_start + 1;
@@ -557,9 +567,11 @@ mod tests {
     fn camera_pan_shifts_projected_grid_lines_consistently() {
         let camera_a = Camera2D {
             position: Vec2 { x: 0.0, y: 0.0 },
+            ..Camera2D::default()
         };
         let camera_b = Camera2D {
             position: Vec2 { x: 1.0, y: 0.0 },
+            ..Camera2D::default()
         };
         let world_line_x = 0.0;
         let (xa, _) = world_to_screen_px(
@@ -578,7 +590,7 @@ mod tests {
                 y: 0.0,
             },
         );
-        assert_eq!(xa - xb, PIXELS_PER_WORLD.round() as i32);
+        assert_eq!(xa - xb, crate::app::PIXELS_PER_WORLD.round() as i32);
     }
 
     #[test]
@@ -609,15 +621,17 @@ mod tests {
         let center = tilemap.tile_center_world(1, 2).expect("center");
         let camera_a = Camera2D {
             position: Vec2 { x: 0.0, y: 0.0 },
+            ..Camera2D::default()
         };
         let camera_b = Camera2D {
             position: Vec2 { x: 1.0, y: 1.0 },
+            ..Camera2D::default()
         };
 
         let (xa, ya) = world_to_screen_px(&camera_a, (1280, 720), center);
         let (xb, yb) = world_to_screen_px(&camera_b, (1280, 720), center);
-        assert_eq!(xa - xb, PIXELS_PER_WORLD.round() as i32);
-        assert_eq!(yb - ya, PIXELS_PER_WORLD.round() as i32);
+        assert_eq!(xa - xb, crate::app::PIXELS_PER_WORLD.round() as i32);
+        assert_eq!(yb - ya, crate::app::PIXELS_PER_WORLD.round() as i32);
     }
 
     #[test]
