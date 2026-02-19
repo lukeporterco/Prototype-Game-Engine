@@ -998,6 +998,122 @@ mod tests {
     }
 
     #[test]
+    fn job_remaining_time_pauses_while_inactive_and_completes_after_resume() {
+        let mut scene_a = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world_a = SceneWorld::default();
+        let actor = world_a.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let pile = spawn_interactable_pile(&mut world_a, Vec2 { x: 0.0, y: 0.0 }, 1);
+        {
+            let entity = world_a.find_entity_mut(actor).expect("actor");
+            entity.interaction_target = Some(pile);
+            entity.job_state = JobState::Working {
+                target: pile,
+                remaining_time: 1.0,
+            };
+        }
+
+        let mut scene_b = GameplayScene::new("B", SceneKey::A, Vec2 { x: 5.0, y: 5.0 });
+        let mut world_b = SceneWorld::default();
+        world_b.spawn_actor(
+            Transform::default(),
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "b",
+            },
+        );
+        world_b.apply_pending();
+
+        scene_a.update(0.1, &InputSnapshot::empty(), &mut world_a);
+        let before_pause = match world_a.find_entity(actor).expect("actor").job_state {
+            JobState::Working { remaining_time, .. } => remaining_time,
+            _ => panic!("expected working"),
+        };
+
+        for _ in 0..10 {
+            scene_b.update(0.1, &InputSnapshot::empty(), &mut world_b);
+            world_b.apply_pending();
+        }
+
+        let after_pause = match world_a.find_entity(actor).expect("actor").job_state {
+            JobState::Working { remaining_time, .. } => remaining_time,
+            _ => panic!("expected working"),
+        };
+        assert!((before_pause - after_pause).abs() < 0.0001);
+
+        for _ in 0..20 {
+            scene_a.update(0.1, &InputSnapshot::empty(), &mut world_a);
+            world_a.apply_pending();
+        }
+
+        let actor_entity = world_a.find_entity(actor).expect("actor");
+        assert_eq!(actor_entity.job_state, JobState::Idle);
+        assert_eq!(scene_a.resource_count, 1);
+    }
+
+    #[test]
+    fn mid_move_state_persists_across_normal_switch() {
+        let mut scene_a = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world_a = SceneWorld::default();
+        let actor = world_a.spawn_actor(
+            Transform {
+                position: Vec2 { x: -1.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let pile = spawn_interactable_pile(&mut world_a, Vec2 { x: 1.0, y: 0.0 }, 3);
+        {
+            let entity = world_a.find_entity_mut(actor).expect("actor");
+            entity.selectable = true;
+            entity.move_target_world = Some(Vec2 { x: 1.0, y: 0.0 });
+            entity.interaction_target = Some(pile);
+            entity.job_state = JobState::Idle;
+        }
+        scene_a.selected_entity = Some(actor);
+        scene_a.resource_count = 2;
+
+        let mut scene_b = GameplayScene::new("B", SceneKey::A, Vec2 { x: 8.0, y: 8.0 });
+        let mut world_b = SceneWorld::default();
+        world_b.spawn(
+            Transform::default(),
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "b_obj",
+            },
+        );
+        world_b.apply_pending();
+
+        let before = *world_a.find_entity(actor).expect("actor");
+        let before_items = scene_a.resource_count;
+        let before_selection = scene_a.selected_entity;
+
+        for _ in 0..15 {
+            scene_b.update(0.1, &InputSnapshot::empty(), &mut world_b);
+            world_b.apply_pending();
+        }
+
+        let after = *world_a.find_entity(actor).expect("actor");
+        assert_eq!(scene_a.selected_entity, before_selection);
+        assert_eq!(scene_a.resource_count, before_items);
+        assert_eq!(after.transform.position, before.transform.position);
+        assert_eq!(after.move_target_world, before.move_target_world);
+        assert_eq!(after.interaction_target, before.interaction_target);
+        assert_eq!(after.job_state, before.job_state);
+    }
+
+    #[test]
     fn debug_info_snapshot_reports_selected_entity_fields_and_counts() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();

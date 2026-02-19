@@ -489,3 +489,28 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - overlay draw path remains clipping-safe
   - unknown glyphs remain safe space fallback
   - glyph required-char set expanded minimally for new inspect labels (`I`, `p`, `c`, `j`, `b`, `w`, `k`, `/`)
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 14.5)
+- Scene switch semantics changed to persistent runtime ownership in engine:
+  - `SceneMachine` now owns per-scene runtime slots:
+    - `scene`
+    - `world`
+    - `is_loaded`
+  - normal `SwitchTo` is non-destructive:
+    - only changes active pointer
+    - loads target once if not loaded yet
+    - never unloads/clears on normal switch
+- Inactive scene worlds are paused by loop behavior:
+  - only active scene/world are ticked in fixed-step update
+  - movement/jobs/timers in inactive scenes do not advance
+- Hard reset path added:
+  - `SceneCommand::HardResetTo(SceneKey)`
+  - target runtime path: `unload -> world.clear() -> load -> activate`
+  - `SceneWorld::clear()` retaining `DefDatabase` is relied on for reset reload
+- Loop ownership seam changed:
+  - `loop_runner` no longer owns a standalone `SceneWorld`
+  - loop now uses scene-machine active-world accessors for update/apply/render/overlay/debug
+- Shutdown contract added:
+  - `SceneMachine::shutdown_all()` unloads each loaded scene once, then clears worlds.

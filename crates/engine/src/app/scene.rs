@@ -12,6 +12,7 @@ pub enum SceneKey {
 pub enum SceneCommand {
     None,
     SwitchTo(SceneKey),
+    HardResetTo(SceneKey),
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -436,9 +437,15 @@ pub trait Scene {
     }
 }
 
+struct SceneRuntime {
+    scene: Box<dyn Scene>,
+    world: SceneWorld,
+    is_loaded: bool,
+}
+
 pub(crate) struct SceneMachine {
-    scene_a: Box<dyn Scene>,
-    scene_b: Box<dyn Scene>,
+    scene_a: SceneRuntime,
+    scene_b: SceneRuntime,
     active_scene: SceneKey,
 }
 
@@ -449,8 +456,16 @@ impl SceneMachine {
         active_scene: SceneKey,
     ) -> Self {
         Self {
-            scene_a,
-            scene_b,
+            scene_a: SceneRuntime {
+                scene: scene_a,
+                world: SceneWorld::default(),
+                is_loaded: false,
+            },
+            scene_b: SceneRuntime {
+                scene: scene_b,
+                world: SceneWorld::default(),
+                is_loaded: false,
+            },
             active_scene,
         }
     }
@@ -459,82 +474,147 @@ impl SceneMachine {
         self.active_scene
     }
 
-    pub(crate) fn load_active(&mut self, world: &mut SceneWorld) {
-        self.active_scene_mut().load(world);
+    pub(crate) fn set_def_database_for_all(&mut self, def_database: DefDatabase) {
+        self.scene_a.world.set_def_database(def_database.clone());
+        self.scene_b.world.set_def_database(def_database);
+    }
+
+    pub(crate) fn load_active(&mut self) {
+        if self.active_runtime_ref().is_loaded {
+            return;
+        }
+        let runtime = self.active_runtime_mut();
+        let (scene, world) = (&mut runtime.scene, &mut runtime.world);
+        scene.load(world);
+        runtime.is_loaded = true;
     }
 
     pub(crate) fn update_active(
         &mut self,
         fixed_dt_seconds: f32,
         input: &InputSnapshot,
-        world: &mut SceneWorld,
     ) -> SceneCommand {
-        self.active_scene_mut()
-            .update(fixed_dt_seconds, input, world)
+        let runtime = self.active_runtime_mut();
+        let (scene, world) = (&mut runtime.scene, &mut runtime.world);
+        scene.update(fixed_dt_seconds, input, world)
     }
 
-    pub(crate) fn render_active(&mut self, world: &SceneWorld) {
-        self.active_scene_mut().render(world);
+    pub(crate) fn apply_pending_active(&mut self) {
+        self.active_runtime_mut().world.apply_pending();
     }
 
-    pub(crate) fn unload_active(&mut self, world: &mut SceneWorld) {
-        self.active_scene_mut().unload(world);
+    pub(crate) fn render_active(&mut self) {
+        let runtime = self.active_runtime_mut();
+        runtime.scene.render(&runtime.world);
     }
 
-    pub(crate) fn debug_title_active(&self, world: &SceneWorld) -> Option<String> {
-        self.active_scene_ref().debug_title(world)
+    pub(crate) fn active_world(&self) -> &SceneWorld {
+        &self.active_runtime_ref().world
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_world_mut(&mut self) -> &mut SceneWorld {
+        &mut self.active_runtime_mut().world
+    }
+
+    pub(crate) fn debug_title_active(&self) -> Option<String> {
+        let runtime = self.active_runtime_ref();
+        runtime.scene.debug_title(&runtime.world)
     }
 
     pub(crate) fn debug_selected_entity_active(&self) -> Option<EntityId> {
-        self.active_scene_ref().debug_selected_entity()
+        self.active_runtime_ref().scene.debug_selected_entity()
     }
 
-    pub(crate) fn debug_selected_target_active(&self, world: &SceneWorld) -> Option<Vec2> {
-        self.active_scene_ref().debug_selected_target(world)
+    pub(crate) fn debug_selected_target_active(&self) -> Option<Vec2> {
+        let runtime = self.active_runtime_ref();
+        runtime.scene.debug_selected_target(&runtime.world)
     }
 
     pub(crate) fn debug_resource_count_active(&self) -> Option<u32> {
-        self.active_scene_ref().debug_resource_count()
+        self.active_runtime_ref().scene.debug_resource_count()
     }
 
-    pub(crate) fn debug_info_snapshot_active(
-        &self,
-        world: &SceneWorld,
-    ) -> Option<DebugInfoSnapshot> {
-        self.active_scene_ref().debug_info_snapshot(world)
+    pub(crate) fn debug_info_snapshot_active(&self) -> Option<DebugInfoSnapshot> {
+        let runtime = self.active_runtime_ref();
+        runtime.scene.debug_info_snapshot(&runtime.world)
     }
 
-    pub(crate) fn switch_to(&mut self, next_scene: SceneKey, world: &mut SceneWorld) -> bool {
+    pub(crate) fn switch_to(&mut self, next_scene: SceneKey) -> bool {
         if self.active_scene == next_scene {
             return false;
         }
 
-        self.active_scene_mut().unload(world);
-        world.clear();
+        self.load_scene_if_needed(next_scene);
         self.active_scene = next_scene;
-        self.active_scene_mut().load(world);
         true
     }
 
-    fn active_scene_mut(&mut self) -> &mut dyn Scene {
-        match self.active_scene {
-            SceneKey::A => self.scene_a.as_mut(),
-            SceneKey::B => self.scene_b.as_mut(),
+    pub(crate) fn hard_reset_to(&mut self, next_scene: SceneKey) -> bool {
+        let runtime = self.runtime_mut(next_scene);
+        if runtime.is_loaded {
+            let (scene, world) = (&mut runtime.scene, &mut runtime.world);
+            scene.unload(world);
+        }
+        runtime.world.clear();
+        {
+            let (scene, world) = (&mut runtime.scene, &mut runtime.world);
+            scene.load(world);
+        }
+        runtime.is_loaded = true;
+        let changed = self.active_scene != next_scene;
+        self.active_scene = next_scene;
+        changed
+    }
+
+    pub(crate) fn shutdown_all(&mut self) {
+        for runtime in [&mut self.scene_a, &mut self.scene_b] {
+            if runtime.is_loaded {
+                let (scene, world) = (&mut runtime.scene, &mut runtime.world);
+                scene.unload(world);
+                runtime.world.clear();
+                runtime.is_loaded = false;
+            }
         }
     }
 
-    fn active_scene_ref(&self) -> &dyn Scene {
-        match self.active_scene {
-            SceneKey::A => self.scene_a.as_ref(),
-            SceneKey::B => self.scene_b.as_ref(),
+    fn load_scene_if_needed(&mut self, key: SceneKey) {
+        if self.runtime_ref(key).is_loaded {
+            return;
+        }
+        let runtime = self.runtime_mut(key);
+        {
+            let (scene, world) = (&mut runtime.scene, &mut runtime.world);
+            scene.load(world);
+        }
+        runtime.is_loaded = true;
+    }
+
+    fn active_runtime_mut(&mut self) -> &mut SceneRuntime {
+        self.runtime_mut(self.active_scene)
+    }
+
+    fn active_runtime_ref(&self) -> &SceneRuntime {
+        self.runtime_ref(self.active_scene)
+    }
+
+    fn runtime_mut(&mut self, key: SceneKey) -> &mut SceneRuntime {
+        match key {
+            SceneKey::A => &mut self.scene_a,
+            SceneKey::B => &mut self.scene_b,
+        }
+    }
+
+    fn runtime_ref(&self, key: SceneKey) -> &SceneRuntime {
+        match key {
+            SceneKey::A => &self.scene_a,
+            SceneKey::B => &self.scene_b,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::*;
 
     struct TestScene {
@@ -601,6 +681,42 @@ mod tests {
         }
     }
 
+    struct SteppingScene {
+        spawn_count: usize,
+        step_x: f32,
+    }
+
+    impl Scene for SteppingScene {
+        fn load(&mut self, world: &mut SceneWorld) {
+            for _ in 0..self.spawn_count {
+                world.spawn(
+                    Transform::default(),
+                    RenderableDesc {
+                        kind: RenderableKind::Placeholder,
+                        debug_name: "step",
+                    },
+                );
+            }
+            world.apply_pending();
+        }
+
+        fn update(
+            &mut self,
+            _fixed_dt_seconds: f32,
+            _input: &InputSnapshot,
+            world: &mut SceneWorld,
+        ) -> SceneCommand {
+            if let Some(entity) = world.entities_mut().first_mut() {
+                entity.transform.position.x += self.step_x;
+            }
+            SceneCommand::None
+        }
+
+        fn render(&mut self, _world: &SceneWorld) {}
+
+        fn unload(&mut self, _world: &mut SceneWorld) {}
+    }
+
     #[test]
     fn allocator_never_reuses_ids() {
         let mut allocator = EntityIdAllocator::default();
@@ -632,31 +748,121 @@ mod tests {
     }
 
     #[test]
-    fn repeated_switches_reset_counts_and_keep_global_ids_unique() {
-        let mut world = SceneWorld::default();
+    fn switch_away_and_back_preserves_entity_ids_and_transforms() {
         let mut machine = SceneMachine::new(
             Box::new(TestScene { spawn_count: 2 }),
-            Box::new(TestScene { spawn_count: 3 }),
+            Box::new(TestScene { spawn_count: 1 }),
             SceneKey::A,
         );
-        machine.load_active(&mut world);
-        assert_eq!(world.entity_count(), 2);
-        let mut seen_ids: HashSet<u64> =
-            world.entities().iter().map(|entity| entity.id.0).collect();
+        machine.load_active();
+        machine.apply_pending_active();
 
-        for i in 0..50 {
-            let target = if i % 2 == 0 { SceneKey::B } else { SceneKey::A };
-            machine.switch_to(target, &mut world);
-            let expected = if target == SceneKey::A { 2 } else { 3 };
-            assert_eq!(world.entity_count(), expected);
+        {
+            let world = machine.active_world_mut();
+            world.entities_mut()[0].transform.position = Vec2 { x: 2.5, y: -1.0 };
+        }
+        let before: Vec<(u64, Vec2)> = machine
+            .active_world()
+            .entities()
+            .iter()
+            .map(|entity| (entity.id.0, entity.transform.position))
+            .collect();
 
-            for entity in world.entities() {
-                assert!(
-                    seen_ids.insert(entity.id.0),
-                    "entity id {} was reused after scene switch",
-                    entity.id.0
-                );
-            }
+        assert!(machine.switch_to(SceneKey::B));
+        machine.apply_pending_active();
+        assert!(machine.switch_to(SceneKey::A));
+        machine.apply_pending_active();
+
+        let after: Vec<(u64, Vec2)> = machine
+            .active_world()
+            .entities()
+            .iter()
+            .map(|entity| (entity.id.0, entity.transform.position))
+            .collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn inactive_scene_world_does_not_advance() {
+        let mut machine = SceneMachine::new(
+            Box::new(SteppingScene {
+                spawn_count: 1,
+                step_x: 1.0,
+            }),
+            Box::new(SteppingScene {
+                spawn_count: 1,
+                step_x: 3.0,
+            }),
+            SceneKey::A,
+        );
+        machine.load_active();
+        machine.apply_pending_active();
+
+        let _ = machine.update_active(1.0 / 60.0, &InputSnapshot::empty());
+        machine.apply_pending_active();
+        let before_switch = machine.active_world().entities()[0].transform.position.x;
+
+        assert!(machine.switch_to(SceneKey::B));
+        machine.apply_pending_active();
+        for _ in 0..10 {
+            let _ = machine.update_active(1.0 / 60.0, &InputSnapshot::empty());
+            machine.apply_pending_active();
+        }
+
+        assert!(machine.switch_to(SceneKey::A));
+        let after_return = machine.active_world().entities()[0].transform.position.x;
+        assert_eq!(before_switch, after_return);
+    }
+
+    #[test]
+    fn hard_reset_recreates_target_scene_state() {
+        let mut machine = SceneMachine::new(
+            Box::new(TestScene { spawn_count: 1 }),
+            Box::new(TestScene { spawn_count: 1 }),
+            SceneKey::A,
+        );
+        machine.load_active();
+        machine.apply_pending_active();
+
+        machine.active_world_mut().entities_mut()[0]
+            .transform
+            .position = Vec2 { x: 9.0, y: 3.0 };
+        assert_eq!(
+            machine.active_world().entities()[0].transform.position.x,
+            9.0
+        );
+
+        let _ = machine.hard_reset_to(SceneKey::A);
+        machine.apply_pending_active();
+
+        assert_eq!(machine.active_world().entity_count(), 1);
+        assert_eq!(
+            machine.active_world().entities()[0].transform.position,
+            Vec2 { x: 0.0, y: 0.0 }
+        );
+    }
+
+    #[test]
+    fn repeated_switching_after_despawn_is_stable() {
+        let mut machine = SceneMachine::new(
+            Box::new(TestScene { spawn_count: 2 }),
+            Box::new(TestScene { spawn_count: 1 }),
+            SceneKey::A,
+        );
+        machine.load_active();
+        machine.apply_pending_active();
+
+        let doomed = machine.active_world().entities()[0].id;
+        assert!(machine.active_world_mut().despawn(doomed));
+        machine.apply_pending_active();
+        assert_eq!(machine.active_world().entity_count(), 1);
+
+        for _ in 0..25 {
+            assert!(machine.switch_to(SceneKey::B));
+            machine.apply_pending_active();
+            assert!(machine.switch_to(SceneKey::A));
+            machine.apply_pending_active();
+            assert_eq!(machine.active_world().entity_count(), 1);
         }
     }
 
@@ -888,16 +1094,15 @@ mod tests {
 
     #[test]
     fn scene_machine_debug_info_passthrough_returns_active_scene_snapshot() {
-        let world = SceneWorld::default();
-        let machine = SceneMachine::new(
+        let mut machine = SceneMachine::new(
             Box::new(DebugScene),
             Box::new(TestScene { spawn_count: 0 }),
             SceneKey::A,
         );
+        machine.load_active();
+        machine.apply_pending_active();
 
-        let snapshot = machine
-            .debug_info_snapshot_active(&world)
-            .expect("snapshot");
+        let snapshot = machine.debug_info_snapshot_active().expect("snapshot");
         assert_eq!(snapshot.selected_entity, Some(EntityId(7)));
         assert_eq!(
             snapshot.selected_position_world,

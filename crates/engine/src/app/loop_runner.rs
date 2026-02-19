@@ -20,8 +20,7 @@ use crate::{
 use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
 use super::{
-    InputAction, InputSnapshot, MetricsHandle, OverlayData, Renderer, Scene, SceneCommand,
-    SceneKey, SceneWorld,
+    InputAction, InputSnapshot, MetricsHandle, OverlayData, Renderer, Scene, SceneCommand, SceneKey,
 };
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
@@ -124,14 +123,12 @@ pub fn run_app_with_metrics(
     let fixed_dt_seconds = fixed_dt.as_secs_f32();
     let slow_frame_delay = resolve_slow_frame_delay(config.simulated_slow_frame_ms);
     let mut input_collector = InputCollector::new(config.window_width, config.window_height);
-    let mut world = SceneWorld::default();
-    world.set_def_database(def_database);
-
-    scenes.load_active(&mut world);
-    world.apply_pending();
+    scenes.set_def_database_for_all(def_database);
+    scenes.load_active();
+    scenes.apply_pending_active();
     info!(
         scene = ?scenes.active_scene(),
-        entity_count = world.entity_count(),
+        entity_count = scenes.active_world().entity_count(),
         "scene_loaded"
     );
 
@@ -211,19 +208,23 @@ pub fn run_app_with_metrics(
                         let step_plan = plan_sim_steps(accumulator, fixed_dt, max_ticks_per_frame);
                         for _ in 0..step_plan.ticks_to_run {
                             let input_snapshot = input_collector.snapshot_for_tick();
-                            let command =
-                                scenes.update_active(fixed_dt_seconds, &input_snapshot, &mut world);
-                            world.apply_pending();
+                            let command = scenes.update_active(fixed_dt_seconds, &input_snapshot);
+                            scenes.apply_pending_active();
 
-                            if let SceneCommand::SwitchTo(next_scene) = command {
-                                if scenes.switch_to(next_scene, &mut world) {
-                                    world.apply_pending();
-                                    info!(
-                                        scene = ?scenes.active_scene(),
-                                        entity_count = world.entity_count(),
-                                        "scene_switched"
-                                    );
+                            let switched = match command {
+                                SceneCommand::SwitchTo(next_scene) => scenes.switch_to(next_scene),
+                                SceneCommand::HardResetTo(next_scene) => {
+                                    scenes.hard_reset_to(next_scene)
                                 }
+                                SceneCommand::None => false,
+                            };
+                            if switched {
+                                scenes.apply_pending_active();
+                                info!(
+                                    scene = ?scenes.active_scene(),
+                                    entity_count = scenes.active_world().entity_count(),
+                                    "scene_switched"
+                                );
                             }
                             metrics_accumulator.record_tick();
                         }
@@ -236,21 +237,23 @@ pub fn run_app_with_metrics(
                             );
                         }
 
-                        scenes.render_active(&world);
+                        scenes.render_active();
                         let overlay = overlay_visible.then(|| OverlayData {
                             metrics: metrics_handle.snapshot(),
-                            entity_count: world.entity_count(),
+                            entity_count: scenes.active_world().entity_count(),
                             content_status: "loaded",
                             selected_entity: scenes.debug_selected_entity_active(),
-                            selected_target: scenes.debug_selected_target_active(&world),
+                            selected_target: scenes.debug_selected_target_active(),
                             resource_count: scenes.debug_resource_count_active(),
-                            debug_info: scenes.debug_info_snapshot_active(&world),
+                            debug_info: scenes.debug_info_snapshot_active(),
                         });
-                        if let Err(error) = renderer.render_world(&world, overlay.as_ref()) {
+                        if let Err(error) =
+                            renderer.render_world(scenes.active_world(), overlay.as_ref())
+                        {
                             warn!(error = %error, "renderer_draw_failed");
                             window_target.exit();
                         }
-                        let next_title = scenes.debug_title_active(&world);
+                        let next_title = scenes.debug_title_active();
                         if next_title != last_applied_title {
                             if let Some(title) = &next_title {
                                 window_for_loop.set_title(title);
@@ -267,7 +270,7 @@ pub fn run_app_with_metrics(
                                 fps = snapshot.fps,
                                 tps = snapshot.tps,
                                 frame_time_ms = snapshot.frame_time_ms,
-                                entity_count = world.entity_count(),
+                                entity_count = scenes.active_world().entity_count(),
                                 scene = ?scenes.active_scene(),
                                 "loop_metrics"
                             );
@@ -280,8 +283,7 @@ pub fn run_app_with_metrics(
                 window_for_loop.request_redraw();
             }
             Event::LoopExiting => {
-                scenes.unload_active(&mut world);
-                world.clear();
+                scenes.shutdown_all();
                 info!("shutdown");
             }
             _ => {}
