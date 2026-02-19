@@ -631,3 +631,13 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - `pick_topmost_interactable_includes_sprite_renderables`
 - Pitfall pattern:
   - avoid gameplay/input logic branching on debug/fallback render type; renderable variants can evolve without changing selection semantics.
+
+---
+
+## Ticket Notes (2026-02-19, Debug Perf Tuning)
+- Added conservative dev-profile optimization settings in workspace `Cargo.toml`:
+  - `[profile.dev] opt-level = 1`
+  - `[profile.dev.package."*"] opt-level = 2`
+- Purpose:
+  - improve debug runtime responsiveness/FPS without switching to full release mode
+  - keep debuginfo and normal debug behavior intact.
