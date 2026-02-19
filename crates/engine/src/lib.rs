@@ -9,10 +9,10 @@ pub mod content;
 
 pub use app::{
     run_app, run_app_with_metrics, screen_to_world_px, world_to_screen_px, AppError, Camera2D,
-    Entity, EntityId, InputAction, InputSnapshot, Interactable, InteractableKind, JobState,
-    LoopConfig, LoopMetricsSnapshot, MetricsHandle, RenderableDesc, RenderableKind, Renderer,
-    Scene, SceneCommand, SceneKey, SceneWorld, Transform, Vec2, Viewport, PIXELS_PER_WORLD,
-    PLACEHOLDER_HALF_SIZE_PX, SLOW_FRAME_ENV_VAR,
+    DebugInfoSnapshot, DebugJobState, Entity, EntityId, InputAction, InputSnapshot, Interactable,
+    InteractableKind, JobState, LoopConfig, LoopMetricsSnapshot, MetricsHandle, RenderableDesc,
+    RenderableKind, Renderer, Scene, SceneCommand, SceneKey, SceneWorld, Transform, Vec2, Viewport,
+    PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX, SLOW_FRAME_ENV_VAR,
 };
 pub use content::{
     build_compile_plan, build_or_load_def_database, compile_def_database, CompileAction,

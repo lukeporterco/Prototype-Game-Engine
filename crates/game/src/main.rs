@@ -1,7 +1,8 @@
 use engine::{
-    run_app, screen_to_world_px, ContentPlanRequest, EntityArchetype, EntityId, InputAction,
-    InputSnapshot, Interactable, InteractableKind, JobState, LoopConfig, RenderableDesc, Scene,
-    SceneCommand, SceneKey, SceneWorld, Transform, Vec2,
+    run_app, screen_to_world_px, ContentPlanRequest, DebugInfoSnapshot, DebugJobState,
+    EntityArchetype, EntityId, InputAction, InputSnapshot, Interactable, InteractableKind,
+    JobState, LoopConfig, RenderableDesc, Scene, SceneCommand, SceneKey, SceneWorld, Transform,
+    Vec2,
 };
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -340,6 +341,53 @@ impl Scene for GameplayScene {
 
     fn debug_resource_count(&self) -> Option<u32> {
         Some(self.resource_count)
+    }
+
+    fn debug_info_snapshot(&self, world: &SceneWorld) -> Option<DebugInfoSnapshot> {
+        let entity_count = world.entity_count();
+        let actor_count = world
+            .entities()
+            .iter()
+            .filter(|entity| entity.actor)
+            .count();
+        let interactable_count = world
+            .entities()
+            .iter()
+            .filter(|entity| entity.interactable.is_some())
+            .count();
+
+        let mut selected_position_world = None;
+        let mut selected_order_world = None;
+        let mut selected_job_state = DebugJobState::None;
+
+        if let Some(selected_id) = self.selected_entity {
+            if let Some(entity) = world.find_entity(selected_id) {
+                selected_position_world = Some(entity.transform.position);
+                selected_order_world = entity.move_target_world.or_else(|| {
+                    entity
+                        .interaction_target
+                        .and_then(|target_id| world.find_entity(target_id))
+                        .map(|target| target.transform.position)
+                });
+                selected_job_state = match entity.job_state {
+                    JobState::Idle => DebugJobState::Idle,
+                    JobState::Working { remaining_time, .. } => {
+                        DebugJobState::Working { remaining_time }
+                    }
+                };
+            }
+        }
+
+        Some(DebugInfoSnapshot {
+            selected_entity: self.selected_entity,
+            selected_position_world,
+            selected_order_world,
+            selected_job_state,
+            entity_count,
+            actor_count,
+            interactable_count,
+            resource_count: self.resource_count,
+        })
     }
 }
 
@@ -947,5 +995,69 @@ mod tests {
         let actor_entity = world.find_entity(actor).expect("actor");
         assert_eq!(actor_entity.job_state, JobState::Idle);
         assert_eq!(actor_entity.interaction_target, None);
+    }
+
+    #[test]
+    fn debug_info_snapshot_reports_selected_entity_fields_and_counts() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 1.0, y: 2.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let pile = spawn_interactable_pile(&mut world, Vec2 { x: 3.0, y: 4.0 }, 2);
+        {
+            let entity = world.find_entity_mut(actor).expect("actor");
+            entity.selectable = true;
+            entity.move_target_world = Some(Vec2 { x: 5.0, y: 6.0 });
+            entity.job_state = JobState::Working {
+                target: pile,
+                remaining_time: 1.2,
+            };
+        }
+        scene.selected_entity = Some(actor);
+        scene.resource_count = 7;
+
+        let snapshot = scene
+            .debug_info_snapshot(&world)
+            .expect("debug snapshot exists");
+        assert_eq!(snapshot.selected_entity, Some(actor));
+        assert_eq!(
+            snapshot.selected_position_world,
+            Some(Vec2 { x: 1.0, y: 2.0 })
+        );
+        assert_eq!(snapshot.selected_order_world, Some(Vec2 { x: 5.0, y: 6.0 }));
+        assert_eq!(
+            snapshot.selected_job_state,
+            DebugJobState::Working {
+                remaining_time: 1.2
+            }
+        );
+        assert_eq!(snapshot.entity_count, 2);
+        assert_eq!(snapshot.actor_count, 1);
+        assert_eq!(snapshot.interactable_count, 1);
+        assert_eq!(snapshot.resource_count, 7);
+    }
+
+    #[test]
+    fn debug_info_snapshot_handles_missing_selected_entity() {
+        let scene = GameplayScene {
+            selected_entity: Some(EntityId(999)),
+            ..GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 })
+        };
+        let world = SceneWorld::default();
+        let snapshot = scene
+            .debug_info_snapshot(&world)
+            .expect("debug snapshot exists");
+        assert_eq!(snapshot.selected_entity, Some(EntityId(999)));
+        assert_eq!(snapshot.selected_position_world, None);
+        assert_eq!(snapshot.selected_order_world, None);
+        assert_eq!(snapshot.selected_job_state, DebugJobState::None);
     }
 }

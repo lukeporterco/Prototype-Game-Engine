@@ -457,3 +457,35 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - missing/stale interaction targets are cleared safely to `Idle` state
 - Performance-minded loop detail:
   - gameplay reuses scratch vectors (`interactable_cache`, `completed_target_ids`) to avoid per-tick allocation churn.
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 14)
+- Added debug inspect snapshot seam from scene to overlay:
+  - engine scene types:
+    - `DebugInfoSnapshot`
+    - `DebugJobState`
+  - `Scene` trait now includes:
+    - `debug_info_snapshot(&SceneWorld) -> Option<DebugInfoSnapshot>` (default `None`)
+  - `SceneMachine` passthrough:
+    - `debug_info_snapshot_active(&SceneWorld) -> Option<DebugInfoSnapshot>`
+- Overlay contract expanded:
+  - `OverlayData` now carries `debug_info: Option<DebugInfoSnapshot>`
+  - overlay renders inspect block lines when available:
+    - `Inspect`
+    - `sel: ...`
+    - `pos: ...`
+    - `ord: ...`
+    - `job: ...`
+    - `cnt e/a/i/r: ...`
+- Gameplay integration:
+  - `GameplayScene` implements `debug_info_snapshot` from selected entity runtime fields:
+    - `move_target_world`
+    - `job_state`
+    - entity transform
+  - counts included in snapshot:
+    - entities / actors / interactables / items(resource_count)
+- Safety/perf notes:
+  - overlay draw path remains clipping-safe
+  - unknown glyphs remain safe space fallback
+  - glyph required-char set expanded minimally for new inspect labels (`I`, `p`, `c`, `j`, `b`, `w`, `k`, `/`)

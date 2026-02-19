@@ -1,4 +1,4 @@
-use crate::app::{EntityId, LoopMetricsSnapshot};
+use crate::app::{DebugInfoSnapshot, DebugJobState, EntityId, LoopMetricsSnapshot};
 
 const GLYPH_WIDTH: i32 = 3;
 const GLYPH_HEIGHT: i32 = 5;
@@ -16,6 +16,7 @@ pub(crate) struct OverlayData {
     pub selected_entity: Option<EntityId>,
     pub selected_target: Option<crate::app::Vec2>,
     pub resource_count: Option<u32>,
+    pub debug_info: Option<DebugInfoSnapshot>,
 }
 
 pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &OverlayData) {
@@ -23,7 +24,25 @@ pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &Ove
         return;
     }
 
-    let lines = [
+    let lines = build_overlay_lines(data);
+
+    let mut y = OVERLAY_PADDING;
+    for line in lines {
+        draw_text_clipped(
+            frame,
+            width,
+            height,
+            OVERLAY_PADDING,
+            y,
+            &line,
+            OVERLAY_COLOR,
+        );
+        y += LINE_ADVANCE;
+    }
+}
+
+fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
+    let mut lines = vec![
         format!("FPS: {:.1}", data.metrics.fps),
         format!("TPS: {:.1}", data.metrics.tps),
         format!("Frame: {:.2} ms", data.metrics.frame_time_ms),
@@ -40,18 +59,41 @@ pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &Ove
         format!("items: {}", data.resource_count.unwrap_or(0)),
     ];
 
-    let mut y = OVERLAY_PADDING;
-    for line in lines {
-        draw_text_clipped(
-            frame,
-            width,
-            height,
-            OVERLAY_PADDING,
-            y,
-            &line,
-            OVERLAY_COLOR,
-        );
-        y += LINE_ADVANCE;
+    if let Some(debug_info) = data.debug_info {
+        lines.push("Inspect".to_string());
+        lines.push(match debug_info.selected_entity {
+            Some(id) => format!("sel: {}", id.0),
+            None => "sel: none".to_string(),
+        });
+        lines.push(match debug_info.selected_position_world {
+            Some(pos) => format!("pos: {:.1},{:.1}", pos.x, pos.y),
+            None => "pos: none".to_string(),
+        });
+        lines.push(match debug_info.selected_order_world {
+            Some(target) => format!("ord: {:.1},{:.1}", target.x, target.y),
+            None => "ord: idle".to_string(),
+        });
+        lines.push(format!(
+            "job: {}",
+            debug_job_state_text(debug_info.selected_job_state)
+        ));
+        lines.push(format!(
+            "cnt e/a/i/r: {}/{}/{}/{}",
+            debug_info.entity_count,
+            debug_info.actor_count,
+            debug_info.interactable_count,
+            debug_info.resource_count
+        ));
+    }
+
+    lines
+}
+
+fn debug_job_state_text(state: DebugJobState) -> String {
+    match state {
+        DebugJobState::None => "none".to_string(),
+        DebugJobState::Idle => "idle".to_string(),
+        DebugJobState::Working { remaining_time } => format!("work {:.1}", remaining_time),
     }
 }
 
@@ -241,8 +283,32 @@ fn glyph_for(ch: char) -> Option<Glyph> {
         'g' => Glyph {
             rows: [0b000, 0b111, 0b101, 0b111, 0b001],
         },
+        'I' => Glyph {
+            rows: [0b111, 0b010, 0b010, 0b010, 0b111],
+        },
+        'p' => Glyph {
+            rows: [0b000, 0b110, 0b101, 0b110, 0b100],
+        },
+        'c' => Glyph {
+            rows: [0b000, 0b111, 0b100, 0b100, 0b111],
+        },
+        'j' => Glyph {
+            rows: [0b001, 0b000, 0b001, 0b101, 0b010],
+        },
+        'b' => Glyph {
+            rows: [0b100, 0b100, 0b110, 0b101, 0b110],
+        },
+        'w' => Glyph {
+            rows: [0b000, 0b101, 0b101, 0b111, 0b010],
+        },
+        'k' => Glyph {
+            rows: [0b100, 0b101, 0b110, 0b101, 0b101],
+        },
         ',' => Glyph {
             rows: [0b000, 0b000, 0b000, 0b010, 0b100],
+        },
+        '/' => Glyph {
+            rows: [0b001, 0b001, 0b010, 0b100, 0b100],
         },
         _ => return None,
     })
@@ -264,6 +330,7 @@ mod tests {
         let required: HashSet<char> = [
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ':', ' ', '-', 'F', 'P', 'S',
             'T', 'r', 'a', 'm', 'e', 'E', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S', 'g', ',',
+            'I', 'p', 'c', 'j', 'b', 'w', 'k', '/',
         ]
         .into_iter()
         .collect();
@@ -310,5 +377,36 @@ mod tests {
         assert_eq!(GLYPH_ADVANCE, 8);
         assert_eq!(LINE_ADVANCE, 14);
         assert_eq!(OVERLAY_PADDING, 12);
+    }
+
+    #[test]
+    fn inspect_block_lines_follow_scaled_layout() {
+        let data = OverlayData {
+            metrics: LoopMetricsSnapshot::default(),
+            entity_count: 3,
+            content_status: "loaded",
+            selected_entity: Some(EntityId(1)),
+            selected_target: None,
+            resource_count: Some(2),
+            debug_info: Some(DebugInfoSnapshot {
+                selected_entity: Some(EntityId(1)),
+                selected_position_world: Some(crate::app::Vec2 { x: 1.0, y: 2.0 }),
+                selected_order_world: None,
+                selected_job_state: DebugJobState::Working {
+                    remaining_time: 1.5,
+                },
+                entity_count: 3,
+                actor_count: 1,
+                interactable_count: 1,
+                resource_count: 2,
+            }),
+        };
+        let lines = build_overlay_lines(&data);
+        assert_eq!(lines.len(), 14);
+        assert_eq!(lines[8], "Inspect");
+        assert_eq!(
+            OVERLAY_PADDING + (lines.len() as i32 - 1) * LINE_ADVANCE,
+            194
+        );
     }
 }

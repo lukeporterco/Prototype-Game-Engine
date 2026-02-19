@@ -111,7 +111,7 @@ impl InputSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntityId(pub u64);
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Vec2 {
     pub x: f32,
     pub y: f32,
@@ -167,6 +167,25 @@ pub enum JobState {
         target: EntityId,
         remaining_time: f32,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DebugJobState {
+    None,
+    Idle,
+    Working { remaining_time: f32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DebugInfoSnapshot {
+    pub selected_entity: Option<EntityId>,
+    pub selected_position_world: Option<Vec2>,
+    pub selected_order_world: Option<Vec2>,
+    pub selected_job_state: DebugJobState,
+    pub entity_count: usize,
+    pub actor_count: usize,
+    pub interactable_count: usize,
+    pub resource_count: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -412,6 +431,9 @@ pub trait Scene {
     fn debug_resource_count(&self) -> Option<u32> {
         None
     }
+    fn debug_info_snapshot(&self, _world: &SceneWorld) -> Option<DebugInfoSnapshot> {
+        None
+    }
 }
 
 pub(crate) struct SceneMachine {
@@ -473,6 +495,13 @@ impl SceneMachine {
 
     pub(crate) fn debug_resource_count_active(&self) -> Option<u32> {
         self.active_scene_ref().debug_resource_count()
+    }
+
+    pub(crate) fn debug_info_snapshot_active(
+        &self,
+        world: &SceneWorld,
+    ) -> Option<DebugInfoSnapshot> {
+        self.active_scene_ref().debug_info_snapshot(world)
     }
 
     pub(crate) fn switch_to(&mut self, next_scene: SceneKey, world: &mut SceneWorld) -> bool {
@@ -538,6 +567,38 @@ mod tests {
         fn render(&mut self, _world: &SceneWorld) {}
 
         fn unload(&mut self, _world: &mut SceneWorld) {}
+    }
+
+    struct DebugScene;
+
+    impl Scene for DebugScene {
+        fn load(&mut self, _world: &mut SceneWorld) {}
+
+        fn update(
+            &mut self,
+            _fixed_dt_seconds: f32,
+            _input: &InputSnapshot,
+            _world: &mut SceneWorld,
+        ) -> SceneCommand {
+            SceneCommand::None
+        }
+
+        fn render(&mut self, _world: &SceneWorld) {}
+
+        fn unload(&mut self, _world: &mut SceneWorld) {}
+
+        fn debug_info_snapshot(&self, world: &SceneWorld) -> Option<DebugInfoSnapshot> {
+            Some(DebugInfoSnapshot {
+                selected_entity: Some(EntityId(7)),
+                selected_position_world: Some(Vec2 { x: 1.0, y: 2.0 }),
+                selected_order_world: None,
+                selected_job_state: DebugJobState::Idle,
+                entity_count: world.entity_count(),
+                actor_count: 0,
+                interactable_count: 0,
+                resource_count: 0,
+            })
+        }
     }
 
     #[test]
@@ -823,5 +884,25 @@ mod tests {
         let picked =
             world.pick_topmost_interactable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
         assert_eq!(picked, Some(second));
+    }
+
+    #[test]
+    fn scene_machine_debug_info_passthrough_returns_active_scene_snapshot() {
+        let world = SceneWorld::default();
+        let machine = SceneMachine::new(
+            Box::new(DebugScene),
+            Box::new(TestScene { spawn_count: 0 }),
+            SceneKey::A,
+        );
+
+        let snapshot = machine
+            .debug_info_snapshot_active(&world)
+            .expect("snapshot");
+        assert_eq!(snapshot.selected_entity, Some(EntityId(7)));
+        assert_eq!(
+            snapshot.selected_position_world,
+            Some(Vec2 { x: 1.0, y: 2.0 })
+        );
+        assert_eq!(snapshot.selected_job_state, DebugJobState::Idle);
     }
 }
