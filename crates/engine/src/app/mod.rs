@@ -15,6 +15,6 @@ pub use rendering::{
 pub use scene::{
     Camera2D, DebugInfoSnapshot, DebugJobState, Entity, EntityId, InputSnapshot, Interactable,
     InteractableKind, JobState, RenderableDesc, RenderableKind, Scene, SceneCommand, SceneKey,
-    SceneWorld, Transform, Vec2,
+    SceneWorld, Tilemap, TilemapError, Transform, Vec2,
 };
 pub(crate) use tools::OverlayData;

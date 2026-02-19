@@ -16,6 +16,9 @@ const GRID_CELL_WORLD: f32 = 1.0;
 const GRID_MAJOR_EVERY: i32 = 5;
 const GRID_MINOR_COLOR: [u8; 4] = [35, 39, 46, 255];
 const GRID_MAJOR_COLOR: [u8; 4] = [52, 58, 70, 255];
+const TILE_FALLBACK_GRASS_COLOR: [u8; 4] = [74, 112, 56, 255];
+const TILE_FALLBACK_DIRT_COLOR: [u8; 4] = [112, 83, 58, 255];
+const TILE_FALLBACK_UNKNOWN_COLOR: [u8; 4] = [68, 74, 62, 255];
 
 struct LoadedSprite {
     width: u32,
@@ -72,6 +75,14 @@ impl<'window> Renderer<'window> {
             chunk.copy_from_slice(&CLEAR_COLOR);
         }
 
+        draw_tilemap(
+            frame,
+            self.viewport.width,
+            self.viewport.height,
+            world,
+            sprite_cache,
+            asset_root,
+        );
         draw_world_grid(frame, self.viewport.width, self.viewport.height, world);
 
         for entity in world.entities() {
@@ -123,6 +134,71 @@ impl<'window> Renderer<'window> {
 
         self.pixels.render()
     }
+}
+
+fn draw_tilemap(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    world: &SceneWorld,
+    sprite_cache: &mut HashMap<String, Option<LoadedSprite>>,
+    asset_root: &Path,
+) {
+    let Some(tilemap) = world.tilemap() else {
+        return;
+    };
+
+    for y in 0..tilemap.height() {
+        for x in 0..tilemap.width() {
+            let Some(tile_id) = tilemap.tile_at(x, y) else {
+                continue;
+            };
+            let Some(center_world) = tilemap.tile_center_world(x, y) else {
+                continue;
+            };
+            let (cx, cy) = world_to_screen_px(world.camera(), (width, height), center_world);
+            if let Some(key) = tile_sprite_key(tile_id) {
+                if let Some(sprite) = resolve_cached_sprite(sprite_cache, asset_root, key) {
+                    draw_sprite_centered(frame, width, height, cx, cy, sprite);
+                    continue;
+                }
+            }
+            draw_tile_fallback(frame, width, height, cx, cy, tile_id);
+        }
+    }
+}
+
+fn tile_sprite_key(tile_id: u16) -> Option<&'static str> {
+    match tile_id {
+        0 => Some("tile/grass"),
+        1 => Some("tile/dirt"),
+        _ => None,
+    }
+}
+
+fn draw_tile_fallback(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    center_x: i32,
+    center_y: i32,
+    tile_id: u16,
+) {
+    let color = match tile_id {
+        0 => TILE_FALLBACK_GRASS_COLOR,
+        1 => TILE_FALLBACK_DIRT_COLOR,
+        _ => TILE_FALLBACK_UNKNOWN_COLOR,
+    };
+    let half_size = (PIXELS_PER_WORLD / 2.0).round() as i32;
+    draw_square(
+        frame,
+        width,
+        height,
+        center_x,
+        center_y,
+        half_size.max(1),
+        color,
+    );
 }
 
 fn resolve_cached_sprite<'a>(
@@ -332,7 +408,7 @@ fn draw_sprite_centered(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Camera2D;
+    use crate::app::{Camera2D, Tilemap};
     use tempfile::TempDir;
 
     #[test]
@@ -411,5 +487,39 @@ mod tests {
             asset_root.join("base").join("sprites").join("player.png")
         );
         assert!(load_sprite_rgba(&valid_path).is_none());
+    }
+
+    #[test]
+    fn tile_id_mapping_known_and_unknown() {
+        assert_eq!(tile_sprite_key(0), Some("tile/grass"));
+        assert_eq!(tile_sprite_key(1), Some("tile/dirt"));
+        assert_eq!(tile_sprite_key(999), None);
+    }
+
+    #[test]
+    fn tile_center_projection_pans_with_camera() {
+        let tilemap = Tilemap::new(4, 4, Vec2 { x: 0.0, y: 0.0 }, vec![0; 16]).expect("tilemap");
+        let center = tilemap.tile_center_world(1, 2).expect("center");
+        let camera_a = Camera2D {
+            position: Vec2 { x: 0.0, y: 0.0 },
+        };
+        let camera_b = Camera2D {
+            position: Vec2 { x: 1.0, y: 1.0 },
+        };
+
+        let (xa, ya) = world_to_screen_px(&camera_a, (1280, 720), center);
+        let (xb, yb) = world_to_screen_px(&camera_b, (1280, 720), center);
+        assert_eq!(xa - xb, PIXELS_PER_WORLD.round() as i32);
+        assert_eq!(yb - ya, PIXELS_PER_WORLD.round() as i32);
+    }
+
+    #[test]
+    fn tilemap_draw_handles_missing_sprites_with_fallback() {
+        let temp = TempDir::new().expect("temp");
+        let asset_root = temp.path();
+
+        let grass_path = resolve_sprite_image_path(asset_root, tile_sprite_key(0).expect("key"))
+            .expect("sprite path");
+        assert!(load_sprite_rgba(&grass_path).is_none());
     }
 }

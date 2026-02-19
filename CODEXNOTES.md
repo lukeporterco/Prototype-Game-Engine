@@ -155,6 +155,25 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 
 ---
 
+## Ticket Notes (2026-02-19, Ticket 18)
+- SceneWorld tilemap state added for visual ground context:
+  - `Tilemap { width, height, origin, tiles: Vec<u16> }`
+  - `SceneWorld::{set_tilemap, clear_tilemap, tilemap}`
+- Tilemap origin convention is explicit and enforced:
+  - `origin` is tile `(0,0)` bottom-left corner in world space
+  - tile center is `origin + (x + 0.5, y + 0.5)`
+- Clear behavior contract:
+  - `SceneWorld::clear()` does not clear tilemap
+  - tilemap persists until `clear_tilemap()` is called
+- Render order contract updated:
+  - `clear -> tilemap -> grid debug -> entities -> overlay`
+- Renderer v0 tile mapping (engine-owned constants):
+  - tile id `0` -> `tile/grass`
+  - tile id `1` -> `tile/dirt`
+  - unresolved/missing tiles fallback to solid ground color
+
+---
+
 ## Ticket Notes (2026-02-19)
 - Ticket 1 implemented: engine heartbeat and lifecycle loop with fixed-timestep simulation and decoupled metrics surface.
 - App/Loop contract added in `crates/engine/src/app/`:

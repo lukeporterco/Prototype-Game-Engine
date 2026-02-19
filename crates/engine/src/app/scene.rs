@@ -1,6 +1,7 @@
 use super::input::{ActionStates, InputAction};
 use super::rendering::{world_to_screen_px, PLACEHOLDER_HALF_SIZE_PX};
 use crate::content::DefDatabase;
+use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SceneKey {
@@ -162,6 +163,76 @@ impl Default for Transform {
     }
 }
 
+/// Tilemap origin convention:
+/// - `origin` is the world position of tile (0,0) bottom-left corner.
+/// - The center of tile (x,y) is `origin + (x + 0.5, y + 0.5)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tilemap {
+    width: u32,
+    height: u32,
+    origin: Vec2,
+    tiles: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum TilemapError {
+    #[error("tile count mismatch: expected {expected}, got {actual}")]
+    TileCountMismatch { expected: usize, actual: usize },
+}
+
+impl Tilemap {
+    pub fn new(
+        width: u32,
+        height: u32,
+        origin: Vec2,
+        tiles: Vec<u16>,
+    ) -> Result<Self, TilemapError> {
+        let expected = width as usize * height as usize;
+        let actual = tiles.len();
+        if expected != actual {
+            return Err(TilemapError::TileCountMismatch { expected, actual });
+        }
+        Ok(Self {
+            width,
+            height,
+            origin,
+            tiles,
+        })
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn origin(&self) -> Vec2 {
+        self.origin
+    }
+
+    pub fn index_of(&self, x: u32, y: u32) -> Option<usize> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        Some(y as usize * self.width as usize + x as usize)
+    }
+
+    pub fn tile_at(&self, x: u32, y: u32) -> Option<u16> {
+        self.index_of(x, y)
+            .and_then(|index| self.tiles.get(index).copied())
+    }
+
+    pub fn tile_center_world(&self, x: u32, y: u32) -> Option<Vec2> {
+        self.index_of(x, y)?;
+        Some(Vec2 {
+            x: self.origin.x + x as f32 + 0.5,
+            y: self.origin.y + y as f32 + 0.5,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderableKind {
     Placeholder,
@@ -249,6 +320,7 @@ pub struct SceneWorld {
     pending_despawns: Vec<EntityId>,
     next_applied_spawn_order: u64,
     camera: Camera2D,
+    tilemap: Option<Tilemap>,
     def_database: Option<DefDatabase>,
 }
 
@@ -324,6 +396,18 @@ impl SceneWorld {
         self.pending_despawns.clear();
         self.next_applied_spawn_order = 0;
         self.camera = Camera2D::default();
+    }
+
+    pub fn set_tilemap(&mut self, tilemap: Tilemap) {
+        self.tilemap = Some(tilemap);
+    }
+
+    pub fn clear_tilemap(&mut self) {
+        self.tilemap = None;
+    }
+
+    pub fn tilemap(&self) -> Option<&Tilemap> {
+        self.tilemap.as_ref()
     }
 
     pub fn entity_count(&self) -> usize {
@@ -636,6 +720,16 @@ impl SceneMachine {
 mod tests {
     use super::*;
 
+    fn make_tilemap(width: u32, height: u32, origin: Vec2, fill: u16) -> Tilemap {
+        Tilemap::new(
+            width,
+            height,
+            origin,
+            vec![fill; width as usize * height as usize],
+        )
+        .expect("tilemap")
+    }
+
     struct TestScene {
         spawn_count: usize,
     }
@@ -900,6 +994,59 @@ mod tests {
         world.set_def_database(DefDatabase::default());
         world.clear();
         assert!(world.def_database().is_some());
+    }
+
+    #[test]
+    fn tilemap_new_rejects_invalid_tile_count() {
+        let err = Tilemap::new(2, 2, Vec2 { x: 0.0, y: 0.0 }, vec![0, 1, 2]).expect_err("err");
+        assert_eq!(
+            err,
+            TilemapError::TileCountMismatch {
+                expected: 4,
+                actual: 3
+            }
+        );
+    }
+
+    #[test]
+    fn tilemap_indexing_and_bounds() {
+        let tilemap =
+            Tilemap::new(2, 2, Vec2 { x: 0.0, y: 0.0 }, vec![10, 11, 12, 13]).expect("tilemap");
+        assert_eq!(tilemap.index_of(0, 0), Some(0));
+        assert_eq!(tilemap.index_of(1, 1), Some(3));
+        assert_eq!(tilemap.tile_at(0, 0), Some(10));
+        assert_eq!(tilemap.tile_at(1, 1), Some(13));
+        assert_eq!(tilemap.index_of(2, 0), None);
+        assert_eq!(tilemap.index_of(0, 2), None);
+        assert_eq!(tilemap.tile_at(2, 2), None);
+    }
+
+    #[test]
+    fn tilemap_origin_center_formula_is_enforced() {
+        let tilemap = make_tilemap(4, 4, Vec2 { x: 3.0, y: -2.0 }, 1);
+        let center = tilemap.tile_center_world(2, 1).expect("center");
+        assert_eq!(center, Vec2 { x: 5.5, y: -0.5 });
+    }
+
+    #[test]
+    fn scene_world_clear_preserves_tilemap() {
+        let mut world = SceneWorld::default();
+        world.set_tilemap(make_tilemap(3, 2, Vec2 { x: -1.0, y: 4.0 }, 7));
+        world.clear();
+        let tilemap = world.tilemap().expect("tilemap");
+        assert_eq!(tilemap.width(), 3);
+        assert_eq!(tilemap.height(), 2);
+        assert_eq!(tilemap.origin(), Vec2 { x: -1.0, y: 4.0 });
+        assert_eq!(tilemap.tile_at(1, 1), Some(7));
+    }
+
+    #[test]
+    fn clear_tilemap_explicitly_removes_tilemap() {
+        let mut world = SceneWorld::default();
+        world.set_tilemap(make_tilemap(2, 2, Vec2 { x: 0.0, y: 0.0 }, 1));
+        assert!(world.tilemap().is_some());
+        world.clear_tilemap();
+        assert!(world.tilemap().is_none());
     }
 
     #[test]
@@ -1176,5 +1323,37 @@ mod tests {
             Some(Vec2 { x: 1.0, y: 2.0 })
         );
         assert_eq!(snapshot.selected_job_state, DebugJobState::Idle);
+    }
+
+    #[test]
+    fn scene_switch_preserves_each_scene_tilemap_state() {
+        let mut machine = SceneMachine::new(
+            Box::new(TestScene { spawn_count: 0 }),
+            Box::new(TestScene { spawn_count: 0 }),
+            SceneKey::A,
+        );
+        machine.load_active();
+        machine.apply_pending_active();
+
+        machine
+            .active_world_mut()
+            .set_tilemap(make_tilemap(2, 2, Vec2 { x: 0.0, y: 0.0 }, 1));
+        assert!(machine.switch_to(SceneKey::B));
+        machine.apply_pending_active();
+        machine
+            .active_world_mut()
+            .set_tilemap(make_tilemap(2, 2, Vec2 { x: 10.0, y: 10.0 }, 2));
+
+        assert!(machine.switch_to(SceneKey::A));
+        machine.apply_pending_active();
+        let a_tilemap = machine.active_world().tilemap().expect("a tilemap");
+        assert_eq!(a_tilemap.origin(), Vec2 { x: 0.0, y: 0.0 });
+        assert_eq!(a_tilemap.tile_at(0, 0), Some(1));
+
+        assert!(machine.switch_to(SceneKey::B));
+        machine.apply_pending_active();
+        let b_tilemap = machine.active_world().tilemap().expect("b tilemap");
+        assert_eq!(b_tilemap.origin(), Vec2 { x: 10.0, y: 10.0 });
+        assert_eq!(b_tilemap.tile_at(0, 0), Some(2));
     }
 }

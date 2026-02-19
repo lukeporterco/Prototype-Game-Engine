@@ -6,7 +6,7 @@ use engine::{
     resolve_app_paths, run_app, screen_to_world_px, ContentPlanRequest, DebugInfoSnapshot,
     DebugJobState, EntityArchetype, EntityId, InputAction, InputSnapshot, Interactable,
     InteractableKind, JobState, LoopConfig, RenderableDesc, RenderableKind, Scene, SceneCommand,
-    SceneKey, SceneWorld, Transform, Vec2,
+    SceneKey, SceneWorld, Tilemap, Transform, Vec2,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
@@ -378,6 +378,7 @@ impl Scene for GameplayScene {
     fn load(&mut self, world: &mut SceneWorld) {
         let player_archetype = resolve_player_archetype(world);
         let pile_archetype = resolve_resource_pile_archetype(world);
+        world.set_tilemap(build_ground_tilemap(self.scene_key()));
         self.player_move_speed = player_archetype.move_speed;
         let player_id = world.spawn_actor(
             Transform {
@@ -758,6 +759,32 @@ impl Scene for GameplayScene {
             resource_count: self.resource_count,
         })
     }
+}
+
+fn build_ground_tilemap(scene_key: SceneKey) -> Tilemap {
+    let width = 16u32;
+    let height = 12u32;
+    let mut tiles = Vec::with_capacity((width * height) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let checker = ((x + y) % 2) as u16;
+            let tile_id = match scene_key {
+                SceneKey::A => checker,
+                SceneKey::B => 1u16.saturating_sub(checker),
+            };
+            tiles.push(tile_id);
+        }
+    }
+    Tilemap::new(
+        width,
+        height,
+        Vec2 {
+            x: -(width as f32) / 2.0,
+            y: -(height as f32) / 2.0,
+        },
+        tiles,
+    )
+    .expect("static tilemap shape is valid")
 }
 
 fn resolve_player_archetype(world: &SceneWorld) -> EntityArchetype {
