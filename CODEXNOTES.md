@@ -238,3 +238,27 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - unknown characters are treated as space (safe fallback)
 - Safety rule locked:
   - text blitter is clipping-safe by design (negative/off-screen coords and tiny viewports never panic or write out of bounds)
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 6)
+- Added spec doc: `docs/content_pipeline_contract_v1.md`.
+- Added fixture set and expectation matrix:
+  - `docs/fixtures/content_pipeline_v1/`
+  - `docs/fixtures/content_pipeline_v1/EXPECTATIONS.md`
+- Boundary contract locked:
+  - XML authoring -> compiled per-mod `ContentPack v1` -> runtime `DefDatabase`
+  - runtime simulation must never parse XML
+- `mod_id` source rule locked:
+  - mods use leaf folder name under `mods/`
+  - base content uses `mod_id = "base"` from `assets/base`
+- Cache invalidation rules clarified:
+  - `compiler_version` and `game_version` are exact-match strings (byte-for-byte equality)
+  - any string difference invalidates cache and requires rebuild
+- Deterministic rules documented:
+  - path-normalized lexical file ordering
+  - document-order read
+  - `(def_type, def_name)` serialization/ID ordering
+- Override behavior locked:
+  - scalar fields are last-writer-wins
+  - list fields are full replacement (no append/deep merge in v1)

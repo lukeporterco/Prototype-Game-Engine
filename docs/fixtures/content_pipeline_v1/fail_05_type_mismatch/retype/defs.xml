@@ -1,0 +1,6 @@
+﻿<Defs>
+  <ItemDef>
+    <defName>proto.shared_key</defName>
+    <label>Shared Key Item</label>
+  </ItemDef>
+</Defs>

@@ -1,0 +1,7 @@
+﻿<Defs>
+  <EntityDef>
+    <defName>proto.shared_key</defName>
+    <label>Shared Key Entity</label>
+    <renderable>Placeholder</renderable>
+  </EntityDef>
+</Defs>

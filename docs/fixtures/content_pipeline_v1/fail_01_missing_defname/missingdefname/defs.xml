@@ -1,0 +1,7 @@
+﻿<Defs>
+  <EntityDef>
+    <label>Nameless</label>
+    <renderable>Placeholder</renderable>
+    <moveSpeed>5.0</moveSpeed>
+  </EntityDef>
+</Defs>

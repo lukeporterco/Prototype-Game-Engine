@@ -64,6 +64,17 @@ If no matching root is found, startup fails fast with instructions.
   - `Content: loaded` (reserved placeholder for content compile/load status)
 - Overlay text blitting is clipping-safe for very small windows and off-screen text.
 
+## Content Pipeline Contract (Ticket 6)
+
+- Ticket 6 is spec-first only (no compiler implementation yet).
+- Contract doc: `docs/content_pipeline_contract_v1.md`
+- Fixture inputs and expected outcomes: `docs/fixtures/content_pipeline_v1/`
+- Locked rules include:
+  - runtime consumes compiled `DefDatabase` only (never XML)
+  - per-mod `ContentPack v1` cache model
+  - `mod_id` sourced from mod folder name
+  - `compiler_version` and `game_version` invalidation by exact string match
+
 ## Scenes and Entities
 
 - Two hardcoded in-memory scenes are active.

@@ -1,0 +1,8 @@
+﻿<Defs>
+  <EntityDef>
+    <defName>proto.invalid_unknown_field</defName>
+    <label>Invalid Unknown Field</label>
+    <renderable>Placeholder</renderable>
+    <mood>Happy</mood>
+  </EntityDef>
+</Defs>

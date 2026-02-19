@@ -1,0 +1,8 @@
+﻿<Defs>
+  <EntityDef>
+    <defName>proto.worker</defName>
+    <label>Skilled Worker</label>
+    <renderable>Placeholder</renderable>
+    <moveSpeed>4.5</moveSpeed>
+  </EntityDef>
+</Defs>

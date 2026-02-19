@@ -1,0 +1,12 @@
+﻿<Defs>
+  <EntityDef>
+    <defName>proto.miner</defName>
+    <label>Miner</label>
+    <renderable>Placeholder</renderable>
+    <moveSpeed>3.8</moveSpeed>
+    <tags>
+      <li>specialist</li>
+      <li>night_shift</li>
+    </tags>
+  </EntityDef>
+</Defs>

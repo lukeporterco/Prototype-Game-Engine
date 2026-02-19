@@ -1,0 +1,12 @@
+﻿<Defs>
+  <EntityDef>
+    <defName>proto.dup</defName>
+    <label>Duplicate A</label>
+    <renderable>Placeholder</renderable>
+  </EntityDef>
+  <EntityDef>
+    <defName>proto.dup</defName>
+    <label>Duplicate B</label>
+    <renderable>Placeholder</renderable>
+  </EntityDef>
+</Defs>
