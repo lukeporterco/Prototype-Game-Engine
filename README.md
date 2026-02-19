@@ -169,11 +169,61 @@ export PROTOGE_ENABLED_MODS="betterlabels,replacetags"
 cargo run
 ```
 
-## Scenes and Entities
+## Selection, Orders, Jobs, and Inspect (Tickets 11-14)
+
+- Left click selects an entity under the cursor (`Sel: ...` in overlay).
+- Right click issues move/interact intent for selected actors.
+- Minimal interactable/job loop is implemented:
+  - actor moves into interaction range
+  - timed work runs in fixed-step
+  - completion increments `items` and decrements/despawns pile uses
+- Overlay includes inspect/debug lines for selected entity state:
+  - transform
+  - order target
+  - job state
+  - world counts/resource counters
+
+## Persistent Scene Runtime (Ticket 14.5)
 
 - Two hardcoded in-memory scenes are active.
 - Press `Tab` to switch between Scene A and Scene B at runtime.
-- Scene switching performs lifecycle in order: `unload -> clear -> load`.
+- Normal `SwitchTo` is non-destructive:
+  - no unload/clear/load on normal switch
+  - each scene keeps its own persistent `SceneWorld`
+  - inactive scene worlds are paused (not ticked)
+- Explicit hard reset path exists (`HardResetTo`) for `unload -> clear -> load` when needed.
+- Shutdown unloads loaded scenes once via `shutdown_all`.
+
+## Grid Debug Render (Ticket 15)
+
+- Renderer now draws a world-space grid background:
+  - draw order: clear -> grid -> entities -> overlay
+  - minor lines + major lines every 5 cells
+  - grid follows camera panning and resize
+  - clipping-safe and viewport-scoped line iteration
+
+## Save/Load v0 (Ticket 16)
+
+- Save key: `F5`
+- Load key: `F9`
+- Save files are per scene and stored under:
+  - `cache/saves/scene_a.save.json`
+  - `cache/saves/scene_b.save.json`
+- Save format includes version + runtime state only:
+  - camera
+  - entities/transforms/runtime fields
+  - selection
+  - move/job progress
+  - resource counters
+- Load validation is strict and runs before mutation:
+  - JSON parse must succeed
+  - `save_version` must match
+  - scene key must match active scene file scope
+  - all saved entity index references must be in range
+- Load does not require XML parsing at runtime; static config/renderables are rebuilt from compiled defs/archetypes.
+
+## Scenes and Entities
+
 - Entity model is engine-owned:
   - `EntityId` (session-unique)
   - `Transform` (`position` + optional `rotation_radians`)

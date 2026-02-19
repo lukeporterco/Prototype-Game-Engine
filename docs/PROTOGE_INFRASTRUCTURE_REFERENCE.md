@@ -1,231 +1,227 @@
 # PROTOGE Infrastructure Reference
 
 ## 1) Project snapshot
-- Proto GE is a prototype-first Rust game engine plus colony-sim vertical slice scaffold.
-- Current status is Vertical Slice v0: window + loop + scene + controllable entity + rendering + overlay + clean quit.
-- Ticket outcomes (0-10):
-  - Ticket 0: workspace bootstrap, canonical directories, deterministic root discovery.
-  - Ticket 1: fixed-timestep loop, responsive window lifecycle, structured loop metrics.
-  - Ticket 2: scene lifecycle seam, scene switching, engine-owned entity/world model.
-  - Ticket 3: action-based input seam and controllable entity movement.
-  - Ticket 4: `pixels` rendering path and camera/world-to-screen seam.
-  - Ticket 5: always-available tools overlay with safe clipping text blitter.
-  - Ticket 6: content pipeline contract spec (`docs/content_pipeline_contract_v1.md`).
-  - Ticket 7: deterministic mod discovery and compile-plan rails.
-  - Ticket 8: strict XML `EntityDef` compiler to runtime `DefDatabase`.
-  - Ticket 9: binary content pack cache with atomic writes and safe fallback.
-  - Ticket 10: field-level override merge with deterministic conflict behavior.
+- Proto GE is a prototype-first Rust engine plus colony-sim vertical slice scaffold.
+- Current status is Vertical Slice v0 with loop, scene runtime, entity interaction loop, rendering, overlay, and save/load v0.
+- Ticket outcomes (0-16):
+  - Ticket 0: workspace bootstrap, canonical dirs, deterministic root discovery.
+  - Ticket 1: fixed-timestep loop, lifecycle, structured metrics.
+  - Ticket 2: scene lifecycle seam and engine-owned world/entity model.
+  - Ticket 3: action-based input seam and controllable movement.
+  - Ticket 4: `pixels` renderer + camera/world-to-screen seam.
+  - Ticket 5: clipping-safe debug overlay and `F3` toggle.
+  - Ticket 6: content pipeline contract spec.
+  - Ticket 7: deterministic mod discovery + compile planning.
+  - Ticket 8: strict XML compiler to runtime `DefDatabase`.
+  - Ticket 9: binary content-pack cache with fallback rebuild.
+  - Ticket 10: field-level override merge semantics.
+  - Ticket 11: selection seam and deterministic picking order.
+  - Ticket 12: actor move targets and right-click order loop.
+  - Ticket 13: interactable + timed job completion loop.
+  - Ticket 14: inspect snapshot block in overlay.
+  - Ticket 14.5: persistent per-scene runtime worlds + explicit hard reset path.
+  - Ticket 15: world-space renderer grid debug pass.
+  - Ticket 16: save/load v0 (JSON, per-scene files, validation-first restore).
 
 ## 2) Repository map
 - Primary folders:
-  - `crates/engine`: engine runtime, app loop, rendering, tools, content pipeline.
-  - `crates/game`: game entrypoint, logging init, scene gameplay rules.
-  - `assets/base`: base content XML source.
-  - `mods`: mod folders (XML source per mod).
-  - `cache`: runtime-generated content cache.
-  - `docs`: specs, fixtures, operational docs.
-- Source-controlled:
-  - Rust source, docs, fixtures, `assets/base`, `mods` scaffolding.
-- Runtime-generated:
+  - `crates/engine`: app loop, input, scene runtime, rendering, overlay, content pipeline.
+  - `crates/game`: gameplay rules, scene behavior, save/load v0.
+  - `assets/base`: base XML authoring source.
+  - `mods`: mod XML source.
+  - `cache`: runtime-generated data.
+  - `docs`: specs/fixtures/reference docs.
+- Runtime-generated outputs:
   - `cache/content_packs/*.pack`
   - `cache/content_packs/*.manifest.json`
+  - `cache/saves/scene_a.save.json`
+  - `cache/saves/scene_b.save.json`
   - build artifacts under `target/`.
 
-## 3) How to run
+## 3) Run and controls
 - Run command: `cargo run`.
-- Expected startup behavior:
-  - resolves app paths
-  - builds/loads content database
-  - opens window and runs fixed-step simulation + render loop
-  - exits via `Esc` or window close.
-- Root resolution:
-  - if `PROTOGE_ROOT` is set, use it after repo-marker validation.
-  - else walk upward from executable directory and choose first repo-marker match.
-  - repo marker is `Cargo.toml` plus either `crates/` or `assets/`.
+- Startup sequence:
+  - resolve app paths
+  - build/load compiled content database
+  - initialize scenes + renderer
+  - run fixed-step sim + decoupled render
+  - exit via `Esc` or window close.
 - Controls:
-  - Move: `W`, `A`, `S`, `D` and arrow keys.
-  - Camera pan: `I`, `J`, `K`, `L`.
+  - Move: `W/A/S/D` and arrow keys.
+  - Camera pan: `I/J/K/L`.
   - Scene switch: `Tab` (edge-triggered).
   - Overlay toggle: `F3` (edge-triggered).
+  - Save: `F5` (edge-triggered).
+  - Load: `F9` (edge-triggered).
   - Quit: `Esc` or window close.
 - Optional env vars:
-  - `PROTOGE_ENABLED_MODS`: comma-separated, ordered enabled mod IDs.
-  - `PROTOGE_SLOW_FRAME_MS`: artificial per-frame delay for clamp testing.
+  - `PROTOGE_ENABLED_MODS` (ordered, comma-separated).
+  - `PROTOGE_SLOW_FRAME_MS` (artificial frame delay).
+  - `PROTOGE_ROOT` (explicit root override).
 
 ## 4) Engine vs game seam rules
 - Engine owns:
-  - window/event loop (`winit`)
-  - rendering backend (`pixels`)
-  - raw input capture and action mapping
-  - fixed-step timing and lifecycle orchestration
-  - path resolution and content planning/compile/load pipeline
-  - overlay drawing and runtime metrics plumbing.
+  - window/event loop (`winit`) and renderer (`pixels`)
+  - raw input collection + action/edge snapshots
+  - fixed-step timing and clamp behavior
+  - scene runtime orchestration (`SceneMachine`)
+  - content planning/compile/load pipeline
+  - overlay rendering.
 - Game owns:
-  - `tracing_subscriber` initialization
-  - scene gameplay behavior and state
-  - optional debug title content via `Scene::debug_title`.
+  - gameplay logic/state transitions in `Scene` implementation
+  - selection/orders/jobs/interactable loop
+  - save/load DTOs and disk IO policy
+  - debug title/snapshot content.
 - Hard rules:
   - runtime simulation never parses XML.
-  - deterministic ordering is required for discovery, merge, and ID assignment.
-  - simulation updates run with fixed timestep principles.
+  - deterministic fixed-step simulation mindset.
+  - no broad architecture refactors outside ticket scope.
 
 ## 5) Runtime loop
-- Loop API surface:
+- API surface:
   - `run_app`, `run_app_with_metrics`, `LoopConfig`, `AppError`.
-- Fixed timestep model:
+- Fixed timestep:
   - accumulator + `fixed_dt` from `target_tps`.
-  - render cadence is separate from simulation ticks.
-- Clamp and anti-spiral controls:
-  - frame delta clamp via `max_frame_delta`.
-  - per-frame tick cap via `max_ticks_per_frame`.
-  - excess backlog is dropped and logged (`sim_clamp_triggered`).
-- Quit behavior:
-  - `WindowEvent::CloseRequested` and `Esc` trigger shutdown.
-- Metrics surface:
+  - render cadence separate from simulation ticks.
+- Anti-spiral controls:
+  - frame delta clamp (`max_frame_delta`)
+  - per-frame tick cap (`max_ticks_per_frame`)
+  - dropped backlog warning log (`sim_clamp_triggered`).
+- Metrics:
   - `MetricsHandle` and `LoopMetricsSnapshot { fps, tps, frame_time_ms }`.
-  - periodic structured logs emit loop metrics.
+- Shutdown:
+  - scene unload on exit via `SceneMachine::shutdown_all()`.
 
-## 6) Scenes and scene switching
-- Scene contract (`Scene` trait):
-  - `load(&mut self, &mut SceneWorld)`
-  - `update(&mut self, fixed_dt_seconds, &InputSnapshot, &mut SceneWorld) -> SceneCommand`
-  - `render(&mut self, &SceneWorld)`
-  - `unload(&mut self, &mut SceneWorld)`
-  - optional `debug_title(&self, &SceneWorld) -> Option<String>`.
-- Scene switching:
-  - `SceneCommand::{None, SwitchTo(SceneKey)}`.
-  - engine `SceneMachine` owns switching lifecycle.
-  - switch order is `unload -> world.clear -> load`.
-- Tab edge-trigger enforcement:
-  - in `InputCollector` (`crates/engine/src/app/loop_runner.rs`).
-  - `switch_scene_pressed` is one-frame true on press edge only.
+## 6) Scenes and switching semantics
+- `Scene` trait contract:
+  - `load`, `update`, `render`, `unload`
+  - optional debug methods (`debug_title`, selection/target/resource/debug snapshot seams).
+- `SceneMachine` runtime model:
+  - per-scene runtime slot: `scene + world + is_loaded`.
+  - each scene has a persistent `SceneWorld`.
+- Switching behavior:
+  - `SceneCommand::SwitchTo(SceneKey)`:
+    - non-destructive pointer switch
+    - load target once if never loaded
+    - no unload/clear/load on normal switch.
+  - `SceneCommand::HardResetTo(SceneKey)`:
+    - explicit `unload -> clear -> load -> activate`.
+- Pause semantics:
+  - only active scene world ticks; inactive worlds do not advance movement/jobs/timers.
 
-## 7) Entities and world model
-- `EntityId` scope:
-  - monotonic allocator for session lifetime, no ID reuse after scene switches.
-- Transform/world conventions:
-  - `Transform { position: Vec2, rotation_radians: Option<f32> }`.
-  - Y-up world convention used by world-to-screen transform.
+## 7) World/entity runtime model
+- `SceneWorld` owns:
+  - entities, pending spawn/despawn queues, camera, optional `DefDatabase`.
+- Entity runtime fields include:
+  - `id`, `transform`, `renderable`
+  - selection/order/job fields: `selectable`, `actor`, `move_target_world`
+  - interactable/job fields: `interactable`, `interaction_target`, `job_state`.
 - Queue semantics:
-  - spawns and despawns are buffered then applied via `SceneWorld::apply_pending()`.
-- `SceneWorld::clear()`:
-  - clears entities, pending queues, and camera.
-  - preserves compiled `DefDatabase` resource.
-- Camera resource:
-  - owned in `SceneWorld` as `Camera2D`.
-  - accessed via `camera()` and `camera_mut()`.
+  - `spawn*` and `despawn` enqueue; `apply_pending` commits.
+- Picking semantics:
+  - selectable/interactable screen hit tests use placeholder bounds.
+  - overlap winner is deterministic: last applied spawn order wins.
 
-## 8) Input system
-- Actions (`InputAction`):
-  - `MoveUp`, `MoveDown`, `MoveLeft`, `MoveRight`
-  - `CameraUp`, `CameraDown`, `CameraLeft`, `CameraRight`
-  - `ToggleOverlay`
-  - `Quit`.
-- Scene-side input surface:
-  - `InputSnapshot::is_down(action)`
-  - `InputSnapshot::switch_scene_pressed()`
-  - `InputSnapshot::quit_requested()`.
-- Mappings from physical keys:
-  - move: `WASD` and arrows.
-  - camera: `IJKL`.
-  - overlay: `F3`.
-  - quit: `Esc`.
-  - scene-switch edge: `Tab`.
-- Edge vs down-state:
-  - down-state tracked for actions.
-  - one-frame edges are tracked for `Tab` and `F3`.
+## 8) Input model
+- Down-state actions:
+  - movement (`Move*`), camera pan (`Camera*`), overlay toggle action state, quit.
+- Edge-trigger fields in `InputSnapshot`:
+  - `switch_scene_pressed`
+  - `left_click_pressed`
+  - `right_click_pressed`
+  - `save_pressed`
+  - `load_pressed`.
+- Mouse/window seam in `InputSnapshot`:
+  - `cursor_position_px`
+  - `window_size`.
 
 ## 9) Rendering
-- Backend and ownership:
-  - `Renderer` uses `pixels` + `winit`.
-  - renderer consumes `SceneWorld` entities and camera; no scene render API coupling added.
-- World-to-screen transform:
-  - `screen_x = (world_x - camera_x) * pixels_per_world + width/2`
-  - `screen_y = height/2 - (world_y - camera_y) * pixels_per_world`.
-- Scale:
-  - current constant is `PIXELS_PER_WORLD = 32.0`.
-- Resize handling:
-  - handles `Resized` and `ScaleFactorChanged`.
-  - resizes both surface and buffer.
+- Backend:
+  - `Renderer` (`pixels`) consumes active `SceneWorld`.
+- Projection seam:
+  - `world_to_screen_px(camera, window_size, world_pos)`
+  - `screen_to_world_px(camera, window_size, screen_px)` strict inverse.
 - Placeholder rendering:
-  - `RenderableKind::Placeholder` draws simple square marker.
+  - `RenderableKind::Placeholder` square markers.
+- Grid debug pass (Ticket 15):
+  - draw order: clear -> grid -> placeholders -> overlay.
+  - world-space minor lines + major lines every 5 cells.
+  - viewport-scoped line iteration only.
+  - deterministic major classification for negative indices via Euclidean modulo.
+  - clipping-safe per-pixel writes.
 
-## 10) Tools overlay
-- Data sources:
-  - `MetricsHandle::snapshot()`
-  - `SceneWorld::entity_count()`
-  - content status placeholder string (`"loaded"` currently passed by loop).
-- Rendering approach:
-  - small fixed bitmap glyph set in `tools/overlay.rs`.
-  - strict clipping-safe per-pixel writes with bounds checks.
-- Toggle behavior:
-  - `F3` edge-trigger toggles visibility.
+## 10) Overlay/debug
+- Overlay shows:
+  - FPS/TPS/frame/entity/content
+  - selection line (`Sel`)
+  - selected target (`Target`)
+  - resource count (`items`)
+  - inspect block from `DebugInfoSnapshot` (`Inspect`, `sel`, `pos`, `ord`, `job`, counts).
+- Overlay text renderer:
+  - small bitmap glyph set
+  - clipping-safe blitter with bounds checks.
 
-## 11) Content pipeline overview
-- Contract document:
-  - `docs/content_pipeline_contract_v1.md` is the v1 boundary spec.
-- Ticket 7 planning rails:
-  - `build_compile_plan(app_paths, request)` produces deterministic per-mod decisions.
-  - hashes include ordered enabled mods and normalized-path XML input hashes.
-  - manifest path: `cache/content_packs/<mod_id>.manifest.json`.
-  - pack path: `cache/content_packs/<mod_id>.pack`.
-- Ticket 8 compiler:
-  - strict XML parsing for `EntityDef`.
-  - compile errors include code, message, mod ID, file path, best-effort line/column.
-  - runtime output is `DefDatabase` with numeric IDs.
-- Ticket 9 pack cache:
-  - custom little-endian binary pack with payload SHA-256 integrity check.
-  - atomic write order is pack first, then manifest (each temp-file + rename).
-  - manifest is planning authority; loader also cross-checks redundant pack header metadata.
-  - per-mod cache failure falls back to recompile.
-- Ticket 10 overrides:
-  - field-level merge in load order.
-  - scalar fields last-writer-wins.
-  - `tags` list replacement when present.
-  - partial override with missing prior target fails fast (`MissingOverrideTarget`).
-  - `pack_format_version` is the single binary format version signal; current value is `2`.
+## 11) Gameplay loop (current micro-loop)
+- Selection:
+  - left click selects actor; empty click clears.
+- Orders:
+  - right click with selected actor:
+    - interactable-first behavior
+    - else regular move target.
+- Jobs:
+  - actor enters interaction radius, starts timed work.
+  - completion increments resource counter and decrements/despawns interactable uses.
+- Scene persistence:
+  - switching away/back preserves active world state exactly unless hard reset path is used.
 
-## 12) Practical workflows
-- Add and enable a mod:
-  - create folder `mods/<mod_id>/` with XML files.
-  - set `PROTOGE_ENABLED_MODS` to ordered mod IDs, e.g. `moda,modb`.
-  - run `cargo run` and verify content plan logs.
-- Test cache invalidation:
-  - edit one XML file in a mod and rerun; only that mod should rebuild.
-  - corrupt a `.pack` file and rerun; that mod should rebuild via fallback.
-- Add a new `InputAction` safely:
-  - add enum variant and index mapping in `app/input.rs`.
-  - map physical keys in `InputCollector`.
-  - expose/use it through `InputSnapshot`.
-  - add or update unit tests for mapping and behavior.
-- Add a new Def field safely:
-  - update XML parser and strict validation in compiler.
-  - define merge semantics (scalar replace, list replace, etc.).
-  - extend runtime `EntityArchetype`/database model.
-  - extend pack encode/decode payload.
-  - bump `pack_format_version` when binary schema changes.
-  - ensure planner/manifest compatibility logic remains exact-match.
-  - add compiler/pack/pipeline tests and fixture expectation updates.
+## 12) Save/load v0
+- Scope:
+  - active scene save/load only, per-scene file path in `cache/saves`.
+- Format:
+  - JSON with integer `save_version`.
+- Data policy:
+  - runtime-state focused payload:
+    - transforms/camera
+    - selection/player refs
+    - orders/job progress
+    - interactable runtime fields
+    - resource counters
+  - references stored as saved entity indices (array positions), not raw runtime IDs.
+- Load safety:
+  - validate parse/version/scene key/index references before mutation.
+  - if validation fails, current world state remains unchanged.
+- Reconstruction:
+  - static renderable/config is rebuilt from compiled defs/archetypes where applicable.
+  - runtime restore does not parse XML.
 
-## 13) Known tech debt and do-not-touch-yet
-- Current tech debt:
-  - `loop_runner.rs` leaks the `Window` reference via `Box::leak(...)` to satisfy current `winit` + `pixels` lifetime usage in the event-loop closure.
-- Why it exists:
-  - current architecture prioritizes stable prototype loop behavior over immediate lifetime refactor complexity.
-- Future refactor goal:
-  - eliminate leaked window by moving to a proper owned app-state lifecycle that satisfies lifetimes without leaking.
-- Do-not-touch-yet guidance:
-  - avoid broad event-loop architecture rewrites before next playable milestone.
-  - keep simulation single-threaded and deterministic-first.
-  - avoid large framework refactors that jeopardize vertical-slice momentum.
+## 13) Content pipeline overview
+- Authoring/runtime split:
+  - XML authoring -> compiled binary packs -> runtime `DefDatabase`.
+- Determinism:
+  - ordered source discovery/hash/merge rules.
+- Overrides:
+  - field-level merge (`tags` list replace, scalars last-writer-wins).
+- Cache:
+  - per-mod binary pack + manifest under `cache/content_packs`.
+  - manifest exact-match checks and pack integrity checks.
+  - bad cache falls back to recompile for affected mods.
 
-## 14) Quick checklist for changes
-- Run `cargo fmt --all`.
-- Run `cargo test --workspace`.
-- Verify determinism-sensitive behavior:
-  - fixed-step changes, ordering, merge rules, and ID stability.
-- If pack binary schema changes:
+## 14) Known tech debt / do-not-touch-yet
+- `Window` lifetime is currently satisfied via `Box::leak(...)` in loop runner.
+- Keep simulation single-threaded and deterministic-first.
+- Avoid broad event-loop or ECS-style refactors before next playable milestone.
+
+## 15) Practical checklist for changes
+- Run:
+  - `cargo fmt --all`
+  - `cargo test --workspace`
+- Validate seam contracts:
+  - fixed-step determinism and ordering-sensitive behavior.
+  - no runtime XML parsing introduced.
+- If binary content pack schema changes:
   - bump `pack_format_version`
-  - validate cache invalidation path.
-- Ensure runtime paths still never parse XML.
-- Update `README.md`, fixtures, and `CODEXNOTES.md` when contracts/interfaces change.
+  - verify cache invalidation/fallback behavior.
+- Keep docs in sync:
+  - `README.md`
+  - `CODEXNOTES.md`
+  - relevant contract docs/fixtures.
