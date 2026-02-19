@@ -1,4 +1,5 @@
 use super::input::{ActionStates, InputAction};
+use super::rendering::{world_to_screen_px, PLACEHOLDER_HALF_SIZE_PX};
 use crate::content::DefDatabase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,6 +19,10 @@ pub struct InputSnapshot {
     quit_requested: bool,
     switch_scene_pressed: bool,
     actions: ActionStates,
+    cursor_position_px: Option<Vec2>,
+    left_click_pressed: bool,
+    window_width: u32,
+    window_height: u32,
 }
 
 impl InputSnapshot {
@@ -29,11 +34,19 @@ impl InputSnapshot {
         quit_requested: bool,
         switch_scene_pressed: bool,
         actions: ActionStates,
+        cursor_position_px: Option<Vec2>,
+        left_click_pressed: bool,
+        window_width: u32,
+        window_height: u32,
     ) -> Self {
         Self {
             quit_requested,
             switch_scene_pressed,
             actions,
+            cursor_position_px,
+            left_click_pressed,
+            window_width,
+            window_height,
         }
     }
 
@@ -52,6 +65,34 @@ impl InputSnapshot {
     pub fn with_action_down(mut self, action: InputAction, is_down: bool) -> Self {
         self.actions.set(action, is_down);
         self
+    }
+
+    pub fn with_cursor_position_px(mut self, cursor_position_px: Option<Vec2>) -> Self {
+        self.cursor_position_px = cursor_position_px;
+        self
+    }
+
+    pub fn with_left_click_pressed(mut self, left_click_pressed: bool) -> Self {
+        self.left_click_pressed = left_click_pressed;
+        self
+    }
+
+    pub fn with_window_size(mut self, window_size: (u32, u32)) -> Self {
+        self.window_width = window_size.0;
+        self.window_height = window_size.1;
+        self
+    }
+
+    pub fn cursor_position_px(&self) -> Option<Vec2> {
+        self.cursor_position_px
+    }
+
+    pub fn left_click_pressed(&self) -> bool {
+        self.left_click_pressed
+    }
+
+    pub fn window_size(&self) -> (u32, u32) {
+        (self.window_width, self.window_height)
     }
 }
 
@@ -100,6 +141,8 @@ pub struct Entity {
     pub id: EntityId,
     pub transform: Transform,
     pub renderable: RenderableDesc,
+    pub selectable: bool,
+    applied_spawn_order: u64,
 }
 
 #[derive(Debug, Default)]
@@ -121,17 +164,37 @@ pub struct SceneWorld {
     entities: Vec<Entity>,
     pending_spawns: Vec<Entity>,
     pending_despawns: Vec<EntityId>,
+    next_applied_spawn_order: u64,
     camera: Camera2D,
     def_database: Option<DefDatabase>,
 }
 
 impl SceneWorld {
     pub fn spawn(&mut self, transform: Transform, renderable: RenderableDesc) -> EntityId {
+        self.spawn_internal(transform, renderable, false)
+    }
+
+    pub fn spawn_selectable(
+        &mut self,
+        transform: Transform,
+        renderable: RenderableDesc,
+    ) -> EntityId {
+        self.spawn_internal(transform, renderable, true)
+    }
+
+    fn spawn_internal(
+        &mut self,
+        transform: Transform,
+        renderable: RenderableDesc,
+        selectable: bool,
+    ) -> EntityId {
         let id = self.allocator.allocate();
         self.pending_spawns.push(Entity {
             id,
             transform,
             renderable,
+            selectable,
+            applied_spawn_order: 0,
         });
         id
     }
@@ -154,7 +217,11 @@ impl SceneWorld {
         }
 
         if !self.pending_spawns.is_empty() {
-            self.entities.append(&mut self.pending_spawns);
+            for mut entity in self.pending_spawns.drain(..) {
+                entity.applied_spawn_order = self.next_applied_spawn_order;
+                self.next_applied_spawn_order = self.next_applied_spawn_order.saturating_add(1);
+                self.entities.push(entity);
+            }
         }
     }
 
@@ -162,6 +229,7 @@ impl SceneWorld {
         self.entities.clear();
         self.pending_spawns.clear();
         self.pending_despawns.clear();
+        self.next_applied_spawn_order = 0;
         self.camera = Camera2D::default();
     }
 
@@ -189,6 +257,42 @@ impl SceneWorld {
         &mut self.camera
     }
 
+    pub fn pick_topmost_selectable_at_cursor(
+        &self,
+        cursor_position_px: Vec2,
+        window_size: (u32, u32),
+    ) -> Option<EntityId> {
+        let cursor_x = cursor_position_px.x.round() as i32;
+        let cursor_y = cursor_position_px.y.round() as i32;
+        let mut best: Option<(u64, EntityId)> = None;
+
+        for entity in &self.entities {
+            if !entity.selectable {
+                continue;
+            }
+            if !matches!(entity.renderable.kind, RenderableKind::Placeholder) {
+                continue;
+            }
+
+            let (cx, cy) =
+                world_to_screen_px(self.camera(), window_size, entity.transform.position);
+            let in_bounds = cursor_x >= cx - PLACEHOLDER_HALF_SIZE_PX
+                && cursor_x <= cx + PLACEHOLDER_HALF_SIZE_PX
+                && cursor_y >= cy - PLACEHOLDER_HALF_SIZE_PX
+                && cursor_y <= cy + PLACEHOLDER_HALF_SIZE_PX;
+            if !in_bounds {
+                continue;
+            }
+
+            match best {
+                Some((order, _)) if order >= entity.applied_spawn_order => {}
+                _ => best = Some((entity.applied_spawn_order, entity.id)),
+            }
+        }
+
+        best.map(|(_, id)| id)
+    }
+
     pub fn set_def_database(&mut self, def_database: DefDatabase) {
         self.def_database = Some(def_database);
     }
@@ -209,6 +313,9 @@ pub trait Scene {
     fn render(&mut self, world: &SceneWorld);
     fn unload(&mut self, world: &mut SceneWorld);
     fn debug_title(&self, _world: &SceneWorld) -> Option<String> {
+        None
+    }
+    fn debug_selected_entity(&self) -> Option<EntityId> {
         None
     }
 }
@@ -260,6 +367,10 @@ impl SceneMachine {
 
     pub(crate) fn debug_title_active(&self, world: &SceneWorld) -> Option<String> {
         self.active_scene_ref().debug_title(world)
+    }
+
+    pub(crate) fn debug_selected_entity_active(&self) -> Option<EntityId> {
+        self.active_scene_ref().debug_selected_entity()
     }
 
     pub(crate) fn switch_to(&mut self, next_scene: SceneKey, world: &mut SceneWorld) -> bool {
@@ -401,5 +512,125 @@ mod tests {
         world.set_def_database(DefDatabase::default());
         world.clear();
         assert!(world.def_database().is_some());
+    }
+
+    #[test]
+    fn pick_topmost_selectable_picks_last_applied_spawn_on_overlap() {
+        let mut world = SceneWorld::default();
+        let first = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "first",
+            },
+        );
+        let second = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "second",
+            },
+        );
+        world.apply_pending();
+
+        let picked =
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        assert_eq!(picked, Some(second));
+        assert_ne!(picked, Some(first));
+    }
+
+    #[test]
+    fn pick_topmost_selectable_stable_after_unrelated_despawn() {
+        let mut world = SceneWorld::default();
+        let unrelated = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 10.0, y: 10.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "unrelated",
+            },
+        );
+        let first_overlap = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "first_overlap",
+            },
+        );
+        let second_overlap = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "second_overlap",
+            },
+        );
+        world.apply_pending();
+
+        let before =
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        assert_eq!(before, Some(second_overlap));
+        assert_ne!(before, Some(first_overlap));
+
+        assert!(world.despawn(unrelated));
+        world.apply_pending();
+
+        let after =
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        assert_eq!(after, Some(second_overlap));
+        assert_ne!(after, Some(first_overlap));
+    }
+
+    #[test]
+    fn pick_returns_none_for_empty_space() {
+        let mut world = SceneWorld::default();
+        world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "entity",
+            },
+        );
+        world.apply_pending();
+
+        let picked =
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 20.0, y: 20.0 }, (1280, 720));
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn pick_ignores_non_selectable_entities() {
+        let mut world = SceneWorld::default();
+        world.spawn(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "entity",
+            },
+        );
+        world.apply_pending();
+
+        let picked =
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        assert_eq!(picked, None);
     }
 }

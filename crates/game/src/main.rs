@@ -13,6 +13,7 @@ struct GameplayScene {
     switch_target: SceneKey,
     player_spawn: Vec2,
     player_id: Option<EntityId>,
+    selected_entity: Option<EntityId>,
     player_move_speed: f32,
 }
 
@@ -23,6 +24,7 @@ impl GameplayScene {
             switch_target,
             player_spawn,
             player_id: None,
+            selected_entity: None,
             player_move_speed: 5.0,
         }
     }
@@ -32,7 +34,7 @@ impl Scene for GameplayScene {
     fn load(&mut self, world: &mut SceneWorld) {
         let player_archetype = resolve_player_archetype(world);
         self.player_move_speed = player_archetype.move_speed;
-        self.player_id = Some(world.spawn(
+        self.player_id = Some(world.spawn_selectable(
             Transform {
                 position: self.player_spawn,
                 rotation_radians: None,
@@ -42,6 +44,32 @@ impl Scene for GameplayScene {
                 debug_name: "player",
             },
         ));
+        world.spawn_selectable(
+            Transform {
+                position: Vec2 {
+                    x: self.player_spawn.x + 2.0,
+                    y: self.player_spawn.y,
+                },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: player_archetype.renderable,
+                debug_name: "unit_a",
+            },
+        );
+        world.spawn_selectable(
+            Transform {
+                position: Vec2 {
+                    x: self.player_spawn.x - 2.0,
+                    y: self.player_spawn.y + 1.0,
+                },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: player_archetype.renderable,
+                debug_name: "unit_b",
+            },
+        );
         world.apply_pending();
         info!(
             scene = self.scene_name,
@@ -58,6 +86,12 @@ impl Scene for GameplayScene {
     ) -> SceneCommand {
         if input.switch_scene_pressed() {
             return SceneCommand::SwitchTo(self.switch_target);
+        }
+
+        if input.left_click_pressed() {
+            self.selected_entity = input.cursor_position_px().and_then(|cursor_px| {
+                world.pick_topmost_selectable_at_cursor(cursor_px, input.window_size())
+            });
         }
 
         if let Some(player_id) = self.player_id {
@@ -84,6 +118,7 @@ impl Scene for GameplayScene {
             "scene_unload"
         );
         self.player_id = None;
+        self.selected_entity = None;
     }
 
     fn debug_title(&self, world: &SceneWorld) -> Option<String> {
@@ -98,6 +133,10 @@ impl Scene for GameplayScene {
             camera.position.y,
             world.entity_count()
         ))
+    }
+
+    fn debug_selected_entity(&self) -> Option<EntityId> {
+        self.selected_entity
     }
 }
 
@@ -232,6 +271,13 @@ mod tests {
         snapshot
     }
 
+    fn click_snapshot(cursor_px: Vec2, window_size: (u32, u32)) -> InputSnapshot {
+        InputSnapshot::empty()
+            .with_left_click_pressed(true)
+            .with_cursor_position_px(Some(cursor_px))
+            .with_window_size(window_size)
+    }
+
     #[test]
     fn movement_magnitude_is_speed_times_dt() {
         let input = snapshot_from_actions(&[InputAction::MoveRight]);
@@ -262,5 +308,111 @@ mod tests {
         let delta = camera_delta(&input, 1.0, 6.0);
         let magnitude = (delta.x * delta.x + delta.y * delta.y).sqrt();
         assert!((magnitude - 6.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn left_click_selects_entity_under_cursor() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let target_id = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 2.0, y: 1.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "target",
+            },
+        );
+        world.apply_pending();
+
+        let (x, y) =
+            engine::world_to_screen_px(world.camera(), (1280, 720), Vec2 { x: 2.0, y: 1.0 });
+        let click = click_snapshot(
+            Vec2 {
+                x: x as f32,
+                y: y as f32,
+            },
+            (1280, 720),
+        );
+        scene.update(1.0 / 60.0, &click, &mut world);
+
+        assert_eq!(scene.debug_selected_entity(), Some(target_id));
+    }
+
+    #[test]
+    fn clicking_empty_clears_selection() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "target",
+            },
+        );
+        world.apply_pending();
+
+        let first_click = click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &first_click, &mut world);
+        assert!(scene.debug_selected_entity().is_some());
+
+        let empty_click = click_snapshot(Vec2 { x: 30.0, y: 30.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &empty_click, &mut world);
+        assert_eq!(scene.debug_selected_entity(), None);
+    }
+
+    #[test]
+    fn selection_swaps_between_entities() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let a = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: -2.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "a",
+            },
+        );
+        let b = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 2.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "b",
+            },
+        );
+        world.apply_pending();
+
+        let (ax, ay) =
+            engine::world_to_screen_px(world.camera(), (1280, 720), Vec2 { x: -2.0, y: 0.0 });
+        let click_a = click_snapshot(
+            Vec2 {
+                x: ax as f32,
+                y: ay as f32,
+            },
+            (1280, 720),
+        );
+        scene.update(1.0 / 60.0, &click_a, &mut world);
+        assert_eq!(scene.debug_selected_entity(), Some(a));
+
+        let (bx, by) =
+            engine::world_to_screen_px(world.camera(), (1280, 720), Vec2 { x: 2.0, y: 0.0 });
+        let click_b = click_snapshot(
+            Vec2 {
+                x: bx as f32,
+                y: by as f32,
+            },
+            (1280, 720),
+        );
+        scene.update(1.0 / 60.0, &click_b, &mut world);
+        assert_eq!(scene.debug_selected_entity(), Some(b));
     }
 }

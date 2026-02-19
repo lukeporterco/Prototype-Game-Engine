@@ -3,12 +3,10 @@ use winit::window::Window;
 
 use crate::app::{tools::draw_overlay, OverlayData, RenderableKind, SceneWorld};
 
-use super::transform::{world_to_screen, Viewport};
+use super::{world_to_screen_px, Viewport, PLACEHOLDER_HALF_SIZE_PX};
 
 const CLEAR_COLOR: [u8; 4] = [20, 22, 28, 255];
 const PLACEHOLDER_COLOR: [u8; 4] = [220, 220, 240, 255];
-const PLACEHOLDER_HALF_SIZE: i32 = 5;
-const PIXELS_PER_WORLD: f32 = 32.0;
 
 pub struct Renderer<'window> {
     pixels: Pixels<'window>,
@@ -55,11 +53,10 @@ impl<'window> Renderer<'window> {
 
         for entity in world.entities() {
             if matches!(entity.renderable.kind, RenderableKind::Placeholder) {
-                let (cx, cy) = world_to_screen(
-                    entity.transform.position,
+                let (cx, cy) = world_to_screen_px(
                     world.camera(),
-                    self.viewport,
-                    PIXELS_PER_WORLD,
+                    (self.viewport.width, self.viewport.height),
+                    entity.transform.position,
                 );
                 draw_square(
                     frame,
@@ -67,7 +64,7 @@ impl<'window> Renderer<'window> {
                     self.viewport.height,
                     cx,
                     cy,
-                    PLACEHOLDER_HALF_SIZE,
+                    PLACEHOLDER_HALF_SIZE_PX,
                     PLACEHOLDER_COLOR,
                 );
             }

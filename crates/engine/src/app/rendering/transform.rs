@@ -6,6 +6,24 @@ pub struct Viewport {
     pub height: u32,
 }
 
+pub const PIXELS_PER_WORLD: f32 = 32.0;
+
+pub fn world_to_screen_px(
+    camera: &Camera2D,
+    window_size: (u32, u32),
+    world_pos: Vec2,
+) -> (i32, i32) {
+    world_to_screen(
+        world_pos,
+        camera,
+        Viewport {
+            width: window_size.0,
+            height: window_size.1,
+        },
+        PIXELS_PER_WORLD,
+    )
+}
+
 pub fn world_to_screen(
     world: Vec2,
     camera: &Camera2D,
@@ -45,5 +63,13 @@ mod tests {
         let (x, y) = world_to_screen(Vec2 { x: 12.0, y: -4.0 }, &camera, viewport, 10.0);
         assert_eq!(x, 420);
         assert_eq!(y, 290);
+    }
+
+    #[test]
+    fn world_to_screen_px_uses_default_pixels_per_world() {
+        let camera = Camera2D::default();
+        let (x, y) = world_to_screen_px(&camera, (800, 600), Vec2 { x: 1.0, y: -1.0 });
+        assert_eq!(x, 432);
+        assert_eq!(y, 332);
     }
 }

@@ -1,4 +1,4 @@
-use crate::app::LoopMetricsSnapshot;
+use crate::app::{EntityId, LoopMetricsSnapshot};
 
 const GLYPH_WIDTH: i32 = 3;
 const GLYPH_HEIGHT: i32 = 5;
@@ -12,6 +12,7 @@ pub(crate) struct OverlayData {
     pub metrics: LoopMetricsSnapshot,
     pub entity_count: usize,
     pub content_status: &'static str,
+    pub selected_entity: Option<EntityId>,
 }
 
 pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &OverlayData) {
@@ -25,6 +26,10 @@ pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &Ove
         format!("Frame: {:.2} ms", data.metrics.frame_time_ms),
         format!("Entities: {}", data.entity_count),
         format!("Content: {}", data.content_status),
+        match data.selected_entity {
+            Some(id) => format!("Sel: {}", id.0),
+            None => "Sel: none".to_string(),
+        },
     ];
 
     let mut y = OVERLAY_PADDING;
@@ -239,7 +244,7 @@ mod tests {
 
         let required: HashSet<char> = [
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ':', ' ', '-', 'F', 'P', 'S',
-            'T', 'r', 'a', 'm', 'e', 'E', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd',
+            'T', 'r', 'a', 'm', 'e', 'E', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S',
         ]
         .into_iter()
         .collect();

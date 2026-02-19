@@ -365,3 +365,36 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Game startup config QoL:
   - `PROTOGE_ENABLED_MODS` (comma-separated, ordered) now feeds `ContentPlanRequest.enabled_mods`
   - allows override verification without code edits.
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 11)
+- Mouse picking and selection seam added end-to-end (engine input -> world query -> game scene state -> overlay).
+- Input contract expanded in `InputSnapshot`:
+  - `cursor_position_px: Option<Vec2>`
+  - `left_click_pressed: bool` (left-press edge, one tick)
+  - `window_size: (u32, u32)`
+  - builder helpers added for tests and synthetic snapshots:
+    - `with_cursor_position_px(...)`
+    - `with_left_click_pressed(...)`
+    - `with_window_size(...)`
+- Runtime entity contract expanded:
+  - `Entity { selectable: bool }` public marker added.
+  - `SceneWorld::spawn_selectable(...)` added for explicit selectable spawns.
+- Picking contract locked:
+  - `SceneWorld::pick_topmost_selectable_at_cursor(cursor_px, window_size) -> Option<EntityId>`
+  - overlap resolution is explicit and stable: **last applied spawn wins**
+  - implemented with monotonic internal `applied_spawn_order` stamp assigned in `apply_pending`
+  - rule remains stable after unrelated despawns (regression test added)
+- Shared projection seam locked:
+  - `world_to_screen_px(camera, window_size, world_pos)` is now the shared helper for both renderer and picking.
+  - exported via engine public API.
+- Scene debug seam expanded:
+  - `Scene::debug_selected_entity(&self) -> Option<EntityId>` default method added.
+  - loop/overlay now reads active scene selection through `SceneMachine`.
+- Overlay contract expanded:
+  - extra line: `Sel: <id>` or `Sel: none`.
+- Game integration:
+  - `GameplayScene` now maintains `selected_entity: Option<EntityId>`.
+  - left click selects entity under cursor; empty click clears selection.
+  - gameplay scene now spawns 3 selectable entities for manual verification.

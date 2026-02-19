@@ -7,7 +7,7 @@ use thiserror::Error;
 use tracing::{info, warn};
 use winit::dpi::LogicalSize;
 use winit::error::{EventLoopError, OsError};
-use winit::event::{ElementState, Event, WindowEvent};
+use winit::event::{ElementState, Event, MouseButton, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::WindowBuilder;
@@ -123,7 +123,7 @@ pub fn run_app_with_metrics(
     let fixed_dt = Duration::from_secs_f64(1.0 / target_tps as f64);
     let fixed_dt_seconds = fixed_dt.as_secs_f32();
     let slow_frame_delay = resolve_slow_frame_delay(config.simulated_slow_frame_ms);
-    let mut input_collector = InputCollector::default();
+    let mut input_collector = InputCollector::new(config.window_width, config.window_height);
     let mut world = SceneWorld::default();
     world.set_def_database(def_database);
 
@@ -160,6 +160,7 @@ pub fn run_app_with_metrics(
                         window_target.exit();
                     }
                     WindowEvent::Resized(new_size) => {
+                        input_collector.set_window_size(new_size.width, new_size.height);
                         if let Err(error) = renderer.resize(new_size.width, new_size.height) {
                             warn!(error = %error, "renderer_resize_failed");
                             window_target.exit();
@@ -167,10 +168,21 @@ pub fn run_app_with_metrics(
                     }
                     WindowEvent::ScaleFactorChanged { .. } => {
                         let size = window_for_loop.inner_size();
+                        input_collector.set_window_size(size.width, size.height);
                         if let Err(error) = renderer.resize(size.width, size.height) {
                             warn!(error = %error, "renderer_resize_failed");
                             window_target.exit();
                         }
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        input_collector
+                            .set_cursor_position_px(position.x as f32, position.y as f32);
+                    }
+                    WindowEvent::CursorLeft { .. } => {
+                        input_collector.clear_cursor_position();
+                    }
+                    WindowEvent::MouseInput { state, button, .. } => {
+                        input_collector.handle_mouse_input(button, state);
                     }
                     WindowEvent::KeyboardInput { event, .. } => {
                         input_collector.handle_keyboard_input(&event);
@@ -229,6 +241,7 @@ pub fn run_app_with_metrics(
                             metrics: metrics_handle.snapshot(),
                             entity_count: world.entity_count(),
                             content_status: "loaded",
+                            selected_entity: scenes.debug_selected_entity_active(),
                         });
                         if let Err(error) = renderer.render_world(&world, overlay.as_ref()) {
                             warn!(error = %error, "renderer_draw_failed");
@@ -281,9 +294,22 @@ struct InputCollector {
     overlay_toggle_is_down: bool,
     overlay_toggle_pressed_edge: bool,
     action_states: super::input::ActionStates,
+    cursor_position_px: Option<super::Vec2>,
+    left_mouse_is_down: bool,
+    left_click_pressed_edge: bool,
+    window_width: u32,
+    window_height: u32,
 }
 
 impl InputCollector {
+    fn new(window_width: u32, window_height: u32) -> Self {
+        Self {
+            window_width,
+            window_height,
+            ..Self::default()
+        }
+    }
+
     fn mark_quit_requested(&mut self) {
         self.quit_requested = true;
     }
@@ -315,8 +341,13 @@ impl InputCollector {
             self.quit_requested,
             self.switch_scene_pressed_edge,
             self.action_states,
+            self.cursor_position_px,
+            self.left_click_pressed_edge,
+            self.window_width,
+            self.window_height,
         );
         self.switch_scene_pressed_edge = false;
+        self.left_click_pressed_edge = false;
         snapshot
     }
 
@@ -384,6 +415,35 @@ impl InputCollector {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn set_window_size(&mut self, width: u32, height: u32) {
+        self.window_width = width;
+        self.window_height = height;
+    }
+
+    fn set_cursor_position_px(&mut self, x: f32, y: f32) {
+        self.cursor_position_px = Some(super::Vec2 { x, y });
+    }
+
+    fn clear_cursor_position(&mut self) {
+        self.cursor_position_px = None;
+    }
+
+    fn handle_mouse_input(&mut self, button: MouseButton, state: ElementState) {
+        if button != MouseButton::Left {
+            return;
+        }
+
+        match state {
+            ElementState::Pressed => {
+                if !self.left_mouse_is_down {
+                    self.left_click_pressed_edge = true;
+                }
+                self.left_mouse_is_down = true;
+            }
+            ElementState::Released => self.left_mouse_is_down = false,
         }
     }
 }
@@ -591,5 +651,40 @@ mod tests {
         input.handle_overlay_toggle_key_state(true, ElementState::Released);
         input.handle_overlay_toggle_key_state(true, ElementState::Pressed);
         assert!(input.take_overlay_toggle_pressed());
+    }
+
+    #[test]
+    fn left_click_is_edge_triggered_for_single_tick() {
+        let mut input = InputCollector::new(1280, 720);
+        input.handle_mouse_input(MouseButton::Left, ElementState::Pressed);
+        let first = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick();
+
+        assert!(first.left_click_pressed());
+        assert!(!second.left_click_pressed());
+    }
+
+    #[test]
+    fn held_left_click_does_not_repeat_pressed_edge() {
+        let mut input = InputCollector::new(1280, 720);
+        input.handle_mouse_input(MouseButton::Left, ElementState::Pressed);
+        let first = input.snapshot_for_tick();
+        input.handle_mouse_input(MouseButton::Left, ElementState::Pressed);
+        let second = input.snapshot_for_tick();
+
+        assert!(first.left_click_pressed());
+        assert!(!second.left_click_pressed());
+    }
+
+    #[test]
+    fn snapshot_carries_cursor_and_window_size() {
+        let mut input = InputCollector::new(1280, 720);
+        input.set_cursor_position_px(100.0, 200.0);
+        let snapshot = input.snapshot_for_tick();
+
+        assert_eq!(snapshot.window_size(), (1280, 720));
+        let cursor = snapshot.cursor_position_px().expect("cursor");
+        assert!((cursor.x - 100.0).abs() < 0.0001);
+        assert!((cursor.y - 200.0).abs() < 0.0001);
     }
 }
