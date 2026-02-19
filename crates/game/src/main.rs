@@ -1,11 +1,10 @@
 use engine::{
-    run_app, ContentPlanRequest, EntityId, InputAction, InputSnapshot, LoopConfig, RenderableDesc,
-    RenderableKind, Scene, SceneCommand, SceneKey, SceneWorld, Transform, Vec2,
+    run_app, ContentPlanRequest, EntityArchetype, EntityId, InputAction, InputSnapshot, LoopConfig,
+    RenderableDesc, Scene, SceneCommand, SceneKey, SceneWorld, Transform, Vec2,
 };
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-const MOVE_SPEED_UNITS_PER_SECOND: f32 = 5.0;
 const CAMERA_SPEED_UNITS_PER_SECOND: f32 = 6.0;
 
 struct GameplayScene {
@@ -13,6 +12,7 @@ struct GameplayScene {
     switch_target: SceneKey,
     player_spawn: Vec2,
     player_id: Option<EntityId>,
+    player_move_speed: f32,
 }
 
 impl GameplayScene {
@@ -22,19 +22,22 @@ impl GameplayScene {
             switch_target,
             player_spawn,
             player_id: None,
+            player_move_speed: 5.0,
         }
     }
 }
 
 impl Scene for GameplayScene {
     fn load(&mut self, world: &mut SceneWorld) {
+        let player_archetype = resolve_player_archetype(world);
+        self.player_move_speed = player_archetype.move_speed;
         self.player_id = Some(world.spawn(
             Transform {
                 position: self.player_spawn,
                 rotation_radians: None,
             },
             RenderableDesc {
-                kind: RenderableKind::Placeholder,
+                kind: player_archetype.renderable,
                 debug_name: "player",
             },
         ));
@@ -58,7 +61,7 @@ impl Scene for GameplayScene {
 
         if let Some(player_id) = self.player_id {
             if let Some(player) = world.find_entity_mut(player_id) {
-                let delta = movement_delta(input, fixed_dt_seconds, MOVE_SPEED_UNITS_PER_SECOND);
+                let delta = movement_delta(input, fixed_dt_seconds, self.player_move_speed);
                 player.transform.position.x += delta.x;
                 player.transform.position.y += delta.y;
             }
@@ -95,6 +98,21 @@ impl Scene for GameplayScene {
             world.entity_count()
         ))
     }
+}
+
+fn resolve_player_archetype(world: &SceneWorld) -> EntityArchetype {
+    let def_db = world
+        .def_database()
+        .unwrap_or_else(|| panic!("DefDatabase not set on SceneWorld before scene load"));
+    let player_id = def_db.entity_def_id_by_name("proto.player").unwrap_or_else(|| {
+        panic!(
+            "missing EntityDef 'proto.player'; add it to assets/base or enabled mods and fix XML compile errors"
+        )
+    });
+    def_db
+        .entity_def(player_id)
+        .unwrap_or_else(|| panic!("EntityDef id for 'proto.player' is missing from DefDatabase"))
+        .clone()
 }
 
 fn movement_delta(input: &InputSnapshot, fixed_dt_seconds: f32, speed: f32) -> Vec2 {

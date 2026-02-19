@@ -14,8 +14,10 @@ pub use app::{
     SLOW_FRAME_ENV_VAR,
 };
 pub use content::{
-    build_compile_plan, CompileAction, CompilePlan, CompileReason, ContentPlanError,
-    ContentPlanRequest, ContentStatusSummary, ModCompileDecision,
+    build_compile_plan, compile_def_database, CompileAction, CompilePlan, CompileReason,
+    ContentCompileError, ContentErrorCode, ContentPlanError, ContentPlanRequest,
+    ContentStatusSummary, DefDatabase, EntityArchetype, EntityDefId, ModCompileDecision,
+    SourceLocation,
 };
 
 pub const ROOT_ENV_VAR: &str = "PROTOGE_ROOT";

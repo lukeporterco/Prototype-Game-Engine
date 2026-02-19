@@ -1,0 +1,8 @@
+<Defs>
+  <EntityDef>
+    <defName>proto.player</defName>
+    <label>Player</label>
+    <renderable>Placeholder</renderable>
+    <moveSpeed>5.0</moveSpeed>
+  </EntityDef>
+</Defs>

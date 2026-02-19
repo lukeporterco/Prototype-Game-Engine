@@ -13,7 +13,8 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::WindowBuilder;
 
 use crate::{
-    build_compile_plan, resolve_app_paths, ContentPlanError, ContentPlanRequest, StartupError,
+    build_compile_plan, compile_def_database, resolve_app_paths, ContentCompileError,
+    ContentPlanError, ContentPlanRequest, StartupError,
 };
 
 use super::metrics::MetricsAccumulator;
@@ -66,6 +67,8 @@ pub enum AppError {
     CreateRenderer(#[source] PixelsError),
     #[error("failed to build content compile plan: {0}")]
     ContentPlan(#[from] ContentPlanError),
+    #[error("failed to compile content database: {0}")]
+    ContentCompile(#[from] ContentCompileError),
     #[error("event loop failed: {0}")]
     EventLoopRun(#[source] EventLoopError),
 }
@@ -116,6 +119,7 @@ pub fn run_app_with_metrics(
             "content_compile_plan_decision"
         );
     }
+    let def_database = compile_def_database(&app_paths, &config.content_plan_request)?;
 
     let event_loop = EventLoop::new().map_err(AppError::CreateEventLoop)?;
     let window: &'static winit::window::Window = Box::leak(Box::new(
@@ -145,6 +149,7 @@ pub fn run_app_with_metrics(
     let slow_frame_delay = resolve_slow_frame_delay(config.simulated_slow_frame_ms);
     let mut input_collector = InputCollector::default();
     let mut world = SceneWorld::default();
+    world.set_def_database(def_database);
 
     scenes.load_active(&mut world);
     world.apply_pending();

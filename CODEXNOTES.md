@@ -284,3 +284,35 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 7 validation reads manifest fields only plus pack-file existence check; no pack parsing.
 - Exact-match invalidation reaffirmed in planner:
   - `compiler_version` and `game_version` use byte-for-byte string equality
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 8)
+- Added XML MVP compiler and runtime def storage:
+  - `crates/engine/src/content/compiler.rs`
+  - `crates/engine/src/content/database.rs`
+- New content runtime contracts:
+  - `DefDatabase`, `EntityDefId`, `EntityArchetype`
+  - `compile_def_database(app_paths, request) -> Result<DefDatabase, ContentCompileError>`
+- Strict XML validation implemented for `EntityDef`:
+  - root must be `<Defs>`
+  - required fields: `defName`, `label`, `renderable`
+  - optional `moveSpeed` with default `5.0`
+  - unknown fields fail compile
+  - duplicate fields fail compile
+  - same-mod duplicate `defName` fails compile
+  - cross-mod duplicate `defName` merges with last-mod-wins
+- Error model implemented:
+  - `ContentCompileError { code, message, mod_id, file_path, location }`
+  - best-effort line/column from XML parser/node position
+- Determinism rules implemented:
+  - compile input order follows Ticket 7 deterministic discovery and file sorting
+  - runtime IDs assigned in sorted `defName` order
+- Engine startup integration:
+  - compile runs after compile-plan generation and before scene load
+  - compile error fails startup with actionable message
+  - `SceneWorld` now stores `DefDatabase` resource and retains it across scene clears
+- Game integration:
+  - scene load resolves `proto.player` from `DefDatabase`
+  - player `renderable` + `moveSpeed` come from compiled XML archetype
+  - missing `proto.player` now fails load with actionable panic message

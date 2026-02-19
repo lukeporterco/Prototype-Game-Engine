@@ -95,6 +95,19 @@ If no matching root is found, startup fails fast with instructions.
   - compile plan summary
   - per-mod decision (`UseCache` or `Compile`) with reason
 
+## XML MVP Compiler (Ticket 8)
+
+- Engine compiles `EntityDef` XML into runtime `DefDatabase` at startup.
+- Compilation is strict and fail-fast:
+  - malformed XML, unknown fields, missing required fields, and invalid values fail startup
+  - errors include mod id, file path, and best-effort line/column
+- Runtime uses numeric IDs in `DefDatabase`; string lookup is only for startup archetype resolution.
+- Merge rule for duplicate `defName` across mods is last-mod-wins by load order.
+- Stable numeric IDs are assigned by sorted `defName`.
+- Game loads `proto.player` from `DefDatabase` and uses XML data for:
+  - `renderable`
+  - `moveSpeed` (defaults to `5.0` if omitted)
+
 ## Scenes and Entities
 
 - Two hardcoded in-memory scenes are active.

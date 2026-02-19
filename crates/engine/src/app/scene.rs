@@ -1,4 +1,5 @@
 use super::input::{ActionStates, InputAction};
+use crate::content::DefDatabase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SceneKey {
@@ -121,6 +122,7 @@ pub struct SceneWorld {
     pending_spawns: Vec<Entity>,
     pending_despawns: Vec<EntityId>,
     camera: Camera2D,
+    def_database: Option<DefDatabase>,
 }
 
 impl SceneWorld {
@@ -185,6 +187,14 @@ impl SceneWorld {
 
     pub fn camera_mut(&mut self) -> &mut Camera2D {
         &mut self.camera
+    }
+
+    pub fn set_def_database(&mut self, def_database: DefDatabase) {
+        self.def_database = Some(def_database);
+    }
+
+    pub fn def_database(&self) -> Option<&DefDatabase> {
+        self.def_database.as_ref()
     }
 }
 
@@ -383,5 +393,13 @@ mod tests {
         let camera = world.camera();
         assert_eq!(camera.position.x, 3.0);
         assert_eq!(camera.position.y, -7.0);
+    }
+
+    #[test]
+    fn clear_keeps_def_database_resource() {
+        let mut world = SceneWorld::default();
+        world.set_def_database(DefDatabase::default());
+        world.clear();
+        assert!(world.def_database().is_some());
     }
 }
