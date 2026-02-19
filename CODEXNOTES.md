@@ -262,3 +262,25 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Override behavior locked:
   - scalar fields are last-writer-wins
   - list fields are full replacement (no append/deep merge in v1)
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 7)
+- Added engine content planning module:
+  - `crates/engine/src/content/{mod.rs,types.rs,discovery.rs,hashing.rs,manifest.rs,planner.rs}`
+- Startup now builds deterministic compile plan before scene load via:
+  - `build_compile_plan(app_paths, content_plan_request)`
+- New public request/output contracts:
+  - `ContentPlanRequest { enabled_mods, compiler_version, game_version }`
+  - `CompilePlan`, `ModCompileDecision`, `CompileAction`, `CompileReason`, `ContentStatusSummary`
+- Deterministic discovery/hash rules implemented:
+  - base always first (`mod_id = "base"`)
+  - enabled mods use caller-provided order
+  - per-mod XML input hash uses normalized relative path + file bytes with sorted path order
+- Cache path and manifest rules (v1):
+  - pack path: `cache/content_packs/<mod_id>.pack`
+  - manifest path: `cache/content_packs/<mod_id>.manifest.json`
+  - manifest is durable terminology; JSON is current v1 encoding only
+- Ticket 7 validation reads manifest fields only plus pack-file existence check; no pack parsing.
+- Exact-match invalidation reaffirmed in planner:
+  - `compiler_version` and `game_version` use byte-for-byte string equality

@@ -75,6 +75,26 @@ If no matching root is found, startup fails fast with instructions.
   - `mod_id` sourced from mod folder name
   - `compiler_version` and `game_version` invalidation by exact string match
 
+## Mod Discovery and Compile Plan (Ticket 7)
+
+- Engine builds a deterministic compile plan at startup (no XML parse/compile execution yet).
+- Inputs come from `ContentPlanRequest`:
+  - ordered enabled mods list (provided by game)
+  - `compiler_version`
+  - `game_version`
+- Deterministic cache paths in v1:
+  - `cache/content_packs/<mod_id>.pack`
+  - `cache/content_packs/<mod_id>.manifest.json`
+- Manifest language is generic contract language; JSON is only the current v1 encoding.
+- Ticket 7 reads only the manifest fields (plus pack-file existence), not pack internals.
+- Deterministic ordering rules:
+  - base is always first (`mod_id = "base"`)
+  - enabled mods keep caller order
+  - XML files are hashed by normalized relative path + bytes in sorted path order
+- Startup logs emit:
+  - compile plan summary
+  - per-mod decision (`UseCache` or `Compile`) with reason
+
 ## Scenes and Entities
 
 - Two hardcoded in-memory scenes are active.

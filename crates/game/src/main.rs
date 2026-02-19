@@ -1,6 +1,6 @@
 use engine::{
-    run_app, EntityId, InputAction, InputSnapshot, LoopConfig, RenderableDesc, RenderableKind,
-    Scene, SceneCommand, SceneKey, SceneWorld, Transform, Vec2,
+    run_app, ContentPlanRequest, EntityId, InputAction, InputSnapshot, LoopConfig, RenderableDesc,
+    RenderableKind, Scene, SceneCommand, SceneKey, SceneWorld, Transform, Vec2,
 };
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -163,8 +163,16 @@ fn main() {
 
     let scene_a = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
     let scene_b = GameplayScene::new("B", SceneKey::A, Vec2 { x: 2.0, y: 2.0 });
+    let config = LoopConfig {
+        content_plan_request: ContentPlanRequest {
+            enabled_mods: Vec::new(),
+            compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+            game_version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+        ..LoopConfig::default()
+    };
 
-    if let Err(err) = run_app(LoopConfig::default(), Box::new(scene_a), Box::new(scene_b)) {
+    if let Err(err) = run_app(config, Box::new(scene_a), Box::new(scene_b)) {
         error!(error = %err, "startup_failed");
         std::process::exit(1);
     }

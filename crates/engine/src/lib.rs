@@ -5,12 +5,17 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 pub mod app;
+pub mod content;
 
 pub use app::{
     run_app, run_app_with_metrics, AppError, Camera2D, Entity, EntityId, InputAction,
     InputSnapshot, LoopConfig, LoopMetricsSnapshot, MetricsHandle, RenderableDesc, RenderableKind,
     Renderer, Scene, SceneCommand, SceneKey, SceneWorld, Transform, Vec2, Viewport,
     SLOW_FRAME_ENV_VAR,
+};
+pub use content::{
+    build_compile_plan, CompileAction, CompilePlan, CompileReason, ContentPlanError,
+    ContentPlanRequest, ContentStatusSummary, ModCompileDecision,
 };
 
 pub const ROOT_ENV_VAR: &str = "PROTOGE_ROOT";

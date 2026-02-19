@@ -12,7 +12,9 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::WindowBuilder;
 
-use crate::{resolve_app_paths, StartupError};
+use crate::{
+    build_compile_plan, resolve_app_paths, ContentPlanError, ContentPlanRequest, StartupError,
+};
 
 use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
@@ -33,6 +35,7 @@ pub struct LoopConfig {
     pub max_ticks_per_frame: u32,
     pub metrics_log_interval: Duration,
     pub simulated_slow_frame_ms: u64,
+    pub content_plan_request: ContentPlanRequest,
 }
 
 impl Default for LoopConfig {
@@ -46,6 +49,7 @@ impl Default for LoopConfig {
             max_ticks_per_frame: 5,
             metrics_log_interval: Duration::from_secs(1),
             simulated_slow_frame_ms: 0,
+            content_plan_request: ContentPlanRequest::default(),
         }
     }
 }
@@ -60,6 +64,8 @@ pub enum AppError {
     CreateWindow(#[source] OsError),
     #[error("failed to initialize renderer: {0}")]
     CreateRenderer(#[source] PixelsError),
+    #[error("failed to build content compile plan: {0}")]
+    ContentPlan(#[from] ContentPlanError),
     #[error("event loop failed: {0}")]
     EventLoopRun(#[source] EventLoopError),
 }
@@ -88,6 +94,28 @@ pub fn run_app_with_metrics(
         cache_dir = %app_paths.cache_dir.display(),
         "startup"
     );
+    let compile_plan = build_compile_plan(&app_paths, &config.content_plan_request)?;
+    info!(
+        total_mods = compile_plan.summary.total_mods,
+        compile_count = compile_plan.summary.compile_count,
+        cache_hit_count = compile_plan.summary.cache_hit_count,
+        content_status = compile_plan.summary.status_label(),
+        enabled_mods_hash = %compile_plan.enabled_mods_hash_sha256_hex,
+        "content_compile_plan_summary"
+    );
+    for decision in &compile_plan.decisions {
+        info!(
+            mod_id = %decision.mod_id,
+            mod_load_index = decision.mod_load_index,
+            action = ?decision.action,
+            reason = ?decision.reason,
+            xml_file_count = decision.xml_file_count,
+            input_hash = %decision.input_hash_sha256_hex,
+            pack_path = %decision.pack_path.display(),
+            manifest_path = %decision.manifest_path.display(),
+            "content_compile_plan_decision"
+        );
+    }
 
     let event_loop = EventLoop::new().map_err(AppError::CreateEventLoop)?;
     let window: &'static winit::window::Window = Box::leak(Box::new(
