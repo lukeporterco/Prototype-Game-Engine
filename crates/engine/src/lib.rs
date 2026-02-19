@@ -4,6 +4,13 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+pub mod app;
+
+pub use app::{
+    run_app, run_app_with_metrics, AppError, LoopConfig, LoopMetricsSnapshot, MetricsHandle, Scene,
+    SLOW_FRAME_ENV_VAR,
+};
+
 pub const ROOT_ENV_VAR: &str = "PROTOGE_ROOT";
 
 #[derive(Debug, Clone)]
@@ -26,9 +33,7 @@ pub enum StartupError {
     CurrentExe(#[source] std::io::Error),
     #[error("current executable path has no parent directory: {0}")]
     ExeHasNoParent(PathBuf),
-    #[error(
-        "failed to create cache directory at {path}: {source}"
-    )]
+    #[error("failed to create cache directory at {path}: {source}")]
     CreateCacheDir {
         path: PathBuf,
         #[source]

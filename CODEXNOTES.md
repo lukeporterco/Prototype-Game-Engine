@@ -135,3 +135,27 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 
 ## Change Log (Optional)
 - 2026-02-18: Ticket 0 scaffolded workspace crates and deterministic root discovery from executable ancestors with `PROTOGE_ROOT` override.
+
+---
+
+## Ticket Notes (2026-02-19)
+- Ticket 1 implemented: engine heartbeat and lifecycle loop with fixed-timestep simulation and decoupled metrics surface.
+- App/Loop contract added in `crates/engine/src/app/`:
+  - `Scene` trait: `update(fixed_dt_seconds)` and `render()`
+  - `LoopConfig` for window/timing/tick clamp configuration
+  - `run_app(config, scene)` and `run_app_with_metrics(config, scene, metrics_handle)`
+  - `MetricsHandle` + `LoopMetricsSnapshot { fps, tps, frame_time_ms }`
+- Logging contract:
+  - `game` initializes `tracing_subscriber` in `crates/game/src/main.rs`
+  - `engine` emits `tracing` events only and does not initialize subscribers
+- Loop behavior rules (locked for now):
+  - Fixed timestep at configurable TPS (default 60)
+  - Render cadence separate from simulation tick cadence
+  - Frame delta clamped (`max_frame_delta`) before accumulation
+  - Tick work capped per frame (`max_ticks_per_frame`)
+  - Remaining runaway backlog dropped with `sim_clamp_triggered` warning log
+- Input/lifecycle:
+  - Quit via window close or `Esc` key
+  - Clean shutdown emits `shutdown` log
+- Test hook:
+  - `PROTOGE_SLOW_FRAME_MS` adds artificial per-frame delay to verify clamp behavior.
