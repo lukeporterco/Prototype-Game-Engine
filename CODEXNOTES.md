@@ -514,3 +514,21 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - loop now uses scene-machine active-world accessors for update/apply/render/overlay/debug
 - Shutdown contract added:
   - `SceneMachine::shutdown_all()` unloads each loaded scene once, then clears worlds.
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 15)
+- Added renderer-local world-space grid debug pass in `crates/engine/src/app/rendering/renderer.rs`.
+- Draw order is now:
+  - clear
+  - grid
+  - entity placeholders
+  - overlay
+- Grid implementation details:
+  - uses existing `world_to_screen_px(...)` camera projection seam
+  - computes visible world bounds from camera + viewport and iterates only visible line indices
+  - supports minor lines + major lines every 5 cells
+  - major line classification uses Euclidean modulo (`rem_euclid`) for deterministic negative-index behavior
+  - uses clipping-safe per-pixel writes with checked indexing
+  - handles zero/tiny viewports without panic
+- No content pipeline, renderable type, or public API contract changes.
