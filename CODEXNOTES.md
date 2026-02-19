@@ -197,3 +197,27 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - One controllable player entity per scene
   - Movement speed locked to `5.0` units/second in fixed-timestep update
   - Diagonal movement normalized to keep stable movement magnitude
+
+---
+
+## Ticket Notes (2026-02-19, Ticket 4)
+- Minimal rendering path added in engine with `pixels` backend:
+  - `crates/engine/src/app/rendering/renderer.rs`
+  - `crates/engine/src/app/rendering/transform.rs`
+- Camera seam added as world resource:
+  - `Camera2D { position }` stored in `SceneWorld`
+  - access via `SceneWorld::camera()` and `SceneWorld::camera_mut()`
+  - `SceneWorld::clear()` resets camera to default
+- Rendering contract locked:
+  - Renderer consumes `SceneWorld.entities()` + `SceneWorld.camera()`
+  - No new render-specific methods were added to `Scene` trait
+  - World-to-screen transform:
+    - `screen_x = (world_x - camera_x) * px_per_world + width/2`
+    - `screen_y = height/2 - (world_y - camera_y) * px_per_world`
+- Resize behavior:
+  - `WindowEvent::Resized` and `ScaleFactorChanged` trigger renderer resize of surface/buffer
+- Input mapping expanded:
+  - Camera pan actions `CameraUp/Down/Left/Right` mapped to `I/J/K/L`
+- Game integration:
+  - Camera is moved from scene update using action input
+  - Debug title includes player and camera position

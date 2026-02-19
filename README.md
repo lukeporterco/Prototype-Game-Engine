@@ -42,6 +42,16 @@ If no matching root is found, startup fails fast with instructions.
 - Player movement runs in fixed-timestep update (`5.0` units/second), so distance is stable across FPS changes.
 - Game exposes optional debug title text (`Scene::debug_title`), and engine applies it to the window title.
 
+## Rendering and Camera (Ticket 4)
+
+- Engine renders placeholder entity shapes to pixels using a world-to-screen transform.
+- Renderer reads only `SceneWorld` data:
+  - entities (`SceneWorld.entities()`)
+  - camera resource (`SceneWorld.camera()`)
+- Camera seam is position-only (`Camera2D`), stored in world resources.
+- Camera pan controls: `I/J/K/L`.
+- Window resize is handled by renderer surface/buffer resize and alignment stays centered in world space.
+
 ## Scenes and Entities
 
 - Two hardcoded in-memory scenes are active.

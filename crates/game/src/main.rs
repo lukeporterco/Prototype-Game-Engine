@@ -6,6 +6,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 const MOVE_SPEED_UNITS_PER_SECOND: f32 = 5.0;
+const CAMERA_SPEED_UNITS_PER_SECOND: f32 = 6.0;
 
 struct GameplayScene {
     scene_name: &'static str,
@@ -63,6 +64,10 @@ impl Scene for GameplayScene {
             }
         }
 
+        let camera_delta = camera_delta(input, fixed_dt_seconds, CAMERA_SPEED_UNITS_PER_SECOND);
+        world.camera_mut().position.x += camera_delta.x;
+        world.camera_mut().position.y += camera_delta.y;
+
         SceneCommand::None
     }
 
@@ -79,11 +84,14 @@ impl Scene for GameplayScene {
 
     fn debug_title(&self, world: &SceneWorld) -> Option<String> {
         let player = self.player_id.and_then(|id| world.find_entity(id))?;
+        let camera = world.camera();
         Some(format!(
-            "Proto GE | Scene {} | Player ({:.2}, {:.2}) | Entities {}",
+            "Proto GE | Scene {} | Player ({:.2}, {:.2}) | Camera ({:.2}, {:.2}) | Entities {}",
             self.scene_name,
             player.transform.position.x,
             player.transform.position.y,
+            camera.position.x,
+            camera.position.y,
             world.entity_count()
         ))
     }
@@ -103,6 +111,36 @@ fn movement_delta(input: &InputSnapshot, fixed_dt_seconds: f32, speed: f32) -> V
         y += 1.0;
     }
     if input.is_down(InputAction::MoveDown) {
+        y -= 1.0;
+    }
+
+    let len_sq = x * x + y * y;
+    if len_sq > 0.0 {
+        let inv_len = len_sq.sqrt().recip();
+        x *= inv_len;
+        y *= inv_len;
+    }
+
+    Vec2 {
+        x: x * speed * fixed_dt_seconds,
+        y: y * speed * fixed_dt_seconds,
+    }
+}
+
+fn camera_delta(input: &InputSnapshot, fixed_dt_seconds: f32, speed: f32) -> Vec2 {
+    let mut x = 0.0f32;
+    let mut y = 0.0f32;
+
+    if input.is_down(InputAction::CameraRight) {
+        x += 1.0;
+    }
+    if input.is_down(InputAction::CameraLeft) {
+        x -= 1.0;
+    }
+    if input.is_down(InputAction::CameraUp) {
+        y += 1.0;
+    }
+    if input.is_down(InputAction::CameraDown) {
         y -= 1.0;
     }
 
@@ -176,5 +214,13 @@ mod tests {
         let delta = movement_delta(&input, 1.0, 5.0);
         assert!((delta.x - 0.0).abs() < 0.0001);
         assert!((delta.y - 0.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn camera_delta_uses_camera_actions() {
+        let input = snapshot_from_actions(&[InputAction::CameraUp, InputAction::CameraRight]);
+        let delta = camera_delta(&input, 1.0, 6.0);
+        let magnitude = (delta.x * delta.x + delta.y * delta.y).sqrt();
+        assert!((magnitude - 6.0).abs() < 0.0001);
     }
 }

@@ -2,6 +2,7 @@ use std::env;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use pixels::Error as PixelsError;
 use thiserror::Error;
 use tracing::{info, warn};
 use winit::dpi::LogicalSize;
@@ -15,7 +16,9 @@ use crate::{resolve_app_paths, StartupError};
 
 use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
-use super::{InputAction, InputSnapshot, MetricsHandle, Scene, SceneCommand, SceneKey, SceneWorld};
+use super::{
+    InputAction, InputSnapshot, MetricsHandle, Renderer, Scene, SceneCommand, SceneKey, SceneWorld,
+};
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
 
@@ -54,6 +57,8 @@ pub enum AppError {
     CreateEventLoop(#[source] EventLoopError),
     #[error("failed to create application window: {0}")]
     CreateWindow(#[source] OsError),
+    #[error("failed to initialize renderer: {0}")]
+    CreateRenderer(#[source] PixelsError),
     #[error("event loop failed: {0}")]
     EventLoopRun(#[source] EventLoopError),
 }
@@ -84,14 +89,19 @@ pub fn run_app_with_metrics(
     );
 
     let event_loop = EventLoop::new().map_err(AppError::CreateEventLoop)?;
-    let window = WindowBuilder::new()
-        .with_title(config.window_title.clone())
-        .with_inner_size(LogicalSize::new(
-            config.window_width as f64,
-            config.window_height as f64,
-        ))
-        .build(&event_loop)
-        .map_err(AppError::CreateWindow)?;
+    let window: &'static winit::window::Window = Box::leak(Box::new(
+        WindowBuilder::new()
+            .with_title(config.window_title.clone())
+            .with_inner_size(LogicalSize::new(
+                config.window_width as f64,
+                config.window_height as f64,
+            ))
+            .build(&event_loop)
+            .map_err(AppError::CreateWindow)?,
+    ));
+    let window_for_renderer = window;
+    let window_for_loop = window;
+    let mut renderer = Renderer::new(window_for_renderer).map_err(AppError::CreateRenderer)?;
 
     event_loop.set_control_flow(ControlFlow::Poll);
 
@@ -131,11 +141,24 @@ pub fn run_app_with_metrics(
 
     event_loop
         .run(move |event, window_target| match event {
-            Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
+            Event::WindowEvent { window_id, event } if window_id == window_for_loop.id() => match event {
                 WindowEvent::CloseRequested => {
                     input_collector.mark_quit_requested();
                     info!(reason = "window_close", "shutdown_requested");
                     window_target.exit();
+                }
+                WindowEvent::Resized(new_size) => {
+                    if let Err(error) = renderer.resize(new_size.width, new_size.height) {
+                        warn!(error = %error, "renderer_resize_failed");
+                        window_target.exit();
+                    }
+                }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    let size = window_for_loop.inner_size();
+                    if let Err(error) = renderer.resize(size.width, size.height) {
+                        warn!(error = %error, "renderer_resize_failed");
+                        window_target.exit();
+                    }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     input_collector.handle_keyboard_input(&event);
@@ -185,12 +208,16 @@ pub fn run_app_with_metrics(
                     }
 
                     scenes.render_active(&world);
+                    if let Err(error) = renderer.render_world(&world) {
+                        warn!(error = %error, "renderer_draw_failed");
+                        window_target.exit();
+                    }
                     let next_title = scenes.debug_title_active(&world);
                     if next_title != last_applied_title {
                         if let Some(title) = &next_title {
-                            window.set_title(title);
+                            window_for_loop.set_title(title);
                         } else {
-                            window.set_title(&config.window_title);
+                            window_for_loop.set_title(&config.window_title);
                         }
                         last_applied_title = next_title;
                     }
@@ -211,7 +238,7 @@ pub fn run_app_with_metrics(
                 _ => {}
             },
             Event::AboutToWait => {
-                window.request_redraw();
+                window_for_loop.request_redraw();
             }
             Event::LoopExiting => {
                 scenes.unload_active(&mut world);
@@ -285,6 +312,18 @@ impl InputCollector {
             }
             PhysicalKey::Code(KeyCode::KeyD) | PhysicalKey::Code(KeyCode::ArrowRight) => {
                 self.action_states.set(InputAction::MoveRight, is_pressed);
+            }
+            PhysicalKey::Code(KeyCode::KeyI) => {
+                self.action_states.set(InputAction::CameraUp, is_pressed);
+            }
+            PhysicalKey::Code(KeyCode::KeyK) => {
+                self.action_states.set(InputAction::CameraDown, is_pressed);
+            }
+            PhysicalKey::Code(KeyCode::KeyJ) => {
+                self.action_states.set(InputAction::CameraLeft, is_pressed);
+            }
+            PhysicalKey::Code(KeyCode::KeyL) => {
+                self.action_states.set(InputAction::CameraRight, is_pressed);
             }
             PhysicalKey::Code(KeyCode::Escape) => {
                 self.action_states.set(InputAction::Quit, is_pressed);
@@ -471,5 +510,15 @@ mod tests {
 
         let snapshot = input.snapshot_for_tick();
         assert!(!snapshot.is_down(InputAction::MoveRight));
+    }
+
+    #[test]
+    fn camera_pan_keys_map_to_camera_actions() {
+        let mut input = InputCollector::default();
+        input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyI), true);
+        input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyL), true);
+        let snapshot = input.snapshot_for_tick();
+        assert!(snapshot.is_down(InputAction::CameraUp));
+        assert!(snapshot.is_down(InputAction::CameraRight));
     }
 }

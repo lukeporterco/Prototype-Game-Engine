@@ -4,10 +4,14 @@ pub enum InputAction {
     MoveDown,
     MoveLeft,
     MoveRight,
+    CameraUp,
+    CameraDown,
+    CameraLeft,
+    CameraRight,
     Quit,
 }
 
-const ACTION_COUNT: usize = 5;
+const ACTION_COUNT: usize = 9;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ActionStates {
@@ -31,7 +35,11 @@ impl InputAction {
             InputAction::MoveDown => 1,
             InputAction::MoveLeft => 2,
             InputAction::MoveRight => 3,
-            InputAction::Quit => 4,
+            InputAction::CameraUp => 4,
+            InputAction::CameraDown => 5,
+            InputAction::CameraLeft => 6,
+            InputAction::CameraRight => 7,
+            InputAction::Quit => 8,
         }
     }
 }

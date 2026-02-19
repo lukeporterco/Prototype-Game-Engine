@@ -63,6 +63,11 @@ pub struct Vec2 {
     pub y: f32,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Camera2D {
+    pub position: Vec2,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Transform {
     pub position: Vec2,
@@ -115,6 +120,7 @@ pub struct SceneWorld {
     entities: Vec<Entity>,
     pending_spawns: Vec<Entity>,
     pending_despawns: Vec<EntityId>,
+    camera: Camera2D,
 }
 
 impl SceneWorld {
@@ -154,6 +160,7 @@ impl SceneWorld {
         self.entities.clear();
         self.pending_spawns.clear();
         self.pending_despawns.clear();
+        self.camera = Camera2D::default();
     }
 
     pub fn entity_count(&self) -> usize {
@@ -170,6 +177,14 @@ impl SceneWorld {
 
     pub fn find_entity_mut(&mut self, id: EntityId) -> Option<&mut Entity> {
         self.entities.iter_mut().find(|entity| entity.id == id)
+    }
+
+    pub fn camera(&self) -> &Camera2D {
+        &self.camera
+    }
+
+    pub fn camera_mut(&mut self) -> &mut Camera2D {
+        &mut self.camera
     }
 }
 
@@ -359,5 +374,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn camera_accessors_round_trip_position() {
+        let mut world = SceneWorld::default();
+        world.camera_mut().position = Vec2 { x: 3.0, y: -7.0 };
+        let camera = world.camera();
+        assert_eq!(camera.position.x, 3.0);
+        assert_eq!(camera.position.y, -7.0);
     }
 }
