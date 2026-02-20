@@ -98,7 +98,7 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
 fn format_fps_line(current_fps: f32, cap: Option<u32>, slow_frame_delay_ms: u64) -> String {
     let cap_text = match cap {
         Some(value) => value.to_string(),
-        None => "off".to_string(),
+        None => "∞".to_string(),
     };
     format!(
         "[{:.0} / {}] dbg+{}ms",
@@ -451,8 +451,8 @@ mod tests {
     }
 
     #[test]
-    fn fps_line_formats_cap_off_with_off_text() {
+    fn fps_line_formats_cap_off_with_infinity_text() {
         let line = format_fps_line(144.4, None, 0);
-        assert_eq!(line, "[144 / off] dbg+0ms");
+        assert_eq!(line, "[144 / ∞] dbg+0ms");
     }
 }

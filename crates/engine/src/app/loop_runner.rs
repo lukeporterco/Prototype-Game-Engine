@@ -36,7 +36,7 @@ pub struct LoopConfig {
     pub max_ticks_per_frame: u32,
     pub metrics_log_interval: Duration,
     pub simulated_slow_frame_ms: u64,
-    pub max_render_fps: Option<u32>,
+    pub fps_cap: Option<u32>,
     pub content_plan_request: ContentPlanRequest,
 }
 
@@ -51,7 +51,7 @@ impl Default for LoopConfig {
             max_ticks_per_frame: 5,
             metrics_log_interval: Duration::from_secs(1),
             simulated_slow_frame_ms: 0,
-            max_render_fps: None,
+            fps_cap: None,
             content_plan_request: ContentPlanRequest::default(),
         }
     }
@@ -127,7 +127,7 @@ pub fn run_app_with_metrics(
     let fixed_dt = Duration::from_secs_f64(1.0 / target_tps as f64);
     let fixed_dt_seconds = fixed_dt.as_secs_f32();
     let slow_frame_delay = resolve_slow_frame_delay(config.simulated_slow_frame_ms);
-    let effective_render_cap = normalize_render_fps_cap(config.max_render_fps);
+    let effective_render_cap = normalize_render_fps_cap(config.fps_cap);
     let render_frame_target = target_frame_duration(effective_render_cap);
     let mut input_collector = InputCollector::new(config.window_width, config.window_height);
     scenes.set_def_database_for_all(def_database);
@@ -624,8 +624,8 @@ fn normalize_render_fps_cap(cap: Option<u32>) -> Option<u32> {
     cap.filter(|value| *value > 0)
 }
 
-fn target_frame_duration(max_render_fps: Option<u32>) -> Option<Duration> {
-    max_render_fps.map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
+fn target_frame_duration(fps_cap: Option<u32>) -> Option<Duration> {
+    fps_cap.map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
 }
 
 fn compute_cap_sleep(elapsed: Duration, target: Option<Duration>) -> Duration {
@@ -638,7 +638,7 @@ fn compute_cap_sleep(elapsed: Duration, target: Option<Duration>) -> Duration {
 fn format_render_cap(cap: Option<u32>) -> String {
     match cap {
         Some(value) => value.to_string(),
-        None => "off".to_string(),
+        None => "∞".to_string(),
     }
 }
 
@@ -1012,5 +1012,11 @@ mod tests {
     fn normalize_render_fps_cap_disables_zero() {
         assert_eq!(normalize_render_fps_cap(Some(0)), None);
         assert_eq!(normalize_render_fps_cap(Some(60)), Some(60));
+    }
+
+    #[test]
+    fn format_render_cap_uses_infinity_when_uncapped() {
+        assert_eq!(format_render_cap(None), "∞");
+        assert_eq!(format_render_cap(Some(60)), "60");
     }
 }

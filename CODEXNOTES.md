@@ -746,3 +746,17 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Fallback strategy rule (locked):
   - if `Arc<Window>` -> `Pixels<'static>` ever fails to typecheck in `pixels 0.15`, switch to a safe self-referential container approach (for example `self_cell`)
   - manual unsafe self-reference is not allowed
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 24)
+- Frame pacing/cap contract formalized from hotfix work:
+  - one authoritative cap knob on loop config is `LoopConfig.fps_cap: Option<u32>`
+  - `Some(0)` normalizes to uncapped (`None`)
+  - redraw loop keeps a single FPS-cap sleep point (`compute_cap_sleep` -> `thread::sleep`)
+  - debug slow-frame delay remains explicit and separate (`dbg+...ms`)
+- Uncapped display/log contract:
+  - overlay FPS line shows `∞` when uncapped: `[{current} / ∞]`
+  - startup `loop_config` cap logging also renders uncapped as `∞`
+- Hotfix 16.1 naming superseded:
+  - previous field name `LoopConfig.max_render_fps` is deprecated by this ticket and removed from runtime config API.
