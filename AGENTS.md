@@ -163,3 +163,41 @@ Update rules (mandatory)
 - After each ticket, update `CODEXNOTES.md` only with net-new, still-relevant context: decisions, contracts, file paths, pitfalls.
 - If an update would add more than a short set of bullets or it is primarily historical detail, put it in `CODEXNOTES_ARCHIVE.md` and add a brief pointer from `CODEXNOTES.md` (one or two bullets) explaining what moved and why.
 - If you revise an existing note, prefer marking the old one as deprecated and moving the deprecated detail into `CODEXNOTES_ARCHIVE.md`, keeping `CODEXNOTES.md` clean.
+
+## Developer Notes: `CONSOLE_COMMANDS.md`
+
+`CONSOLE_COMMANDS.md` is a developer-facing reference for the in-game console. It is meant for you (and anyone working on the project) to quickly remember what commands exist, what they do, and how to use them during testing and iteration. It is not a public-facing spec and does not need to describe internal implementation details.
+
+When to use `CONSOLE_COMMANDS.md`
+Use it as the first stop when you want to:
+
+* Spawn or despawn entities while testing
+* Reset or switch scenes while iterating
+* Inspect or nudge gameplay state during debugging
+* Remember exact syntax, optional arguments, and defaults
+* Confirm what a command prints on success or failure
+
+What to put in `CONSOLE_COMMANDS.md`
+Keep entries practical and copy-paste friendly:
+
+* Command name
+* One-line description
+* Syntax line
+* A few example invocations
+* Notes about defaults (for example: where something spawns if no position is provided)
+* Notes about safety or limitations (for example: “debug builds only”, “may break determinism tests”)
+
+Project rules for edits
+
+* If you add, remove, or change a console command, update `CONSOLE_COMMANDS.md` in the same change.
+* If the console shell/input behavior changes (toggle key, history behavior, submission/queue semantics), update `CONSOLE_COMMANDS.md` in the same change.
+* Prefer documenting the behavior you observe in-game (inputs and outputs) rather than how it’s implemented.
+* If behavior is intentionally unstable while prototyping, mark it clearly as “temporary” so it’s not mistaken for a guarantee.
+
+Ownership and routing reminder
+Commands may be handled at different layers:
+
+* Engine/scene-machine commands (quit, reset scene, switch scene)
+* Scene/game commands (spawn, despawn, teleport, etc.)
+
+`CONSOLE_COMMANDS.md` should note which layer a command targets, mainly so you know what scene needs to be active for it to work.
