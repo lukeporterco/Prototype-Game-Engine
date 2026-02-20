@@ -21,8 +21,8 @@ use crate::{
 use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
 use super::{
-    ConsoleState, InputAction, InputSnapshot, MetricsHandle, OverlayData, PerfStats, Renderer,
-    Scene, SceneCommand, SceneKey,
+    ConsoleCommandProcessor, ConsoleState, InputAction, InputSnapshot, MetricsHandle, OverlayData,
+    PerfStats, Renderer, Scene, SceneCommand, SceneKey,
 };
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
@@ -171,6 +171,7 @@ pub fn run_app_with_metrics(
     let mut last_applied_title: Option<String> = None;
     let mut overlay_visible = true;
     let mut console = ConsoleState::default();
+    let mut console_command_processor = ConsoleCommandProcessor::new();
     info!(
         perf_stats_enabled_by_default = PerfStats::enabled_by_default(),
         perf_window_frames = PerfStats::window_len(),
@@ -246,6 +247,7 @@ pub fn run_app_with_metrics(
                             input_collector.reset_gameplay_inputs();
                             info!(console_open = console.is_open(), "console_toggled");
                         }
+                        console_command_processor.process_pending_lines(&mut console);
 
                         if slow_frame_delay > Duration::ZERO {
                             // Explicit debug perturbation only; this is not the FPS cap.

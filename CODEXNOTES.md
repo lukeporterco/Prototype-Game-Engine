@@ -114,3 +114,21 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Overlay text utility update:
   - added `draw_text_clipped_with_fallback(..., fallback_char)` for console text rendering.
   - added `?` glyph so unsupported chars can render as `?` in console output/prompt.
+
+## Ticket Notes (2026-02-20, Ticket 32.2)
+- Added parser/registry pipeline module: `crates/engine/src/app/tools/console_commands.rs`.
+- Queue contract split:
+  - local immediate actions: `help`, `clear`, `echo`.
+  - queueable-only `DebugCommand` variants: `ResetScene`, `SwitchScene`, `Quit`, `Despawn`, `Spawn`.
+- `help` ordering guarantee:
+  - command list output follows registry registration order exactly.
+  - no sorting and no hash iteration order dependence.
+- Parsing pipeline behavior:
+  - drains raw `ConsoleState.pending_lines` each frame.
+  - tokenizes (whitespace + simple `\"...\"` quoted tokens).
+  - validates args and emits human-readable usage errors.
+  - unknown command format: `error: unknown command '<name>'. try: help`.
+  - queueable parse success format: `queued: <normalized command text>`.
+- Loop integration:
+  - `ConsoleCommandProcessor` is loop-owned in `crates/engine/src/app/loop_runner.rs`.
+  - processor runs each redraw frame before render; queueable commands are not executed yet.

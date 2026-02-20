@@ -70,7 +70,19 @@ impl ConsoleState {
         &self.current_line
     }
 
-    #[allow(dead_code)]
+    pub(crate) fn append_output_line(&mut self, line: impl Into<String>) {
+        push_bounded(&mut self.output_lines, line.into(), MAX_OUTPUT_LINES);
+    }
+
+    pub(crate) fn clear_output_lines(&mut self) {
+        self.output_lines.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_pending_line_for_test(&mut self, line: impl Into<String>) {
+        push_bounded(&mut self.pending_lines, line.into(), MAX_PENDING_LINES);
+    }
+
     pub(crate) fn drain_pending_lines_into(&mut self, out: &mut Vec<String>) {
         out.extend(self.pending_lines.drain(..));
     }
