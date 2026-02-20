@@ -103,7 +103,7 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
 fn format_fps_line(current_fps: f32, cap: Option<u32>, slow_frame_delay_ms: u64) -> String {
     let cap_text = match cap {
         Some(value) => value.to_string(),
-        None => "∞".to_string(),
+        None => "inf".to_string(),
     };
     format!(
         "[{:.0} / {}] dbg+{}ms",
@@ -236,7 +236,60 @@ const SPACE_GLYPH: Glyph = Glyph {
 };
 
 fn glyph_for(ch: char) -> Option<Glyph> {
-    Some(match ch {
+    match ch {
+        ' '..='~' => Some(ascii_glyph(ch)),
+        _ => None,
+    }
+}
+
+fn ascii_glyph(ch: char) -> Glyph {
+    match ch {
+        ' ' => SPACE_GLYPH,
+        '!' => Glyph {
+            rows: [0b010, 0b010, 0b010, 0b000, 0b010],
+        },
+        '"' => Glyph {
+            rows: [0b101, 0b101, 0b000, 0b000, 0b000],
+        },
+        '#' => Glyph {
+            rows: [0b101, 0b111, 0b101, 0b111, 0b101],
+        },
+        '$' => Glyph {
+            rows: [0b111, 0b110, 0b111, 0b011, 0b111],
+        },
+        '%' => Glyph {
+            rows: [0b101, 0b001, 0b010, 0b100, 0b101],
+        },
+        '&' => Glyph {
+            rows: [0b010, 0b101, 0b010, 0b101, 0b011],
+        },
+        '\'' => Glyph {
+            rows: [0b010, 0b010, 0b000, 0b000, 0b000],
+        },
+        '(' => Glyph {
+            rows: [0b001, 0b010, 0b010, 0b010, 0b001],
+        },
+        ')' => Glyph {
+            rows: [0b100, 0b010, 0b010, 0b010, 0b100],
+        },
+        '*' => Glyph {
+            rows: [0b000, 0b101, 0b010, 0b101, 0b000],
+        },
+        '+' => Glyph {
+            rows: [0b000, 0b010, 0b111, 0b010, 0b000],
+        },
+        ',' => Glyph {
+            rows: [0b000, 0b000, 0b000, 0b010, 0b100],
+        },
+        '-' => Glyph {
+            rows: [0b000, 0b000, 0b111, 0b000, 0b000],
+        },
+        '.' => Glyph {
+            rows: [0b000, 0b000, 0b000, 0b000, 0b010],
+        },
+        '/' => Glyph {
+            rows: [0b001, 0b001, 0b010, 0b100, 0b100],
+        },
         '0' => Glyph {
             rows: [0b111, 0b101, 0b101, 0b101, 0b111],
         },
@@ -267,75 +320,62 @@ fn glyph_for(ch: char) -> Option<Glyph> {
         '9' => Glyph {
             rows: [0b111, 0b101, 0b111, 0b001, 0b111],
         },
-        '.' => Glyph {
-            rows: [0b000, 0b000, 0b000, 0b000, 0b010],
-        },
         ':' => Glyph {
             rows: [0b000, 0b010, 0b000, 0b010, 0b000],
         },
-        ' ' => SPACE_GLYPH,
-        '-' => Glyph {
-            rows: [0b000, 0b000, 0b111, 0b000, 0b000],
+        ';' => Glyph {
+            rows: [0b000, 0b010, 0b000, 0b010, 0b100],
         },
-        'F' => Glyph {
-            rows: [0b111, 0b100, 0b110, 0b100, 0b100],
+        '<' => Glyph {
+            rows: [0b001, 0b010, 0b100, 0b010, 0b001],
         },
-        'P' => Glyph {
-            rows: [0b110, 0b101, 0b110, 0b100, 0b100],
+        '=' => Glyph {
+            rows: [0b000, 0b111, 0b000, 0b111, 0b000],
         },
-        'S' => Glyph {
-            rows: [0b111, 0b100, 0b111, 0b001, 0b111],
+        '>' => Glyph {
+            rows: [0b100, 0b010, 0b001, 0b010, 0b100],
         },
-        'T' => Glyph {
-            rows: [0b111, 0b010, 0b010, 0b010, 0b010],
+        '?' => Glyph {
+            rows: [0b111, 0b001, 0b011, 0b000, 0b010],
         },
-        'E' => Glyph {
-            rows: [0b111, 0b100, 0b110, 0b100, 0b111],
+        '@' => Glyph {
+            rows: [0b111, 0b101, 0b111, 0b100, 0b111],
+        },
+        'A' => Glyph {
+            rows: [0b010, 0b101, 0b111, 0b101, 0b101],
+        },
+        'B' => Glyph {
+            rows: [0b110, 0b101, 0b110, 0b101, 0b110],
         },
         'C' => Glyph {
             rows: [0b111, 0b100, 0b100, 0b100, 0b111],
         },
-        'r' => Glyph {
-            rows: [0b000, 0b110, 0b101, 0b100, 0b100],
+        'D' => Glyph {
+            rows: [0b110, 0b101, 0b101, 0b101, 0b110],
         },
-        'a' => Glyph {
-            rows: [0b000, 0b111, 0b001, 0b111, 0b111],
+        'E' => Glyph {
+            rows: [0b111, 0b100, 0b110, 0b100, 0b111],
         },
-        'm' => Glyph {
-            rows: [0b000, 0b110, 0b111, 0b101, 0b101],
+        'F' => Glyph {
+            rows: [0b111, 0b100, 0b110, 0b100, 0b100],
         },
-        'e' => Glyph {
-            rows: [0b000, 0b111, 0b110, 0b100, 0b111],
+        'G' => Glyph {
+            rows: [0b111, 0b100, 0b101, 0b101, 0b111],
         },
-        'f' => Glyph {
-            rows: [0b011, 0b100, 0b110, 0b100, 0b100],
-        },
-        'n' => Glyph {
-            rows: [0b000, 0b110, 0b101, 0b101, 0b101],
-        },
-        't' => Glyph {
-            rows: [0b010, 0b111, 0b010, 0b010, 0b011],
-        },
-        'i' => Glyph {
-            rows: [0b010, 0b000, 0b010, 0b010, 0b010],
-        },
-        's' => Glyph {
-            rows: [0b000, 0b111, 0b110, 0b001, 0b111],
-        },
-        'o' => Glyph {
-            rows: [0b000, 0b111, 0b101, 0b101, 0b111],
-        },
-        'l' => Glyph {
-            rows: [0b100, 0b100, 0b100, 0b100, 0b111],
-        },
-        'd' => Glyph {
-            rows: [0b001, 0b001, 0b111, 0b101, 0b111],
-        },
-        'g' => Glyph {
-            rows: [0b000, 0b111, 0b101, 0b111, 0b001],
+        'H' => Glyph {
+            rows: [0b101, 0b101, 0b111, 0b101, 0b101],
         },
         'I' => Glyph {
             rows: [0b111, 0b010, 0b010, 0b010, 0b111],
+        },
+        'J' => Glyph {
+            rows: [0b111, 0b001, 0b001, 0b101, 0b111],
+        },
+        'K' => Glyph {
+            rows: [0b101, 0b101, 0b110, 0b101, 0b101],
+        },
+        'L' => Glyph {
+            rows: [0b100, 0b100, 0b100, 0b100, 0b111],
         },
         'M' => Glyph {
             rows: [0b101, 0b111, 0b111, 0b101, 0b101],
@@ -343,80 +383,189 @@ fn glyph_for(ch: char) -> Option<Glyph> {
         'N' => Glyph {
             rows: [0b101, 0b111, 0b111, 0b111, 0b101],
         },
+        'O' => Glyph {
+            rows: [0b111, 0b101, 0b101, 0b101, 0b111],
+        },
+        'P' => Glyph {
+            rows: [0b110, 0b101, 0b110, 0b100, 0b100],
+        },
+        'Q' => Glyph {
+            rows: [0b111, 0b101, 0b101, 0b111, 0b001],
+        },
         'R' => Glyph {
             rows: [0b110, 0b101, 0b110, 0b101, 0b101],
         },
-        'p' => Glyph {
-            rows: [0b000, 0b110, 0b101, 0b110, 0b100],
+        'S' => Glyph {
+            rows: [0b111, 0b100, 0b111, 0b001, 0b111],
         },
-        'c' => Glyph {
-            rows: [0b000, 0b111, 0b100, 0b100, 0b111],
+        'T' => Glyph {
+            rows: [0b111, 0b010, 0b010, 0b010, 0b010],
         },
-        'j' => Glyph {
-            rows: [0b001, 0b000, 0b001, 0b101, 0b010],
+        'U' => Glyph {
+            rows: [0b101, 0b101, 0b101, 0b101, 0b111],
         },
-        'b' => Glyph {
-            rows: [0b100, 0b100, 0b110, 0b101, 0b110],
+        'V' => Glyph {
+            rows: [0b101, 0b101, 0b101, 0b101, 0b010],
         },
-        'w' => Glyph {
-            rows: [0b000, 0b101, 0b101, 0b111, 0b010],
+        'W' => Glyph {
+            rows: [0b101, 0b101, 0b111, 0b111, 0b101],
         },
-        'k' => Glyph {
-            rows: [0b100, 0b101, 0b110, 0b101, 0b101],
+        'X' => Glyph {
+            rows: [0b101, 0b101, 0b010, 0b101, 0b101],
         },
-        ',' => Glyph {
-            rows: [0b000, 0b000, 0b000, 0b010, 0b100],
+        'Y' => Glyph {
+            rows: [0b101, 0b101, 0b010, 0b010, 0b010],
         },
-        '/' => Glyph {
-            rows: [0b001, 0b001, 0b010, 0b100, 0b100],
+        'Z' => Glyph {
+            rows: [0b111, 0b001, 0b010, 0b100, 0b111],
         },
         '[' => Glyph {
             rows: [0b110, 0b100, 0b100, 0b100, 0b110],
         },
+        '\\' => Glyph {
+            rows: [0b100, 0b100, 0b010, 0b001, 0b001],
+        },
         ']' => Glyph {
             rows: [0b011, 0b001, 0b001, 0b001, 0b011],
         },
-        '+' => Glyph {
-            rows: [0b000, 0b010, 0b111, 0b010, 0b000],
+        '^' => Glyph {
+            rows: [0b010, 0b101, 0b000, 0b000, 0b000],
         },
-        '?' => Glyph {
-            rows: [0b111, 0b001, 0b011, 0b000, 0b010],
+        '_' => Glyph {
+            rows: [0b000, 0b000, 0b000, 0b000, 0b111],
         },
-        '∞' => Glyph {
-            rows: [0b000, 0b101, 0b010, 0b101, 0b000],
+        '`' => Glyph {
+            rows: [0b100, 0b010, 0b000, 0b000, 0b000],
         },
-        _ => return None,
-    })
+        'a' => Glyph {
+            rows: [0b000, 0b111, 0b001, 0b111, 0b111],
+        },
+        'b' => Glyph {
+            rows: [0b100, 0b100, 0b110, 0b101, 0b110],
+        },
+        'c' => Glyph {
+            rows: [0b000, 0b111, 0b100, 0b100, 0b111],
+        },
+        'd' => Glyph {
+            rows: [0b001, 0b001, 0b111, 0b101, 0b111],
+        },
+        'e' => Glyph {
+            rows: [0b000, 0b111, 0b110, 0b100, 0b111],
+        },
+        'f' => Glyph {
+            rows: [0b011, 0b100, 0b110, 0b100, 0b100],
+        },
+        'g' => Glyph {
+            rows: [0b000, 0b111, 0b101, 0b111, 0b001],
+        },
+        'h' => Glyph {
+            rows: [0b100, 0b100, 0b110, 0b101, 0b101],
+        },
+        'i' => Glyph {
+            rows: [0b010, 0b000, 0b010, 0b010, 0b010],
+        },
+        'j' => Glyph {
+            rows: [0b001, 0b000, 0b001, 0b101, 0b010],
+        },
+        'k' => Glyph {
+            rows: [0b100, 0b101, 0b110, 0b101, 0b101],
+        },
+        'l' => Glyph {
+            rows: [0b100, 0b100, 0b100, 0b100, 0b111],
+        },
+        'm' => Glyph {
+            rows: [0b000, 0b110, 0b111, 0b101, 0b101],
+        },
+        'n' => Glyph {
+            rows: [0b000, 0b110, 0b101, 0b101, 0b101],
+        },
+        'o' => Glyph {
+            rows: [0b000, 0b111, 0b101, 0b101, 0b111],
+        },
+        'p' => Glyph {
+            rows: [0b000, 0b110, 0b101, 0b110, 0b100],
+        },
+        'q' => Glyph {
+            rows: [0b000, 0b111, 0b101, 0b111, 0b001],
+        },
+        'r' => Glyph {
+            rows: [0b000, 0b110, 0b101, 0b100, 0b100],
+        },
+        's' => Glyph {
+            rows: [0b000, 0b111, 0b110, 0b001, 0b111],
+        },
+        't' => Glyph {
+            rows: [0b010, 0b111, 0b010, 0b010, 0b011],
+        },
+        'u' => Glyph {
+            rows: [0b000, 0b101, 0b101, 0b101, 0b111],
+        },
+        'v' => Glyph {
+            rows: [0b000, 0b101, 0b101, 0b101, 0b010],
+        },
+        'w' => Glyph {
+            rows: [0b000, 0b101, 0b101, 0b111, 0b010],
+        },
+        'x' => Glyph {
+            rows: [0b000, 0b101, 0b010, 0b010, 0b101],
+        },
+        'y' => Glyph {
+            rows: [0b000, 0b101, 0b101, 0b111, 0b001],
+        },
+        'z' => Glyph {
+            rows: [0b000, 0b111, 0b001, 0b010, 0b111],
+        },
+        '{' => Glyph {
+            rows: [0b011, 0b010, 0b110, 0b010, 0b011],
+        },
+        '|' => Glyph {
+            rows: [0b010, 0b010, 0b010, 0b010, 0b010],
+        },
+        '}' => Glyph {
+            rows: [0b110, 0b010, 0b011, 0b010, 0b110],
+        },
+        '~' => Glyph {
+            rows: [0b000, 0b011, 0b110, 0b000, 0b000],
+        },
+        _ => SPACE_GLYPH,
+    }
 }
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::*;
 
     #[test]
-    fn glyph_lookup_covers_exact_required_char_set() {
-        let supported: HashSet<char> = (32u8..=126u8)
-            .map(char::from)
-            .filter(|ch| glyph_for(*ch).is_some())
-            .collect();
+    fn glyph_lookup_covers_ascii_printable_range() {
+        for code in 32u8..=126u8 {
+            let ch = char::from(code);
+            assert!(
+                glyph_for(ch).is_some(),
+                "missing glyph for ASCII code {code} ('{ch}')"
+            );
+        }
+    }
 
-        let required: HashSet<char> = [
-            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ':', ' ', '-', 'F', 'P', 'S',
-            'T', 'r', 'a', 'm', 'e', 'E', 'f', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S', 'g',
-            ',', 'I', 'M', 'N', 'R', 'p', 'c', 'j', 'b', 'w', 'k', '/', '[', ']', '+', '?',
-        ]
-        .into_iter()
-        .collect();
+    #[test]
+    fn non_ascii_printable_glyphs_use_fallback_path() {
+        assert!(glyph_for('\u{7f}').is_none());
+        assert!(glyph_for('é').is_none());
+    }
 
-        assert_eq!(supported, required);
+    #[test]
+    fn console_acceptance_ascii_string_has_no_fallbacks() {
+        let acceptance = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !\\\"#$%&'()*+,-./:;<=>?@[\\\\]^_`{|}~";
+        for ch in acceptance.chars() {
+            assert!(
+                glyph_for(ch).is_some(),
+                "acceptance character should have glyph: '{ch}'"
+            );
+        }
     }
 
     #[test]
     fn unknown_character_is_safe_and_draws_like_space() {
         let mut frame = vec![0u8; 16 * 16 * 4];
-        draw_text_clipped(&mut frame, 16, 16, 0, 0, "@", OVERLAY_COLOR);
+        draw_text_clipped(&mut frame, 16, 16, 0, 0, "\u{1f642}", OVERLAY_COLOR);
         assert!(frame.iter().all(|byte| *byte == 0));
     }
 
@@ -495,9 +644,9 @@ mod tests {
     }
 
     #[test]
-    fn fps_line_formats_cap_off_with_infinity_text() {
+    fn fps_line_formats_cap_off_with_ascii_text() {
         let line = format_fps_line(144.4, None, 0);
-        assert_eq!(line, "[144 / ∞] dbg+0ms");
+        assert_eq!(line, "[144 / inf] dbg+0ms");
     }
 
     #[test]

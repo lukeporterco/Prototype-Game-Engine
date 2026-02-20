@@ -132,3 +132,9 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Loop integration:
   - `ConsoleCommandProcessor` is loop-owned in `crates/engine/src/app/loop_runner.rs`.
   - processor runs each redraw frame before render; queueable commands are not executed yet.
+
+## Ticket Notes (2026-02-20, Ticket 32.2.1)
+- Expanded shared text glyph lookup in `crates/engine/src/app/tools/overlay.rs` so ASCII printable range `32..=126` always maps to a glyph.
+- Console prompt and scrollback now render ASCII printable characters without `?` fallback substitutions (console still uses `draw_text_clipped_with_fallback(..., '?')`).
+- Fallback behavior remains active for non-ASCII-printable characters (`glyph_for` returns `None` outside ASCII printable).
+- Removed the non-ASCII infinity glyph from lookup and switched uncapped FPS text to ASCII `"inf"` for consistent rendering with the restricted glyph set.
