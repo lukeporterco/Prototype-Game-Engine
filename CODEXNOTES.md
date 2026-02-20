@@ -138,3 +138,20 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Console prompt and scrollback now render ASCII printable characters without `?` fallback substitutions (console still uses `draw_text_clipped_with_fallback(..., '?')`).
 - Fallback behavior remains active for non-ASCII-printable characters (`glyph_for` returns `None` outside ASCII printable).
 - Removed the non-ASCII infinity glyph from lookup and switched uncapped FPS text to ASCII `"inf"` for consistent rendering with the restricted glyph set.
+
+## Ticket Notes (2026-02-20, Ticket 32.3)
+- Queueable command feedback contract changed:
+  - queueable parse success no longer prints `queued: ...`.
+  - queueable command user-visible feedback now emits execution-time `ok: ...` or `error: ...` only.
+- Boundary/seam contract:
+  - `DebugCommand` remains tools-layer (`crates/engine/src/app/tools/console_commands.rs`).
+  - scene-facing API in `crates/engine/src/app/scene.rs` now uses separate `SceneDebugCommand` + `SceneDebugContext` + `SceneDebugCommandResult`.
+  - mapping is one-way in loop routing: `DebugCommand::{Spawn,Despawn}` -> `SceneDebugCommand::{Spawn,Despawn}`.
+- Loop routing/apply timing (`crates/engine/src/app/loop_runner.rs`):
+  - drained queueable batch is executed in one place each redraw.
+  - `apply_pending_active()` is called once after the batch for scene debug spawn/despawn commands.
+  - `apply_pending_active()` is called immediately after active-scene-changing scene-machine operations (`switch_scene` when changed, `reset_scene` always).
+- Gameplay scene hook (`crates/game/src/main.rs`):
+  - implemented `Scene::execute_debug_command` for spawn/despawn.
+  - spawn resolves def by name via `DefDatabase`, chooses position by explicit/cursor/player/origin fallback, and updates save-id maps.
+  - despawn uses existing world despawn queue path and removes save-id mappings on success.

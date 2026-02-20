@@ -16,6 +16,29 @@ pub enum SceneCommand {
     HardResetTo(SceneKey),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SceneDebugCommand {
+    Spawn {
+        def_name: String,
+        position: Option<(f32, f32)>,
+    },
+    Despawn {
+        entity_id: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SceneDebugContext {
+    pub cursor_world: Option<Vec2>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SceneDebugCommandResult {
+    Unsupported,
+    Success(String),
+    Error(String),
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InputSnapshot {
     quit_requested: bool,
@@ -657,6 +680,14 @@ pub trait Scene {
     fn debug_info_snapshot(&self, _world: &SceneWorld) -> Option<DebugInfoSnapshot> {
         None
     }
+    fn execute_debug_command(
+        &mut self,
+        _command: SceneDebugCommand,
+        _context: SceneDebugContext,
+        _world: &mut SceneWorld,
+    ) -> SceneDebugCommandResult {
+        SceneDebugCommandResult::Unsupported
+    }
 }
 
 struct SceneRuntime {
@@ -760,6 +791,17 @@ impl SceneMachine {
     pub(crate) fn debug_info_snapshot_active(&self) -> Option<DebugInfoSnapshot> {
         let runtime = self.active_runtime_ref();
         runtime.scene.debug_info_snapshot(&runtime.world)
+    }
+
+    pub(crate) fn execute_debug_command_active(
+        &mut self,
+        command: SceneDebugCommand,
+        context: SceneDebugContext,
+    ) -> SceneDebugCommandResult {
+        let runtime = self.active_runtime_mut();
+        runtime
+            .scene
+            .execute_debug_command(command, context, &mut runtime.world)
     }
 
     pub(crate) fn switch_to(&mut self, next_scene: SceneKey) -> bool {
@@ -910,6 +952,52 @@ mod tests {
                 interactable_count: 0,
                 resource_count: 0,
             })
+        }
+    }
+
+    struct SceneWithDebugHook;
+
+    impl Scene for SceneWithDebugHook {
+        fn load(&mut self, _world: &mut SceneWorld) {}
+
+        fn update(
+            &mut self,
+            _fixed_dt_seconds: f32,
+            _input: &InputSnapshot,
+            _world: &mut SceneWorld,
+        ) -> SceneCommand {
+            SceneCommand::None
+        }
+
+        fn render(&mut self, _world: &SceneWorld) {}
+
+        fn unload(&mut self, _world: &mut SceneWorld) {}
+
+        fn execute_debug_command(
+            &mut self,
+            command: SceneDebugCommand,
+            _context: SceneDebugContext,
+            world: &mut SceneWorld,
+        ) -> SceneDebugCommandResult {
+            match command {
+                SceneDebugCommand::Spawn { .. } => {
+                    world.spawn(
+                        Transform::default(),
+                        RenderableDesc {
+                            kind: RenderableKind::Placeholder,
+                            debug_name: "debug_spawned",
+                        },
+                    );
+                    SceneDebugCommandResult::Success("spawned".to_string())
+                }
+                SceneDebugCommand::Despawn { entity_id } => {
+                    if world.despawn(EntityId(entity_id)) {
+                        SceneDebugCommandResult::Success("despawned".to_string())
+                    } else {
+                        SceneDebugCommandResult::Error("missing entity".to_string())
+                    }
+                }
+            }
         }
     }
 
@@ -1511,6 +1599,53 @@ mod tests {
             Some(Vec2 { x: 1.0, y: 2.0 })
         );
         assert_eq!(snapshot.selected_job_state, DebugJobState::Idle);
+    }
+
+    #[test]
+    fn default_scene_debug_hook_is_unsupported() {
+        let mut machine = SceneMachine::new(
+            Box::new(TestScene { spawn_count: 0 }),
+            Box::new(TestScene { spawn_count: 0 }),
+            SceneKey::A,
+        );
+        machine.load_active();
+        machine.apply_pending_active();
+
+        let result = machine.execute_debug_command_active(
+            SceneDebugCommand::Spawn {
+                def_name: "proto.worker".to_string(),
+                position: None,
+            },
+            SceneDebugContext::default(),
+        );
+
+        assert_eq!(result, SceneDebugCommandResult::Unsupported);
+    }
+
+    #[test]
+    fn scene_machine_forwards_debug_command_to_active_scene() {
+        let mut machine = SceneMachine::new(
+            Box::new(SceneWithDebugHook),
+            Box::new(TestScene { spawn_count: 0 }),
+            SceneKey::A,
+        );
+        machine.load_active();
+        machine.apply_pending_active();
+
+        let result = machine.execute_debug_command_active(
+            SceneDebugCommand::Spawn {
+                def_name: "proto.worker".to_string(),
+                position: Some((1.0, 2.0)),
+            },
+            SceneDebugContext::default(),
+        );
+        assert_eq!(
+            result,
+            SceneDebugCommandResult::Success("spawned".to_string())
+        );
+
+        machine.apply_pending_active();
+        assert_eq!(machine.active_world().entity_count(), 1);
     }
 
     #[test]

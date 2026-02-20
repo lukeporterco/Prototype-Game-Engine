@@ -21,8 +21,9 @@ use crate::{
 use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
 use super::{
-    ConsoleCommandProcessor, ConsoleState, InputAction, InputSnapshot, MetricsHandle, OverlayData,
-    PerfStats, Renderer, Scene, SceneCommand, SceneKey,
+    ConsoleCommandProcessor, ConsoleState, DebugCommand, InputAction, InputSnapshot, MetricsHandle,
+    OverlayData, PerfStats, Renderer, Scene, SceneCommand, SceneDebugCommand,
+    SceneDebugCommandResult, SceneDebugContext, SceneKey,
 };
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
@@ -172,6 +173,7 @@ pub fn run_app_with_metrics(
     let mut overlay_visible = true;
     let mut console = ConsoleState::default();
     let mut console_command_processor = ConsoleCommandProcessor::new();
+    let mut drained_debug_commands = Vec::<DebugCommand>::new();
     info!(
         perf_stats_enabled_by_default = PerfStats::enabled_by_default(),
         perf_window_frames = PerfStats::window_len(),
@@ -248,6 +250,18 @@ pub fn run_app_with_metrics(
                             info!(console_open = console.is_open(), "console_toggled");
                         }
                         console_command_processor.process_pending_lines(&mut console);
+                        drained_debug_commands.clear();
+                        console_command_processor
+                            .drain_pending_debug_commands_into(&mut drained_debug_commands);
+                        if execute_drained_debug_commands(
+                            &mut drained_debug_commands,
+                            &mut scenes,
+                            &mut console,
+                            &input_collector,
+                        ) {
+                            info!(reason = "console_quit_command", "shutdown_requested");
+                            window_target.exit();
+                        }
 
                         if slow_frame_delay > Duration::ZERO {
                             // Explicit debug perturbation only; this is not the FPS cap.
@@ -715,6 +729,106 @@ impl InputCollector {
     }
 }
 
+fn execute_drained_debug_commands(
+    commands: &mut Vec<DebugCommand>,
+    scenes: &mut SceneMachine,
+    console: &mut ConsoleState,
+    input_collector: &InputCollector,
+) -> bool {
+    let mut quit_requested = false;
+    let mut should_apply_after_batch = false;
+
+    for command in commands.drain(..) {
+        match command {
+            DebugCommand::Quit => {
+                console.append_output_line("ok: quit requested");
+                quit_requested = true;
+            }
+            DebugCommand::ResetScene => {
+                let active = scenes.active_scene();
+                let _ = scenes.hard_reset_to(active);
+                scenes.apply_pending_active();
+                console.append_output_line("ok: scene reset");
+            }
+            DebugCommand::SwitchScene { scene } => {
+                if scenes.switch_to(scene) {
+                    scenes.apply_pending_active();
+                    console.append_output_line(format!(
+                        "ok: switched to scene {}",
+                        scene_key_token(scene)
+                    ));
+                } else {
+                    console.append_output_line(format!(
+                        "ok: scene {} already active",
+                        scene_key_token(scene)
+                    ));
+                }
+            }
+            DebugCommand::Spawn { def_name, position } => {
+                let context = SceneDebugContext {
+                    cursor_world: cursor_world_from_input(scenes, input_collector),
+                };
+                let result = scenes.execute_debug_command_active(
+                    SceneDebugCommand::Spawn { def_name, position },
+                    context,
+                );
+                append_scene_debug_result(console, result);
+                should_apply_after_batch = true;
+            }
+            DebugCommand::Despawn { entity_id } => {
+                let context = SceneDebugContext {
+                    cursor_world: cursor_world_from_input(scenes, input_collector),
+                };
+                let result = scenes.execute_debug_command_active(
+                    SceneDebugCommand::Despawn { entity_id },
+                    context,
+                );
+                append_scene_debug_result(console, result);
+                should_apply_after_batch = true;
+            }
+        }
+    }
+
+    if should_apply_after_batch {
+        scenes.apply_pending_active();
+    }
+
+    quit_requested
+}
+
+fn append_scene_debug_result(console: &mut ConsoleState, result: SceneDebugCommandResult) {
+    match result {
+        SceneDebugCommandResult::Unsupported => {
+            console.append_output_line("error: active scene does not support this command");
+        }
+        SceneDebugCommandResult::Success(message) => {
+            console.append_output_line(format!("ok: {message}"));
+        }
+        SceneDebugCommandResult::Error(message) => {
+            console.append_output_line(format!("error: {message}"));
+        }
+    }
+}
+
+fn cursor_world_from_input(
+    scenes: &SceneMachine,
+    input_collector: &InputCollector,
+) -> Option<super::Vec2> {
+    let cursor_px = input_collector.cursor_position_px?;
+    Some(super::screen_to_world_px(
+        scenes.active_world().camera(),
+        (input_collector.window_width, input_collector.window_height),
+        cursor_px,
+    ))
+}
+
+fn scene_key_token(scene: SceneKey) -> &'static str {
+    match scene {
+        SceneKey::A => "a",
+        SceneKey::B => "b",
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct StepPlan {
     ticks_to_run: u32,
@@ -940,6 +1054,193 @@ fn zoom_steps_from_scroll_delta(delta: MouseScrollDelta) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoopScene;
+
+    impl Scene for NoopScene {
+        fn load(&mut self, _world: &mut super::super::SceneWorld) {}
+
+        fn update(
+            &mut self,
+            _fixed_dt_seconds: f32,
+            _input: &InputSnapshot,
+            _world: &mut super::super::SceneWorld,
+        ) -> SceneCommand {
+            SceneCommand::None
+        }
+
+        fn render(&mut self, _world: &super::super::SceneWorld) {}
+
+        fn unload(&mut self, _world: &mut super::super::SceneWorld) {}
+    }
+
+    struct LoadQueuesOneEntityScene;
+
+    impl Scene for LoadQueuesOneEntityScene {
+        fn load(&mut self, world: &mut super::super::SceneWorld) {
+            world.spawn(
+                super::super::Transform::default(),
+                super::super::RenderableDesc {
+                    kind: super::super::RenderableKind::Placeholder,
+                    debug_name: "queued_on_load",
+                },
+            );
+        }
+
+        fn update(
+            &mut self,
+            _fixed_dt_seconds: f32,
+            _input: &InputSnapshot,
+            _world: &mut super::super::SceneWorld,
+        ) -> SceneCommand {
+            SceneCommand::None
+        }
+
+        fn render(&mut self, _world: &super::super::SceneWorld) {}
+
+        fn unload(&mut self, _world: &mut super::super::SceneWorld) {}
+    }
+
+    struct SceneWithDebugHook;
+
+    impl Scene for SceneWithDebugHook {
+        fn load(&mut self, _world: &mut super::super::SceneWorld) {}
+
+        fn update(
+            &mut self,
+            _fixed_dt_seconds: f32,
+            _input: &InputSnapshot,
+            _world: &mut super::super::SceneWorld,
+        ) -> SceneCommand {
+            SceneCommand::None
+        }
+
+        fn render(&mut self, _world: &super::super::SceneWorld) {}
+
+        fn unload(&mut self, _world: &mut super::super::SceneWorld) {}
+
+        fn execute_debug_command(
+            &mut self,
+            command: SceneDebugCommand,
+            _context: SceneDebugContext,
+            world: &mut super::super::SceneWorld,
+        ) -> SceneDebugCommandResult {
+            match command {
+                SceneDebugCommand::Spawn { .. } => {
+                    world.spawn(
+                        super::super::Transform::default(),
+                        super::super::RenderableDesc {
+                            kind: super::super::RenderableKind::Placeholder,
+                            debug_name: "debug_spawn",
+                        },
+                    );
+                    SceneDebugCommandResult::Success("spawned entity".to_string())
+                }
+                SceneDebugCommand::Despawn { entity_id } => {
+                    if world.despawn(super::super::EntityId(entity_id)) {
+                        SceneDebugCommandResult::Success("despawned entity".to_string())
+                    } else {
+                        SceneDebugCommandResult::Error("entity not found".to_string())
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn queueable_execution_emits_only_ok_or_error_lines() {
+        let mut scenes = SceneMachine::new(
+            Box::new(SceneWithDebugHook),
+            Box::new(NoopScene),
+            SceneKey::A,
+        );
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut console = ConsoleState::default();
+        let input_collector = InputCollector::new(1280, 720);
+        let mut commands = vec![
+            DebugCommand::Spawn {
+                def_name: "proto.worker".to_string(),
+                position: None,
+            },
+            DebugCommand::Despawn { entity_id: 999_999 },
+        ];
+
+        let quit = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &input_collector,
+        );
+
+        assert!(!quit);
+        let lines = console.output_lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines
+            .iter()
+            .all(|line| line.starts_with("ok:") || line.starts_with("error:")));
+        assert!(lines.iter().all(|line| !line.starts_with("queued:")));
+        assert_eq!(scenes.active_world().entity_count(), 1);
+    }
+
+    #[test]
+    fn switch_scene_applies_immediately_after_active_scene_change() {
+        let mut scenes = SceneMachine::new(
+            Box::new(NoopScene),
+            Box::new(LoadQueuesOneEntityScene),
+            SceneKey::A,
+        );
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut console = ConsoleState::default();
+        let input_collector = InputCollector::new(1280, 720);
+        let mut commands = vec![DebugCommand::SwitchScene { scene: SceneKey::B }];
+
+        let _ = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &input_collector,
+        );
+
+        assert_eq!(scenes.active_scene(), SceneKey::B);
+        assert_eq!(scenes.active_world().entity_count(), 1);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec!["ok: switched to scene b"]
+        );
+    }
+
+    #[test]
+    fn reset_scene_applies_immediately() {
+        let mut scenes = SceneMachine::new(
+            Box::new(LoadQueuesOneEntityScene),
+            Box::new(NoopScene),
+            SceneKey::A,
+        );
+        scenes.load_active();
+        scenes.apply_pending_active();
+        assert_eq!(scenes.active_world().entity_count(), 1);
+
+        let mut console = ConsoleState::default();
+        let input_collector = InputCollector::new(1280, 720);
+        let mut commands = vec![DebugCommand::ResetScene];
+
+        let _ = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &input_collector,
+        );
+
+        assert_eq!(scenes.active_world().entity_count(), 1);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec!["ok: scene reset"]
+        );
+    }
 
     #[test]
     fn clamp_frame_delta_caps_large_frame() {

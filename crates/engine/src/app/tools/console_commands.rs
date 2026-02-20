@@ -82,7 +82,7 @@ impl ConsoleCommandRegistry {
         registry
             .register(
                 "reset_scene",
-                "Queue scene reset",
+                "Reset active scene",
                 "",
                 parse_reset_scene_command,
             )
@@ -90,18 +90,18 @@ impl ConsoleCommandRegistry {
         registry
             .register(
                 "switch_scene",
-                "Queue scene switch",
+                "Switch active scene",
                 "<scene_id:a|b>",
                 parse_switch_scene_command,
             )
             .expect("built-in command registration should not fail");
         registry
-            .register("quit", "Queue app quit", "", parse_quit_command)
+            .register("quit", "Quit app", "", parse_quit_command)
             .expect("built-in command registration should not fail");
         registry
             .register(
                 "despawn",
-                "Queue entity despawn",
+                "Despawn entity by id",
                 "<entity_id:u64>",
                 parse_despawn_command,
             )
@@ -109,7 +109,7 @@ impl ConsoleCommandRegistry {
         registry
             .register(
                 "spawn",
-                "Queue entity spawn",
+                "Spawn entity by def name",
                 "<def_name:string> [x:f32 y:f32]",
                 parse_spawn_command,
             )
@@ -232,11 +232,7 @@ impl ConsoleCommandProcessor {
 
         match (spec.parse)(args) {
             Ok(ParsedCommand::Local(action)) => self.apply_local_action(console, action),
-            Ok(ParsedCommand::Queueable(command)) => {
-                self.push_queueable(command.clone());
-                console
-                    .append_output_line(format!("queued: {}", queued_debug_command_text(&command)));
-            }
+            Ok(ParsedCommand::Queueable(command)) => self.push_queueable(command),
             Err(error) => {
                 console
                     .append_output_line(format!("error: {}. usage: {}", error.reason, error.usage));
@@ -270,22 +266,6 @@ impl ConsoleCommandProcessor {
             self.pending_debug_commands.pop_front();
         }
         self.pending_debug_commands.push_back(command);
-    }
-}
-
-fn queued_debug_command_text(command: &DebugCommand) -> String {
-    match command {
-        DebugCommand::ResetScene => "reset_scene".to_string(),
-        DebugCommand::SwitchScene { scene } => match scene {
-            SceneKey::A => "switch_scene a".to_string(),
-            SceneKey::B => "switch_scene b".to_string(),
-        },
-        DebugCommand::Quit => "quit".to_string(),
-        DebugCommand::Despawn { entity_id } => format!("despawn {entity_id}"),
-        DebugCommand::Spawn { def_name, position } => match position {
-            Some((x, y)) => format!("spawn {def_name} {x} {y}"),
-            None => format!("spawn {def_name}"),
-        },
     }
 }
 
@@ -465,13 +445,16 @@ mod tests {
         assert_eq!(lines[0], "help - List commands");
         assert_eq!(lines[1], "clear - Clear console output");
         assert_eq!(lines[2], "echo <text...> - Print text to console");
-        assert_eq!(lines[3], "reset_scene - Queue scene reset");
-        assert_eq!(lines[4], "switch_scene <scene_id:a|b> - Queue scene switch");
-        assert_eq!(lines[5], "quit - Queue app quit");
-        assert_eq!(lines[6], "despawn <entity_id:u64> - Queue entity despawn");
+        assert_eq!(lines[3], "reset_scene - Reset active scene");
+        assert_eq!(
+            lines[4],
+            "switch_scene <scene_id:a|b> - Switch active scene"
+        );
+        assert_eq!(lines[5], "quit - Quit app");
+        assert_eq!(lines[6], "despawn <entity_id:u64> - Despawn entity by id");
         assert_eq!(
             lines[7],
-            "spawn <def_name:string> [x:f32 y:f32] - Queue entity spawn"
+            "spawn <def_name:string> [x:f32 y:f32] - Spawn entity by def name"
         );
     }
 
@@ -546,9 +529,7 @@ mod tests {
                 },
             ]
         );
-
-        assert_eq!(collect_output(&console)[0], "queued: reset_scene");
-        assert_eq!(collect_output(&console)[1], "queued: switch_scene a");
+        assert!(collect_output(&console).is_empty());
     }
 
     #[test]

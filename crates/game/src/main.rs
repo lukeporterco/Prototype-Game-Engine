@@ -7,7 +7,8 @@ use engine::{
     resolve_app_paths, run_app, screen_to_world_px, ContentPlanRequest, DebugInfoSnapshot,
     DebugJobState, DebugMarker, DebugMarkerKind, EntityArchetype, EntityId, InputAction,
     InputSnapshot, Interactable, InteractableKind, LoopConfig, OrderState, RenderableDesc,
-    RenderableKind, Scene, SceneCommand, SceneKey, SceneWorld, Tilemap, Transform, Vec2,
+    RenderableKind, Scene, SceneCommand, SceneDebugCommand, SceneDebugCommandResult,
+    SceneDebugContext, SceneKey, SceneWorld, Tilemap, Transform, Vec2,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
@@ -1038,6 +1039,70 @@ impl Scene for GameplayScene {
         SceneCommand::None
     }
 
+    fn execute_debug_command(
+        &mut self,
+        command: SceneDebugCommand,
+        context: SceneDebugContext,
+        world: &mut SceneWorld,
+    ) -> SceneDebugCommandResult {
+        match command {
+            SceneDebugCommand::Spawn { def_name, position } => {
+                let archetype = match try_resolve_archetype_by_name(world, &def_name) {
+                    Ok(archetype) => archetype,
+                    Err(error) => return SceneDebugCommandResult::Error(error),
+                };
+                let spawn_position = position
+                    .map(|(x, y)| Vec2 { x, y })
+                    .or(context.cursor_world)
+                    .or_else(|| {
+                        self.player_id
+                            .and_then(|id| world.find_entity(id))
+                            .map(|entity| entity.transform.position)
+                    })
+                    .unwrap_or(Vec2 { x: 0.0, y: 0.0 });
+
+                let save_id = match self.alloc_next_save_id() {
+                    Ok(save_id) => save_id,
+                    Err(error) => return SceneDebugCommandResult::Error(error),
+                };
+
+                let entity_id = world.spawn_selectable(
+                    Transform {
+                        position: spawn_position,
+                        rotation_radians: None,
+                    },
+                    RenderableDesc {
+                        kind: archetype.renderable.clone(),
+                        debug_name: "debug_spawn",
+                    },
+                );
+
+                self.entity_save_ids.insert(entity_id, save_id);
+                self.save_id_to_entity.insert(save_id, entity_id);
+
+                SceneDebugCommandResult::Success(format!(
+                    "spawned '{}' as entity {}",
+                    archetype.def_name, entity_id.0
+                ))
+            }
+            SceneDebugCommand::Despawn { entity_id } => {
+                let runtime_id = EntityId(entity_id);
+                if world.despawn(runtime_id) {
+                    self.remove_entity_save_mapping(runtime_id);
+                    if self.selected_entity == Some(runtime_id) {
+                        self.selected_entity = None;
+                    }
+                    if self.player_id == Some(runtime_id) {
+                        self.player_id = None;
+                    }
+                    SceneDebugCommandResult::Success(format!("despawned entity {entity_id}"))
+                } else {
+                    SceneDebugCommandResult::Error(format!("entity {entity_id} not found"))
+                }
+            }
+        }
+    }
+
     fn render(&mut self, _world: &SceneWorld) {}
 
     fn unload(&mut self, world: &mut SceneWorld) {
@@ -1171,6 +1236,22 @@ fn build_ground_tilemap(scene_key: SceneKey) -> Tilemap {
         tiles,
     )
     .expect("static tilemap shape is valid")
+}
+
+fn try_resolve_archetype_by_name(
+    world: &SceneWorld,
+    def_name: &str,
+) -> SaveLoadResult<EntityArchetype> {
+    let def_db = world
+        .def_database()
+        .ok_or_else(|| "DefDatabase not set on SceneWorld before scene load".to_string())?;
+    let def_id = def_db
+        .entity_def_id_by_name(def_name)
+        .ok_or_else(|| format!("unknown entity def '{def_name}'"))?;
+    def_db
+        .entity_def(def_id)
+        .ok_or_else(|| format!("EntityDef id for '{def_name}' is missing from DefDatabase"))
+        .cloned()
 }
 
 fn resolve_player_archetype(world: &SceneWorld) -> EntityArchetype {
@@ -1743,6 +1824,146 @@ mod tests {
             .copied()
             .expect("target save id");
         (scene, world, actor_save_id, target_save_id)
+    }
+
+    #[test]
+    fn debug_spawn_success_creates_entity_and_save_mapping() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let before_count = world.entity_count();
+        let before_map_len = scene.entity_save_ids.len();
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::Spawn {
+                def_name: "proto.player".to_string(),
+                position: Some((123.0, 456.0)),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(result, SceneDebugCommandResult::Success(_)));
+
+        world.apply_pending();
+        assert_eq!(world.entity_count(), before_count + 1);
+        assert_eq!(scene.entity_save_ids.len(), before_map_len + 1);
+        assert!(world
+            .entities()
+            .iter()
+            .any(|entity| entity.transform.position == Vec2 { x: 123.0, y: 456.0 }));
+    }
+
+    #[test]
+    fn debug_spawn_unknown_def_returns_error() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let before_count = world.entity_count();
+        let before_map_len = scene.entity_save_ids.len();
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::Spawn {
+                def_name: "proto.unknown_def".to_string(),
+                position: None,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(result, SceneDebugCommandResult::Error(_)));
+        assert_eq!(world.entity_count(), before_count);
+        assert_eq!(scene.entity_save_ids.len(), before_map_len);
+    }
+
+    #[test]
+    fn debug_despawn_success_and_failure_paths() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let victim = world.entities()[0].id;
+        assert!(scene.entity_save_ids.contains_key(&victim));
+
+        let success = scene.execute_debug_command(
+            SceneDebugCommand::Despawn {
+                entity_id: victim.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(success, SceneDebugCommandResult::Success(_)));
+        world.apply_pending();
+        assert!(world.find_entity(victim).is_none());
+        assert!(!scene.entity_save_ids.contains_key(&victim));
+
+        let failure = scene.execute_debug_command(
+            SceneDebugCommand::Despawn { entity_id: 999_999 },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(failure, SceneDebugCommandResult::Error(_)));
+    }
+
+    #[test]
+    fn debug_spawn_and_despawn_keep_save_id_maps_consistent() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let before_ids: std::collections::HashSet<EntityId> =
+            world.entities().iter().map(|entity| entity.id).collect();
+
+        let spawn_result = scene.execute_debug_command(
+            SceneDebugCommand::Spawn {
+                def_name: "proto.player".to_string(),
+                position: Some((50.0, -20.0)),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(spawn_result, SceneDebugCommandResult::Success(_)));
+        world.apply_pending();
+
+        let spawned_id = world
+            .entities()
+            .iter()
+            .map(|entity| entity.id)
+            .find(|entity_id| !before_ids.contains(entity_id))
+            .expect("spawned debug entity id");
+        let save_id = scene
+            .entity_save_ids
+            .get(&spawned_id)
+            .copied()
+            .expect("spawned entity save id");
+        assert_eq!(
+            scene.save_id_to_entity.get(&save_id).copied(),
+            Some(spawned_id)
+        );
+
+        let despawn_result = scene.execute_debug_command(
+            SceneDebugCommand::Despawn {
+                entity_id: spawned_id.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(
+            despawn_result,
+            SceneDebugCommandResult::Success(_)
+        ));
+        world.apply_pending();
+
+        assert!(!scene.entity_save_ids.contains_key(&spawned_id));
+        assert!(!scene.save_id_to_entity.values().any(|id| *id == spawned_id));
     }
 
     #[test]

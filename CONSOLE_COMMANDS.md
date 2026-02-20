@@ -1,6 +1,6 @@
 # Console Commands (Developer Reference)
 
-Status: `Ticket 32.2` implemented parsing, validation, help, and queueing.
+Status: `Ticket 32.3` implements routing/execution for queueable commands.
 
 ## Console Controls
 
@@ -18,12 +18,16 @@ Status: `Ticket 32.2` implemented parsing, validation, help, and queueing.
 - `help`
 - `clear`
 - `echo`
-- Queueable actions (parsed and enqueued as `DebugCommand`, not executed yet):
+- Queueable actions (parsed to `DebugCommand`, routed and executed in the engine loop):
 - `reset_scene`
 - `switch_scene`
 - `quit`
 - `despawn`
 - `spawn`
+- Queueable command output format:
+- Success: `ok: ...`
+- Failure: `error: ...`
+- No `queued:` success lines are emitted for queueable commands.
 
 ## Local Commands (Immediate)
 
@@ -49,51 +53,66 @@ Status: `Ticket 32.2` implemented parsing, validation, help, and queueing.
 - `echo hi`
 - `echo "worker spawned"`
 
-## Queueable Commands (Parse-Only in 32.2)
+## Queueable Commands (Executed via Routing in 32.3)
 
 ### reset_scene
-- Layer: Engine command queue
-- Description: Queues a scene reset command.
+- Layer: Engine / scene machine
+- Description: Resets the active scene immediately.
 - Syntax: `reset_scene`
 - Example:
 - `reset_scene`
+- Result examples:
+- `ok: scene reset`
 
 ### switch_scene
-- Layer: Engine command queue
-- Description: Queues scene switch to known scene ID.
+- Layer: Engine / scene machine
+- Description: Switches active scene to known scene ID.
 - Syntax: `switch_scene <scene_id>`
 - Valid IDs: `a`, `b` (case-insensitive)
 - Example:
 - `switch_scene a`
+- Result examples:
+- `ok: switched to scene a`
+- `ok: scene a already active`
 
 ### quit
-- Layer: Engine command queue
-- Description: Queues app quit request.
+- Layer: Engine / scene machine
+- Description: Requests clean app exit.
 - Syntax: `quit`
 - Example:
 - `quit`
+- Result examples:
+- `ok: quit requested`
 
 ### despawn
-- Layer: Engine command queue
-- Description: Queues despawn by internal numeric entity ID.
+- Layer: Active scene debug hook
+- Description: Despawns by internal numeric entity ID.
 - Syntax: `despawn <entity_id>`
 - Example:
 - `despawn 42`
+- Result examples:
+- `ok: despawned entity 42`
+- `error: entity 42 not found`
+- `error: active scene does not support this command`
 
 ### spawn
-- Layer: Engine command queue
-- Description: Queues spawn by `def_name`, with optional world coordinates.
+- Layer: Active scene debug hook
+- Description: Spawns by `def_name`, with optional world coordinates.
 - Syntax: `spawn <def_name> [x y]`
 - Examples:
 - `spawn proto.worker`
 - `spawn proto.worker 1.5 -2.0`
 - Defaults:
-- If `[x y]` is omitted, command queues without explicit position.
+- If `[x y]` is omitted, spawn position priority is: cursor world position (if available), else player position, else origin.
+- Result examples:
+- `ok: spawned 'proto.worker' as entity 12`
+- `error: unknown entity def 'proto.unknown'`
+- `error: active scene does not support this command`
 
 ## Notes and Limitations
 
-- Queueable commands are validated and queued only in Ticket 32.2.
-- No queueable command mutates live scene/world yet.
+- Queueable commands are still parsed in tools, then routed for execution in the loop.
+- `DebugCommand` stays in tools/engine layer; only `spawn`/`despawn` map one-way into scene-facing `SceneDebugCommand`.
 - Processor prints parse errors with usage hints.
 - Unknown commands print `error: unknown command '<name>'. try: help`.
 
