@@ -289,37 +289,7 @@ fn parse_entity_def(
             "defName" => def_name = Some(required_text(mod_id, file_path, doc, field, "defName")?),
             "label" => label = Some(required_text(mod_id, file_path, doc, field, "label")?),
             "renderable" => {
-                let value = required_text(mod_id, file_path, doc, field, "renderable")?;
-                let parsed = match value.as_str() {
-                    "Placeholder" => RenderableKind::Placeholder,
-                    _ if value.starts_with("Sprite:") => {
-                        let key = value.trim_start_matches("Sprite:");
-                        validate_sprite_key(key).map_err(|error| {
-                            error_at_node(
-                                ContentErrorCode::InvalidValue,
-                                format!("invalid sprite key '{key}': {error}"),
-                                mod_id,
-                                file_path,
-                                doc,
-                                field,
-                            )
-                        })?;
-                        RenderableKind::Sprite(key.to_string())
-                    }
-                    _ => {
-                        return Err(error_at_node(
-                            ContentErrorCode::InvalidValue,
-                            format!(
-                                "invalid renderable '{}'; allowed values: Placeholder or Sprite:<key> where key uses [a-z0-9_/-], is non-empty, and excludes '..', leading '/', and '\\\\'",
-                                value
-                            ),
-                            mod_id,
-                            file_path,
-                            doc,
-                            field,
-                        ))
-                    }
-                };
+                let parsed = parse_renderable(mod_id, file_path, doc, field)?;
                 renderable = Some(parsed);
             }
             "moveSpeed" => {
@@ -410,6 +380,139 @@ fn parse_tags(
         tags.push(required_text(mod_id, file_path, doc, child, "li")?);
     }
     Ok(tags)
+}
+
+fn parse_renderable(
+    mod_id: &str,
+    file_path: &Path,
+    doc: &Document<'_>,
+    node: Node<'_, '_>,
+) -> Result<RenderableKind, ContentCompileError> {
+    for attr in node.attributes() {
+        if attr.name() != "kind" && attr.name() != "spriteKey" {
+            return Err(error_at_node(
+                ContentErrorCode::UnknownField,
+                format!(
+                    "unknown attribute '{}' on <renderable>; allowed attributes: kind, spriteKey",
+                    attr.name()
+                ),
+                mod_id,
+                file_path,
+                doc,
+                node,
+            ));
+        }
+    }
+
+    let kind_attr = node.attribute("kind");
+    let sprite_key_attr = node.attribute("spriteKey");
+    let text_value = node.text().map(str::trim).unwrap_or_default();
+
+    if let Some(kind) = kind_attr {
+        if !text_value.is_empty() {
+            return Err(error_at_node(
+                ContentErrorCode::InvalidValue,
+                "renderable with 'kind' attribute must not also include non-whitespace text"
+                    .to_string(),
+                mod_id,
+                file_path,
+                doc,
+                node,
+            ));
+        }
+
+        return match kind {
+            "Placeholder" => {
+                if sprite_key_attr.is_some() {
+                    Err(error_at_node(
+                        ContentErrorCode::InvalidValue,
+                        "renderable kind='Placeholder' must not include spriteKey".to_string(),
+                        mod_id,
+                        file_path,
+                        doc,
+                        node,
+                    ))
+                } else {
+                    Ok(RenderableKind::Placeholder)
+                }
+            }
+            "Sprite" => {
+                let Some(key) = sprite_key_attr else {
+                    return Err(error_at_node(
+                        ContentErrorCode::InvalidValue,
+                        "renderable kind='Sprite' requires spriteKey".to_string(),
+                        mod_id,
+                        file_path,
+                        doc,
+                        node,
+                    ));
+                };
+                validate_sprite_key(key).map_err(|error| {
+                    error_at_node(
+                        ContentErrorCode::InvalidValue,
+                        format!("invalid sprite key '{key}': {error}"),
+                        mod_id,
+                        file_path,
+                        doc,
+                        node,
+                    )
+                })?;
+                Ok(RenderableKind::Sprite(key.to_string()))
+            }
+            _ => Err(error_at_node(
+                ContentErrorCode::InvalidValue,
+                format!(
+                    "invalid renderable kind '{}'; allowed values: Placeholder or Sprite",
+                    kind
+                ),
+                mod_id,
+                file_path,
+                doc,
+                node,
+            )),
+        };
+    }
+
+    if sprite_key_attr.is_some() {
+        return Err(error_at_node(
+            ContentErrorCode::InvalidValue,
+            "renderable attribute spriteKey requires kind".to_string(),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        ));
+    }
+
+    let value = required_text(mod_id, file_path, doc, node, "renderable")?;
+    match value.as_str() {
+        "Placeholder" => Ok(RenderableKind::Placeholder),
+        _ if value.starts_with("Sprite:") => {
+            let key = value.trim_start_matches("Sprite:");
+            validate_sprite_key(key).map_err(|error| {
+                error_at_node(
+                    ContentErrorCode::InvalidValue,
+                    format!("invalid sprite key '{key}': {error}"),
+                    mod_id,
+                    file_path,
+                    doc,
+                    node,
+                )
+            })?;
+            Ok(RenderableKind::Sprite(key.to_string()))
+        }
+        _ => Err(error_at_node(
+            ContentErrorCode::InvalidValue,
+            format!(
+                "invalid renderable '{}'; allowed values: Placeholder, Sprite:<key>, or <renderable kind=\"...\" .../>",
+                value
+            ),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        )),
+    }
 }
 
 fn required_text(
@@ -691,6 +794,62 @@ mod tests {
     }
 
     #[test]
+    fn renderable_kind_attribute_parses_sprite() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Sprite" spriteKey="player"/></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("a").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(def.renderable, RenderableKind::Sprite("player".to_string()));
+    }
+
+    #[test]
+    fn renderable_kind_attribute_parses_placeholder() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Placeholder"/></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("a").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(def.renderable, RenderableKind::Placeholder);
+    }
+
+    #[test]
+    fn renderable_kind_and_non_whitespace_text_is_error() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Sprite" spriteKey="player">Sprite:player</renderable></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::InvalidValue);
+        assert!(err
+            .message
+            .contains("must not also include non-whitespace text"));
+    }
+
+    #[test]
+    fn renderable_unknown_attribute_is_error() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Sprite" spriteKey="player" foo="bar"/></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::UnknownField);
+        assert!(err.message.contains("unknown attribute"));
+    }
+
+    #[test]
     fn malformed_xml_reports_location() {
         let temp = TempDir::new().expect("temp");
         let app = setup_app_paths(temp.path());
@@ -880,5 +1039,41 @@ mod tests {
         .expect_err("error");
         assert_eq!(err.code, ContentErrorCode::UnknownField);
         assert_eq!(err.mod_id, "unknownfield");
+    }
+
+    #[test]
+    fn fixture_renderable_attr_sprite_compiles() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        copy_dir_recursive(
+            &fixture_root("pass_04_renderable_attr").join("base"),
+            &app.base_content_dir,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("proto.worker_attr").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(def.renderable, RenderableKind::Sprite("player".to_string()));
+    }
+
+    #[test]
+    fn fixture_renderable_attr_bad_key_fails() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        fs::create_dir_all(app.mods_dir.join("badattr")).expect("mkdir");
+        copy_dir_recursive(
+            &fixture_root("fail_07_renderable_attr_bad_key").join("badattr"),
+            &app.mods_dir.join("badattr"),
+        );
+        let err = compile_def_database(
+            &app,
+            &ContentPlanRequest {
+                enabled_mods: vec!["badattr".to_string()],
+                compiler_version: "dev".to_string(),
+                game_version: "dev".to_string(),
+            },
+        )
+        .expect_err("error");
+        assert_eq!(err.code, ContentErrorCode::InvalidValue);
+        assert_eq!(err.mod_id, "badattr");
     }
 }

@@ -1,0 +1,7 @@
+<Defs>
+  <EntityDef>
+    <defName>proto.worker_bad_key</defName>
+    <label>WorkerBadKey</label>
+    <renderable kind="Sprite" spriteKey="a.b" />
+  </EntityDef>
+</Defs>

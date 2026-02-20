@@ -1,0 +1,7 @@
+<Defs>
+  <EntityDef>
+    <defName>proto.worker_unknown_attr</defName>
+    <label>WorkerUnknownAttr</label>
+    <renderable kind="Sprite" spriteKey="player" foo="bar" />
+  </EntityDef>
+</Defs>

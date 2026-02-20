@@ -59,7 +59,14 @@ The first locked def type is `EntityDef`.
 
 1. `defName: string` required.
 2. `label: string` required.
-3. `renderable: enum` required. Allowed value in v1: `Placeholder`.
+3. `renderable` required.
+   - Preferred form:
+     - `<renderable kind="Placeholder" />`
+     - `<renderable kind="Sprite" spriteKey="player" />`
+   - Legacy-compatible text form (still accepted):
+     - `<renderable>Placeholder</renderable>`
+     - `<renderable>Sprite:<key></renderable>`
+   - `Sprite` keys use `[a-z0-9_/-]`, must be non-empty, and must not include `..`, leading `/`, or `\`.
 4. `moveSpeed: f32` optional, default `5.0`, must be finite and `>= 0`.
 5. `tags: list<string>` optional.
 
@@ -70,7 +77,7 @@ Minimal shape:
   <EntityDef>
     <defName>proto.player</defName>
     <label>Player</label>
-    <renderable>Placeholder</renderable>
+    <renderable kind="Placeholder" />
     <moveSpeed>5.0</moveSpeed>
     <tags>
       <li>colonist</li>

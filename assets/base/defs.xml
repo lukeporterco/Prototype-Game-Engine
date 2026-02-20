@@ -2,13 +2,13 @@
   <EntityDef>
     <defName>proto.player</defName>
     <label>Player</label>
-    <renderable>Sprite:player</renderable>
+    <renderable kind="Sprite" spriteKey="player" />
     <moveSpeed>5.0</moveSpeed>
   </EntityDef>
   <EntityDef>
     <defName>proto.resource_pile</defName>
     <label>ResourcePile</label>
-    <renderable>Placeholder</renderable>
+    <renderable kind="Placeholder" />
     <tags>
       <li>interactable</li>
       <li>resource_pile</li>

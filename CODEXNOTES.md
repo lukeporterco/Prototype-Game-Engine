@@ -711,3 +711,22 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - entity save-id map is rebuilt from loaded save IDs
   - `next_save_id` is restored from `SaveGame.next_save_id`
   - validation still occurs before world mutation (no partial-apply on invalid save)
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 22)
+- Content authoring renderable contract extended with attribute-based XML form:
+  - `<renderable kind="Sprite" spriteKey="player" />`
+  - `<renderable kind="Placeholder" />`
+- Backward compatibility retained for legacy text renderables:
+  - `Placeholder`
+  - `Sprite:<key>`
+- Parsing precedence/validation rules locked:
+  - if `kind` attribute is present, attribute mode is used
+  - `kind` + non-whitespace text in `<renderable>` is invalid
+  - unknown `<renderable>` attributes are compile errors
+  - `kind="Sprite"` requires `spriteKey`
+  - `kind="Placeholder"` must not include `spriteKey`
+- Runtime/pipeline seam unchanged:
+  - compiler still produces `RenderableKind`
+  - pack/database/runtime continue consuming compiled data only (no runtime XML parsing)

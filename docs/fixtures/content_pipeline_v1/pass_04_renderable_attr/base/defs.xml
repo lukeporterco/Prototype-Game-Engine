@@ -1,0 +1,8 @@
+<Defs>
+  <EntityDef>
+    <defName>proto.worker_attr</defName>
+    <label>WorkerAttr</label>
+    <renderable kind="Sprite" spriteKey="player" />
+    <moveSpeed>5.0</moveSpeed>
+  </EntityDef>
+</Defs>
