@@ -7,8 +7,9 @@ use pixels::{Error, Pixels, SurfaceTexture};
 use winit::window::Window;
 
 use crate::app::{
-    tools::draw_overlay, Camera2D, DebugMarkerKind, OverlayData, RenderableKind, SceneWorld,
-    Tilemap, Vec2,
+    tools::{draw_console, draw_overlay},
+    Camera2D, ConsoleState, DebugMarkerKind, OverlayData, RenderableKind, SceneWorld, Tilemap,
+    Vec2,
 };
 use crate::sprite_keys::validate_sprite_key;
 
@@ -101,6 +102,7 @@ impl Renderer {
         &mut self,
         world: &SceneWorld,
         overlay_data: Option<&OverlayData>,
+        console_state: Option<&ConsoleState>,
     ) -> Result<(), Error> {
         if self.viewport.width == 0 || self.viewport.height == 0 {
             return Ok(());
@@ -189,6 +191,9 @@ impl Renderer {
 
         if let Some(data) = overlay_data {
             draw_overlay(frame, self.viewport.width, self.viewport.height, data);
+        }
+        if let Some(console) = console_state {
+            draw_console(frame, self.viewport.width, self.viewport.height, console);
         }
 
         self.pixels.render()

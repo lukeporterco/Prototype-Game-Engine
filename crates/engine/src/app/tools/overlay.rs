@@ -142,6 +142,25 @@ fn draw_text_clipped(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_text_clipped_with_fallback(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    mut x: i32,
+    y: i32,
+    text: &str,
+    color: [u8; 4],
+    fallback_char: char,
+) {
+    let fallback_glyph = glyph_for(fallback_char).unwrap_or(SPACE_GLYPH);
+    for ch in text.chars() {
+        let glyph = glyph_for(ch).unwrap_or(fallback_glyph);
+        draw_glyph_clipped(frame, width, height, x, y, glyph, color);
+        x += GLYPH_ADVANCE;
+    }
+}
+
 fn draw_glyph_clipped(
     frame: &mut [u8],
     width: u32,
@@ -360,6 +379,9 @@ fn glyph_for(ch: char) -> Option<Glyph> {
         '+' => Glyph {
             rows: [0b000, 0b010, 0b111, 0b010, 0b000],
         },
+        '?' => Glyph {
+            rows: [0b111, 0b001, 0b011, 0b000, 0b010],
+        },
         '∞' => Glyph {
             rows: [0b000, 0b101, 0b010, 0b101, 0b000],
         },
@@ -383,7 +405,7 @@ mod tests {
         let required: HashSet<char> = [
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ':', ' ', '-', 'F', 'P', 'S',
             'T', 'r', 'a', 'm', 'e', 'E', 'f', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S', 'g',
-            ',', 'I', 'M', 'N', 'R', 'p', 'c', 'j', 'b', 'w', 'k', '/', '[', ']', '+',
+            ',', 'I', 'M', 'N', 'R', 'p', 'c', 'j', 'b', 'w', 'k', '/', '[', ']', '+', '?',
         ]
         .into_iter()
         .collect();

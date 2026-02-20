@@ -94,3 +94,23 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - miss path still resolves, inserts, then returns cached ref.
 - Added regression test:
   - `scene_world_duplicate_pending_despawns_are_safe_and_idempotent` confirms duplicate pending despawns are safe and remove only targeted entity.
+
+## Ticket Notes (2026-02-20, Ticket 32.1)
+- Added engine-owned console shell under `crates/engine/src/app/tools/console.rs`.
+- Console state/data contract (bounded, ring-buffer style):
+  - `is_open`, `current_line`, `history`, `output_lines`, `pending_lines`.
+  - bounds: history/output/pending/current-line caps enforced to prevent unbounded growth.
+- Input seam update in `crates/engine/src/app/loop_runner.rs`:
+  - console toggle uses `Backquote` edge-trigger tracking in `InputCollector`.
+  - when console is open, keyboard events route to console edit/submit/navigation handlers.
+  - gameplay key/mouse/wheel input is suppressed while console is open.
+  - per-tick `InputSnapshot` is neutralized while console is open (no gameplay actions/edges).
+- Console behavior:
+  - `Backspace` delete, `Enter` submit (echo `> line` + enqueue raw line), `Escape` close+clear.
+  - `Up`/`Down` history navigation with draft restore on exit.
+  - pending raw submissions are retained in bounded queue for a future consumer.
+- Renderer seam update:
+  - `Renderer::render_world` now accepts console state and draws console after overlay (`world -> overlay -> console`).
+- Overlay text utility update:
+  - added `draw_text_clipped_with_fallback(..., fallback_char)` for console text rendering.
+  - added `?` glyph so unsupported chars can render as `?` in console output/prompt.

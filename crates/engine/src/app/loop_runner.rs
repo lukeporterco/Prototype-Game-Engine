@@ -21,8 +21,8 @@ use crate::{
 use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
 use super::{
-    InputAction, InputSnapshot, MetricsHandle, OverlayData, PerfStats, Renderer, Scene,
-    SceneCommand, SceneKey,
+    ConsoleState, InputAction, InputSnapshot, MetricsHandle, OverlayData, PerfStats, Renderer,
+    Scene, SceneCommand, SceneKey,
 };
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
@@ -170,6 +170,7 @@ pub fn run_app_with_metrics(
     let mut perf_stats = PerfStats::new();
     let mut last_applied_title: Option<String> = None;
     let mut overlay_visible = true;
+    let mut console = ConsoleState::default();
     info!(
         perf_stats_enabled_by_default = PerfStats::enabled_by_default(),
         perf_window_frames = PerfStats::window_len(),
@@ -214,13 +215,22 @@ pub fn run_app_with_metrics(
                         input_collector.clear_cursor_position();
                     }
                     WindowEvent::MouseInput { state, button, .. } => {
-                        input_collector.handle_mouse_input(button, state);
+                        if !console.is_open() {
+                            input_collector.handle_mouse_input(button, state);
+                        }
                     }
                     WindowEvent::MouseWheel { delta, .. } => {
-                        input_collector.handle_mouse_wheel(delta);
+                        if !console.is_open() {
+                            input_collector.handle_mouse_wheel(delta);
+                        }
                     }
                     WindowEvent::KeyboardInput { event, .. } => {
-                        input_collector.handle_keyboard_input(&event);
+                        let route_to_console =
+                            input_collector.handle_keyboard_input(&event, console.is_open());
+                        if route_to_console {
+                            console.handle_key_event(&event);
+                            console.handle_text_input_from_key_event(&event);
+                        }
                         if input_collector.quit_requested {
                             info!(reason = "escape_key", "shutdown_requested");
                             window_target.exit();
@@ -230,6 +240,11 @@ pub fn run_app_with_metrics(
                         if input_collector.take_overlay_toggle_pressed() {
                             overlay_visible = !overlay_visible;
                             info!(overlay_visible, "overlay_toggled");
+                        }
+                        if input_collector.take_console_toggle_pressed() {
+                            console.toggle_open();
+                            input_collector.reset_gameplay_inputs();
+                            info!(console_open = console.is_open(), "console_toggled");
                         }
 
                         if slow_frame_delay > Duration::ZERO {
@@ -249,7 +264,8 @@ pub fn run_app_with_metrics(
                         // starts immediately before the fixed-step tick loop for this frame.
                         let sim_timer_start = Instant::now();
                         for _ in 0..step_plan.ticks_to_run {
-                            let input_snapshot = input_collector.snapshot_for_tick();
+                            let input_snapshot =
+                                input_collector.snapshot_for_tick(console.is_open());
                             let command = scenes.update_active(fixed_dt_seconds, &input_snapshot);
                             scenes.apply_pending_active();
 
@@ -311,8 +327,11 @@ pub fn run_app_with_metrics(
                         // Excludes cap sleep and non-render loop housekeeping.
                         let render_timer_start = Instant::now();
                         scenes.render_active();
-                        let render_result =
-                            renderer.render_world(scenes.active_world(), overlay.as_ref());
+                        let render_result = renderer.render_world(
+                            scenes.active_world(),
+                            overlay.as_ref(),
+                            Some(&console),
+                        );
                         // render_ms boundary end:
                         // ends immediately after renderer.render_world returns.
                         // Includes scenes.render_active + renderer.render_world only.
@@ -373,6 +392,8 @@ pub fn run_app_with_metrics(
 #[derive(Debug, Default)]
 struct InputCollector {
     quit_requested: bool,
+    console_toggle_is_down: bool,
+    console_toggle_pressed_edge: bool,
     tab_is_down: bool,
     switch_scene_pressed_edge: bool,
     overlay_toggle_is_down: bool,
@@ -407,7 +428,16 @@ impl InputCollector {
         self.quit_requested = true;
     }
 
-    fn handle_keyboard_input(&mut self, key_event: &winit::event::KeyEvent) {
+    fn handle_keyboard_input(
+        &mut self,
+        key_event: &winit::event::KeyEvent,
+        console_open: bool,
+    ) -> bool {
+        self.handle_console_toggle_key_state(is_console_toggle_key(key_event), key_event.state);
+        if console_open {
+            return !is_console_toggle_key(key_event);
+        }
+
         self.update_action_state_from_key_event(key_event);
         self.handle_key_state(is_tab_key(key_event), key_event.state);
         self.handle_overlay_toggle_key_state(is_overlay_toggle_key(key_event), key_event.state);
@@ -415,6 +445,7 @@ impl InputCollector {
         self.handle_load_key_state(is_load_key(key_event), key_event.state);
         self.handle_zoom_in_key_state(is_zoom_in_key(key_event), key_event.state);
         self.handle_zoom_out_key_state(is_zoom_out_key(key_event), key_event.state);
+        false
     }
 
     fn handle_key_state(&mut self, is_tab: bool, state: ElementState) {
@@ -433,20 +464,36 @@ impl InputCollector {
         }
     }
 
-    fn snapshot_for_tick(&mut self) -> InputSnapshot {
-        let snapshot = InputSnapshot::new(
-            self.quit_requested,
-            self.switch_scene_pressed_edge,
-            self.action_states,
-            self.cursor_position_px,
-            self.left_click_pressed_edge,
-            self.right_click_pressed_edge,
-            self.save_pressed_edge,
-            self.load_pressed_edge,
-            self.pending_zoom_steps,
-            self.window_width,
-            self.window_height,
-        );
+    fn snapshot_for_tick(&mut self, console_open: bool) -> InputSnapshot {
+        let snapshot = if console_open {
+            InputSnapshot::new(
+                false,
+                false,
+                super::input::ActionStates::default(),
+                self.cursor_position_px,
+                false,
+                false,
+                false,
+                false,
+                0,
+                self.window_width,
+                self.window_height,
+            )
+        } else {
+            InputSnapshot::new(
+                self.quit_requested,
+                self.switch_scene_pressed_edge,
+                self.action_states,
+                self.cursor_position_px,
+                self.left_click_pressed_edge,
+                self.right_click_pressed_edge,
+                self.save_pressed_edge,
+                self.load_pressed_edge,
+                self.pending_zoom_steps,
+                self.window_width,
+                self.window_height,
+            )
+        };
         self.switch_scene_pressed_edge = false;
         self.left_click_pressed_edge = false;
         self.right_click_pressed_edge = false;
@@ -460,6 +507,30 @@ impl InputCollector {
         let was_pressed = self.overlay_toggle_pressed_edge;
         self.overlay_toggle_pressed_edge = false;
         was_pressed
+    }
+
+    fn take_console_toggle_pressed(&mut self) -> bool {
+        let was_pressed = self.console_toggle_pressed_edge;
+        self.console_toggle_pressed_edge = false;
+        was_pressed
+    }
+
+    fn reset_gameplay_inputs(&mut self) {
+        self.action_states = super::input::ActionStates::default();
+        self.tab_is_down = false;
+        self.switch_scene_pressed_edge = false;
+        self.save_key_is_down = false;
+        self.save_pressed_edge = false;
+        self.load_key_is_down = false;
+        self.load_pressed_edge = false;
+        self.zoom_in_key_is_down = false;
+        self.zoom_out_key_is_down = false;
+        self.pending_zoom_steps = 0;
+        self.left_mouse_is_down = false;
+        self.left_click_pressed_edge = false;
+        self.right_mouse_is_down = false;
+        self.right_click_pressed_edge = false;
+        self.quit_requested = false;
     }
 
     fn update_action_state_from_key_event(&mut self, key_event: &winit::event::KeyEvent) {
@@ -480,6 +551,22 @@ impl InputCollector {
                 self.overlay_toggle_is_down = true;
             }
             ElementState::Released => self.overlay_toggle_is_down = false,
+        }
+    }
+
+    fn handle_console_toggle_key_state(&mut self, is_toggle_key: bool, state: ElementState) {
+        if !is_toggle_key {
+            return;
+        }
+
+        match state {
+            ElementState::Pressed => {
+                if !self.console_toggle_is_down {
+                    self.console_toggle_pressed_edge = true;
+                }
+                self.console_toggle_is_down = true;
+            }
+            ElementState::Released => self.console_toggle_is_down = false,
         }
     }
 
@@ -804,6 +891,13 @@ fn is_overlay_toggle_key(key_event: &winit::event::KeyEvent) -> bool {
     matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F3))
 }
 
+fn is_console_toggle_key(key_event: &winit::event::KeyEvent) -> bool {
+    matches!(
+        key_event.physical_key,
+        PhysicalKey::Code(KeyCode::Backquote)
+    )
+}
+
 fn is_save_key(key_event: &winit::event::KeyEvent) -> bool {
     matches!(key_event.physical_key, PhysicalKey::Code(KeyCode::F5))
 }
@@ -882,8 +976,8 @@ mod tests {
         input.tab_is_down = false;
         input.switch_scene_pressed_edge = true;
 
-        let first = input.snapshot_for_tick();
-        let second = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
+        let second = input.snapshot_for_tick(false);
 
         assert!(first.switch_scene_pressed());
         assert!(!second.switch_scene_pressed());
@@ -892,8 +986,8 @@ mod tests {
     #[test]
     fn no_retrigger_without_new_press() {
         let mut input = InputCollector::default();
-        let first = input.snapshot_for_tick();
-        let second = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
+        let second = input.snapshot_for_tick(false);
 
         assert!(!first.switch_scene_pressed());
         assert!(!second.switch_scene_pressed());
@@ -904,14 +998,14 @@ mod tests {
         let mut input = InputCollector::default();
 
         input.handle_key_state(true, ElementState::Pressed);
-        let first = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
 
         input.handle_key_state(true, ElementState::Pressed);
-        let second = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick(false);
 
         input.handle_key_state(true, ElementState::Released);
         input.handle_key_state(true, ElementState::Pressed);
-        let third = input.snapshot_for_tick();
+        let third = input.snapshot_for_tick(false);
 
         assert!(first.switch_scene_pressed());
         assert!(!second.switch_scene_pressed());
@@ -925,7 +1019,7 @@ mod tests {
         input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyW), true);
         input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::ArrowLeft), true);
 
-        let snapshot = input.snapshot_for_tick();
+        let snapshot = input.snapshot_for_tick(false);
         assert!(snapshot.is_down(InputAction::MoveUp));
         assert!(snapshot.is_down(InputAction::MoveLeft));
     }
@@ -936,7 +1030,7 @@ mod tests {
         input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyD), true);
         input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyD), false);
 
-        let snapshot = input.snapshot_for_tick();
+        let snapshot = input.snapshot_for_tick(false);
         assert!(!snapshot.is_down(InputAction::MoveRight));
     }
 
@@ -945,7 +1039,7 @@ mod tests {
         let mut input = InputCollector::default();
         input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyI), true);
         input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyL), true);
-        let snapshot = input.snapshot_for_tick();
+        let snapshot = input.snapshot_for_tick(false);
         assert!(snapshot.is_down(InputAction::CameraUp));
         assert!(snapshot.is_down(InputAction::CameraRight));
     }
@@ -966,11 +1060,26 @@ mod tests {
     }
 
     #[test]
+    fn backquote_console_toggle_is_edge_triggered() {
+        let mut input = InputCollector::default();
+
+        input.handle_console_toggle_key_state(true, ElementState::Pressed);
+        assert!(input.take_console_toggle_pressed());
+
+        input.handle_console_toggle_key_state(true, ElementState::Pressed);
+        assert!(!input.take_console_toggle_pressed());
+
+        input.handle_console_toggle_key_state(true, ElementState::Released);
+        input.handle_console_toggle_key_state(true, ElementState::Pressed);
+        assert!(input.take_console_toggle_pressed());
+    }
+
+    #[test]
     fn left_click_is_edge_triggered_for_single_tick() {
         let mut input = InputCollector::new(1280, 720);
         input.handle_mouse_input(MouseButton::Left, ElementState::Pressed);
-        let first = input.snapshot_for_tick();
-        let second = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
+        let second = input.snapshot_for_tick(false);
 
         assert!(first.left_click_pressed());
         assert!(!second.left_click_pressed());
@@ -980,9 +1089,9 @@ mod tests {
     fn held_left_click_does_not_repeat_pressed_edge() {
         let mut input = InputCollector::new(1280, 720);
         input.handle_mouse_input(MouseButton::Left, ElementState::Pressed);
-        let first = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
         input.handle_mouse_input(MouseButton::Left, ElementState::Pressed);
-        let second = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick(false);
 
         assert!(first.left_click_pressed());
         assert!(!second.left_click_pressed());
@@ -992,7 +1101,7 @@ mod tests {
     fn snapshot_carries_cursor_and_window_size() {
         let mut input = InputCollector::new(1280, 720);
         input.set_cursor_position_px(100.0, 200.0);
-        let snapshot = input.snapshot_for_tick();
+        let snapshot = input.snapshot_for_tick(false);
 
         assert_eq!(snapshot.window_size(), (1280, 720));
         let cursor = snapshot.cursor_position_px().expect("cursor");
@@ -1001,11 +1110,33 @@ mod tests {
     }
 
     #[test]
+    fn console_open_suppresses_gameplay_snapshot_inputs() {
+        let mut input = InputCollector::new(1280, 720);
+        input.update_action_state_from_physical_key(PhysicalKey::Code(KeyCode::KeyW), true);
+        input.handle_key_state(true, ElementState::Pressed);
+        input.handle_mouse_input(MouseButton::Left, ElementState::Pressed);
+        input.handle_mouse_input(MouseButton::Right, ElementState::Pressed);
+        input.handle_save_key_state(true, ElementState::Pressed);
+        input.handle_load_key_state(true, ElementState::Pressed);
+        input.handle_mouse_wheel(MouseScrollDelta::LineDelta(0.0, 2.0));
+
+        let snapshot = input.snapshot_for_tick(true);
+        assert!(!snapshot.is_down(InputAction::MoveUp));
+        assert!(!snapshot.switch_scene_pressed());
+        assert!(!snapshot.left_click_pressed());
+        assert!(!snapshot.right_click_pressed());
+        assert!(!snapshot.save_pressed());
+        assert!(!snapshot.load_pressed());
+        assert_eq!(snapshot.zoom_delta_steps(), 0);
+        assert_eq!(snapshot.window_size(), (1280, 720));
+    }
+
+    #[test]
     fn right_click_is_edge_triggered_for_single_tick() {
         let mut input = InputCollector::new(1280, 720);
         input.handle_mouse_input(MouseButton::Right, ElementState::Pressed);
-        let first = input.snapshot_for_tick();
-        let second = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
+        let second = input.snapshot_for_tick(false);
 
         assert!(first.right_click_pressed());
         assert!(!second.right_click_pressed());
@@ -1015,9 +1146,9 @@ mod tests {
     fn held_right_click_does_not_repeat_pressed_edge() {
         let mut input = InputCollector::new(1280, 720);
         input.handle_mouse_input(MouseButton::Right, ElementState::Pressed);
-        let first = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
         input.handle_mouse_input(MouseButton::Right, ElementState::Pressed);
-        let second = input.snapshot_for_tick();
+        let second = input.snapshot_for_tick(false);
 
         assert!(first.right_click_pressed());
         assert!(!second.right_click_pressed());
@@ -1027,8 +1158,8 @@ mod tests {
     fn save_key_edge_is_single_tick() {
         let mut input = InputCollector::new(1280, 720);
         input.handle_save_key_state(true, ElementState::Pressed);
-        let first = input.snapshot_for_tick();
-        let second = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
+        let second = input.snapshot_for_tick(false);
 
         assert!(first.save_pressed());
         assert!(!second.save_pressed());
@@ -1038,8 +1169,8 @@ mod tests {
     fn load_key_edge_is_single_tick() {
         let mut input = InputCollector::new(1280, 720);
         input.handle_load_key_state(true, ElementState::Pressed);
-        let first = input.snapshot_for_tick();
-        let second = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
+        let second = input.snapshot_for_tick(false);
 
         assert!(first.load_pressed());
         assert!(!second.load_pressed());
@@ -1050,20 +1181,20 @@ mod tests {
         let mut input = InputCollector::new(1280, 720);
 
         input.handle_save_key_state(true, ElementState::Pressed);
-        assert!(input.snapshot_for_tick().save_pressed());
+        assert!(input.snapshot_for_tick(false).save_pressed());
         input.handle_save_key_state(true, ElementState::Pressed);
-        assert!(!input.snapshot_for_tick().save_pressed());
+        assert!(!input.snapshot_for_tick(false).save_pressed());
         input.handle_save_key_state(true, ElementState::Released);
         input.handle_save_key_state(true, ElementState::Pressed);
-        assert!(input.snapshot_for_tick().save_pressed());
+        assert!(input.snapshot_for_tick(false).save_pressed());
 
         input.handle_load_key_state(true, ElementState::Pressed);
-        assert!(input.snapshot_for_tick().load_pressed());
+        assert!(input.snapshot_for_tick(false).load_pressed());
         input.handle_load_key_state(true, ElementState::Pressed);
-        assert!(!input.snapshot_for_tick().load_pressed());
+        assert!(!input.snapshot_for_tick(false).load_pressed());
         input.handle_load_key_state(true, ElementState::Released);
         input.handle_load_key_state(true, ElementState::Pressed);
-        assert!(input.snapshot_for_tick().load_pressed());
+        assert!(input.snapshot_for_tick(false).load_pressed());
     }
 
     #[test]
@@ -1071,17 +1202,17 @@ mod tests {
         let mut input = InputCollector::new(1280, 720);
 
         input.handle_zoom_in_key_state(true, ElementState::Pressed);
-        assert_eq!(input.snapshot_for_tick().zoom_delta_steps(), 1);
+        assert_eq!(input.snapshot_for_tick(false).zoom_delta_steps(), 1);
 
         input.handle_zoom_in_key_state(true, ElementState::Pressed);
-        assert_eq!(input.snapshot_for_tick().zoom_delta_steps(), 0);
+        assert_eq!(input.snapshot_for_tick(false).zoom_delta_steps(), 0);
 
         input.handle_zoom_in_key_state(true, ElementState::Released);
         input.handle_zoom_in_key_state(true, ElementState::Pressed);
-        assert_eq!(input.snapshot_for_tick().zoom_delta_steps(), 1);
+        assert_eq!(input.snapshot_for_tick(false).zoom_delta_steps(), 1);
 
         input.handle_zoom_out_key_state(true, ElementState::Pressed);
-        assert_eq!(input.snapshot_for_tick().zoom_delta_steps(), -1);
+        assert_eq!(input.snapshot_for_tick(false).zoom_delta_steps(), -1);
     }
 
     #[test]
@@ -1090,8 +1221,8 @@ mod tests {
         input.handle_mouse_wheel(MouseScrollDelta::LineDelta(0.0, 1.0));
         input.handle_mouse_wheel(MouseScrollDelta::LineDelta(0.0, -2.0));
 
-        let first = input.snapshot_for_tick();
-        let second = input.snapshot_for_tick();
+        let first = input.snapshot_for_tick(false);
+        let second = input.snapshot_for_tick(false);
 
         assert_eq!(first.zoom_delta_steps(), -1);
         assert_eq!(second.zoom_delta_steps(), 0);
