@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use image::ImageReader;
 use pixels::{Error, Pixels, SurfaceTexture};
@@ -35,19 +36,20 @@ struct LoadedSprite {
     rgba: Vec<u8>,
 }
 
-pub struct Renderer<'window> {
-    pixels: Pixels<'window>,
+pub struct Renderer {
+    window: Arc<Window>,
+    pixels: Pixels<'static>,
     viewport: Viewport,
     asset_root: PathBuf,
     sprite_cache: HashMap<String, Option<LoadedSprite>>,
 }
 
-impl<'window> Renderer<'window> {
-    pub fn new(window: &'window Window, asset_root: PathBuf) -> Result<Self, Error> {
+impl Renderer {
+    pub fn new(window: Arc<Window>, asset_root: PathBuf) -> Result<Self, Error> {
         let size = window.inner_size();
-        let surface = SurfaceTexture::new(size.width, size.height, window);
-        let pixels = Pixels::new(size.width, size.height, surface)?;
+        let pixels = Self::build_pixels(Arc::clone(&window), size.width, size.height)?;
         Ok(Self {
+            window,
             pixels,
             viewport: Viewport {
                 width: size.width,
@@ -62,10 +64,18 @@ impl<'window> Renderer<'window> {
         if width == 0 || height == 0 {
             return Ok(());
         }
-        self.pixels.resize_surface(width, height)?;
-        self.pixels.resize_buffer(width, height)?;
+        self.pixels = Self::build_pixels(Arc::clone(&self.window), width, height)?;
         self.viewport = Viewport { width, height };
         Ok(())
+    }
+
+    fn build_pixels(
+        window: Arc<Window>,
+        width: u32,
+        height: u32,
+    ) -> Result<Pixels<'static>, Error> {
+        let surface = SurfaceTexture::new(width, height, window);
+        Pixels::new(width, height, surface)
     }
 
     pub(crate) fn render_world(
@@ -526,6 +536,11 @@ mod tests {
     use super::*;
     use crate::app::{Camera2D, DebugMarker, DebugMarkerKind, EntityId, Tilemap};
     use tempfile::TempDir;
+
+    #[test]
+    fn renderer_type_is_non_generic() {
+        let _renderer: Option<Renderer> = None;
+    }
 
     #[test]
     fn major_index_classification_handles_negative_indices() {

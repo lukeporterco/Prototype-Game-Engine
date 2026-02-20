@@ -730,3 +730,19 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Runtime/pipeline seam unchanged:
   - compiler still produces `RenderableKind`
   - pack/database/runtime continue consuming compiled data only (no runtime XML parsing)
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 23)
+- Loop runner window ownership cleanup:
+  - removed leaked window lifetime hack (`Box::leak`) from `crates/engine/src/app/loop_runner.rs`
+  - window is now created as `Arc<Window>` and shared between event loop and renderer
+- Renderer lifetime contract updated:
+  - `Renderer` is now non-generic (no window lifetime parameter)
+  - `Renderer::new` now accepts `Arc<Window>` and owns it internally
+  - pixels surface is rebuilt on resize from owned window handle
+- Public app loop API unchanged:
+  - `run_app` and `run_app_with_metrics` signatures are unchanged
+- Fallback strategy rule (locked):
+  - if `Arc<Window>` -> `Pixels<'static>` ever fails to typecheck in `pixels 0.15`, switch to a safe self-referential container approach (for example `self_cell`)
+  - manual unsafe self-reference is not allowed

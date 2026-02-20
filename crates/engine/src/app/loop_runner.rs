@@ -1,4 +1,5 @@
 use std::env;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -99,7 +100,7 @@ pub fn run_app_with_metrics(
     let def_database = build_or_load_def_database(&app_paths, &config.content_plan_request)?;
 
     let event_loop = EventLoop::new().map_err(AppError::CreateEventLoop)?;
-    let window: &'static winit::window::Window = Box::leak(Box::new(
+    let window = Arc::new(
         WindowBuilder::new()
             .with_title(config.window_title.clone())
             .with_inner_size(LogicalSize::new(
@@ -108,9 +109,9 @@ pub fn run_app_with_metrics(
             ))
             .build(&event_loop)
             .map_err(AppError::CreateWindow)?,
-    ));
-    let window_for_renderer = window;
-    let window_for_loop = window;
+    );
+    let window_for_renderer = Arc::clone(&window);
+    let window_for_loop = Arc::clone(&window);
     let asset_root = app_paths.root.join("assets");
     let mut renderer =
         Renderer::new(window_for_renderer, asset_root).map_err(AppError::CreateRenderer)?;
