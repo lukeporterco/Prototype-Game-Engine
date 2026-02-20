@@ -80,3 +80,5 @@ A ticket is done when:
 - Build/run succeeds
 - Any added tests pass
 - CODEXNOTES.md is updated if a decision, interface, or pitfall was discovered
+
+I don't want you to touch GPTContext.md EVER unless I give explicit instructions to update it.
