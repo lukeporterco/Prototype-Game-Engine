@@ -685,3 +685,29 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - `SaveGame` now stores `camera_zoom`
   - load validation rejects non-finite zoom
   - load applies zoom through clamped setter
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 21)
+- Save/load reference contract moved from index-based links to stable save IDs.
+- Save schema bumped to v3:
+  - `SAVE_VERSION = 3`
+  - `SavedEntityRuntime.save_id: u64` is required
+  - refs now use save IDs:
+    - `interaction_target_save_id`
+    - `SavedJobState::Working { target_save_id, ... }`
+    - `selected_entity_save_id`
+    - `player_entity_save_id`
+  - `SaveGame.next_save_id: u64` is persisted and validated
+- Gameplay-owned save ID runtime state added in `crates/game/src/main.rs`:
+  - `GameplayScene.entity_save_ids: HashMap<EntityId, u64>`
+  - `GameplayScene.next_save_id: u64`
+- Sync guarantees locked:
+  - `sync_save_id_map_with_world` only assigns IDs to missing live entities
+  - existing entity->save_id mappings are never reassigned
+  - missing assignments are deterministic by sorted `EntityId`
+  - stale mappings are dropped when entities despawn
+- Load restore guarantees:
+  - entity save-id map is rebuilt from loaded save IDs
+  - `next_save_id` is restored from `SaveGame.next_save_id`
+  - validation still occurs before world mutation (no partial-apply on invalid save)

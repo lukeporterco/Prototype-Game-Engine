@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -18,7 +18,7 @@ const JOB_DURATION_SECONDS: f32 = 2.0;
 const RESOURCE_PILE_INTERACTION_RADIUS: f32 = 0.75;
 const RESOURCE_PILE_STARTING_USES: u32 = 3;
 const ENABLED_MODS_ENV_VAR: &str = "PROTOGE_ENABLED_MODS";
-const SAVE_VERSION: u32 = 2;
+const SAVE_VERSION: u32 = 3;
 const SCENE_A_SAVE_FILE: &str = "scene_a.save.json";
 const SCENE_B_SAVE_FILE: &str = "scene_b.save.json";
 const ORDER_MARKER_TTL_SECONDS: f32 = 0.75;
@@ -76,19 +76,20 @@ struct SavedInteractableRuntime {
 enum SavedJobState {
     Idle,
     Working {
-        target_index: usize,
+        target_save_id: u64,
         remaining_time: f32,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SavedEntityRuntime {
+    save_id: u64,
     position: SavedVec2,
     rotation_radians: Option<f32>,
     selectable: bool,
     actor: bool,
     move_target_world: Option<SavedVec2>,
-    interaction_target_index: Option<usize>,
+    interaction_target_save_id: Option<u64>,
     job_state: SavedJobState,
     interactable: Option<SavedInteractableRuntime>,
 }
@@ -99,8 +100,9 @@ struct SaveGame {
     scene_key: SavedSceneKey,
     camera_position: SavedVec2,
     camera_zoom: f32,
-    selected_entity_index: Option<usize>,
-    player_entity_index: Option<usize>,
+    selected_entity_save_id: Option<u64>,
+    player_entity_save_id: Option<u64>,
+    next_save_id: u64,
     resource_count: u32,
     entities: Vec<SavedEntityRuntime>,
 }
@@ -117,6 +119,8 @@ struct GameplayScene {
     resource_count: u32,
     interactable_cache: Vec<(EntityId, Vec2, f32)>,
     completed_target_ids: Vec<EntityId>,
+    entity_save_ids: HashMap<EntityId, u64>,
+    next_save_id: u64,
 }
 
 impl GameplayScene {
@@ -131,6 +135,8 @@ impl GameplayScene {
             resource_count: 0,
             interactable_cache: Vec::new(),
             completed_target_ids: Vec::new(),
+            entity_save_ids: HashMap::new(),
+            next_save_id: 0,
         }
     }
 
@@ -139,6 +145,71 @@ impl GameplayScene {
             SceneKey::A => SceneKey::B,
             SceneKey::B => SceneKey::A,
         }
+    }
+
+    fn alloc_next_save_id(&mut self) -> SaveLoadResult<u64> {
+        let save_id = self.next_save_id;
+        self.next_save_id = self
+            .next_save_id
+            .checked_add(1)
+            .ok_or_else(|| "save_id allocator overflow".to_string())?;
+        Ok(save_id)
+    }
+
+    fn sync_save_id_map_with_world(&mut self, world: &SceneWorld) -> SaveLoadResult<()> {
+        let live_ids: Vec<EntityId> = world.entities().iter().map(|entity| entity.id).collect();
+        let live_id_set: HashSet<EntityId> = live_ids.iter().copied().collect();
+        self.entity_save_ids
+            .retain(|entity_id, _| live_id_set.contains(entity_id));
+
+        let mut missing_ids: Vec<EntityId> = live_ids
+            .into_iter()
+            .filter(|entity_id| !self.entity_save_ids.contains_key(entity_id))
+            .collect();
+        missing_ids.sort_by_key(|entity_id| entity_id.0);
+
+        for entity_id in missing_ids {
+            let save_id = self.alloc_next_save_id()?;
+            self.entity_save_ids.insert(entity_id, save_id);
+        }
+        Ok(())
+    }
+
+    fn rebuild_save_id_map_from_loaded(
+        &mut self,
+        world: &SceneWorld,
+        spawned_ids_by_save_id: &HashMap<u64, EntityId>,
+        loaded_next_save_id: u64,
+    ) -> SaveLoadResult<()> {
+        if let Some(max_used_save_id) = spawned_ids_by_save_id.keys().copied().max() {
+            if loaded_next_save_id <= max_used_save_id {
+                return Err(format!(
+                    "invalid next_save_id {}: must be greater than max used save_id {}",
+                    loaded_next_save_id, max_used_save_id
+                ));
+            }
+        } else if loaded_next_save_id != 0 {
+            return Err(format!(
+                "invalid next_save_id {}: expected 0 for empty entity save",
+                loaded_next_save_id
+            ));
+        }
+
+        self.entity_save_ids.clear();
+        for (save_id, entity_id) in spawned_ids_by_save_id {
+            self.entity_save_ids.insert(*entity_id, *save_id);
+        }
+
+        if self.entity_save_ids.len() != world.entity_count() {
+            return Err(format!(
+                "loaded save_id map size {} does not match world entity count {}",
+                self.entity_save_ids.len(),
+                world.entity_count()
+            ));
+        }
+
+        self.next_save_id = loaded_next_save_id;
+        Ok(())
     }
 
     fn save_file_path(&self) -> SaveLoadResult<PathBuf> {
@@ -151,8 +222,8 @@ impl GameplayScene {
         Ok(app_paths.cache_dir.join("saves").join(file_name))
     }
 
-    fn save_to_disk(&self, world: &SceneWorld) -> SaveLoadResult<PathBuf> {
-        let save = self.build_save_game(world);
+    fn save_to_disk(&mut self, world: &SceneWorld) -> SaveLoadResult<PathBuf> {
+        let save = self.build_save_game(world)?;
         let path = self.save_file_path()?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -192,26 +263,63 @@ impl GameplayScene {
             return Err("invalid camera zoom: non-finite".to_string());
         }
 
-        let len = save.entities.len();
-        let validate_idx = |label: &str, index: Option<usize>| -> SaveLoadResult<()> {
-            if let Some(idx) = index {
-                if idx >= len {
+        let mut known_save_ids = HashSet::with_capacity(save.entities.len());
+        for entity in &save.entities {
+            if !known_save_ids.insert(entity.save_id) {
+                return Err(format!("duplicate entity save_id {}", entity.save_id));
+            }
+        }
+
+        if let Some(selected_save_id) = save.selected_entity_save_id {
+            if !known_save_ids.contains(&selected_save_id) {
+                return Err(format!(
+                    "invalid selected_entity_save_id {}: no matching entity",
+                    selected_save_id
+                ));
+            }
+        }
+        if let Some(player_save_id) = save.player_entity_save_id {
+            if !known_save_ids.contains(&player_save_id) {
+                return Err(format!(
+                    "invalid player_entity_save_id {}: no matching entity",
+                    player_save_id
+                ));
+            }
+        }
+
+        for entity in &save.entities {
+            if let Some(target_save_id) = entity.interaction_target_save_id {
+                if !known_save_ids.contains(&target_save_id) {
                     return Err(format!(
-                        "invalid {label} index {idx} for entity count {len}"
+                        "invalid interaction_target_save_id {} on entity save_id {}",
+                        target_save_id, entity.save_id
                     ));
                 }
             }
-            Ok(())
-        };
-
-        validate_idx("selected_entity", save.selected_entity_index)?;
-        validate_idx("player_entity", save.player_entity_index)?;
-        for (entity_index, entity) in save.entities.iter().enumerate() {
-            validate_idx("interaction_target", entity.interaction_target_index)?;
-            if let SavedJobState::Working { target_index, .. } = entity.job_state {
-                if target_index >= len {
+            if let SavedJobState::Working { target_save_id, .. } = entity.job_state {
+                if !known_save_ids.contains(&target_save_id) {
                     return Err(format!(
-                        "invalid job target index {target_index} on entity {entity_index} for entity count {len}"
+                        "invalid job target_save_id {} on entity save_id {}",
+                        target_save_id, entity.save_id
+                    ));
+                }
+            }
+        }
+
+        match save.entities.iter().map(|entity| entity.save_id).max() {
+            Some(max_used_save_id) => {
+                if save.next_save_id <= max_used_save_id {
+                    return Err(format!(
+                        "invalid next_save_id {}: must be greater than max used save_id {}",
+                        save.next_save_id, max_used_save_id
+                    ));
+                }
+            }
+            None => {
+                if save.next_save_id != 0 {
+                    return Err(format!(
+                        "invalid next_save_id {}: expected 0 for empty save",
+                        save.next_save_id
                     ));
                 }
             }
@@ -220,62 +328,76 @@ impl GameplayScene {
         Ok(())
     }
 
-    fn build_save_game(&self, world: &SceneWorld) -> SaveGame {
-        let mut index_by_id = HashMap::new();
-        for (index, entity) in world.entities().iter().enumerate() {
-            index_by_id.insert(entity.id, index);
-        }
+    fn build_save_game(&mut self, world: &SceneWorld) -> SaveLoadResult<SaveGame> {
+        self.sync_save_id_map_with_world(world)?;
 
         let entities = world
             .entities()
             .iter()
-            .map(|entity| SavedEntityRuntime {
-                position: SavedVec2::from_vec2(entity.transform.position),
-                rotation_radians: entity.transform.rotation_radians,
-                selectable: entity.selectable,
-                actor: entity.actor,
-                move_target_world: entity.move_target_world.map(SavedVec2::from_vec2),
-                interaction_target_index: entity
-                    .interaction_target
-                    .and_then(|id| index_by_id.get(&id).copied()),
-                job_state: match entity.job_state {
-                    JobState::Idle => SavedJobState::Idle,
-                    JobState::Working {
-                        target,
-                        remaining_time,
-                    } => index_by_id
-                        .get(&target)
-                        .copied()
-                        .map(|target_index| SavedJobState::Working {
-                            target_index,
-                            remaining_time,
-                        })
-                        .unwrap_or(SavedJobState::Idle),
-                },
-                interactable: entity
-                    .interactable
-                    .map(|interactable| SavedInteractableRuntime {
-                        kind: match interactable.kind {
-                            InteractableKind::ResourcePile => SavedInteractableKind::ResourcePile,
-                        },
-                        interaction_radius: interactable.interaction_radius,
-                        remaining_uses: interactable.remaining_uses,
-                    }),
-            })
-            .collect();
+            .map(|entity| {
+                let save_id = self
+                    .entity_save_ids
+                    .get(&entity.id)
+                    .copied()
+                    .ok_or_else(|| {
+                        format!("missing save_id mapping for entity id {}", entity.id.0)
+                    })?;
 
-        SaveGame {
+                Ok(SavedEntityRuntime {
+                    save_id,
+                    position: SavedVec2::from_vec2(entity.transform.position),
+                    rotation_radians: entity.transform.rotation_radians,
+                    selectable: entity.selectable,
+                    actor: entity.actor,
+                    move_target_world: entity.move_target_world.map(SavedVec2::from_vec2),
+                    interaction_target_save_id: entity
+                        .interaction_target
+                        .and_then(|id| self.entity_save_ids.get(&id).copied()),
+                    job_state: match entity.job_state {
+                        JobState::Idle => SavedJobState::Idle,
+                        JobState::Working {
+                            target,
+                            remaining_time,
+                        } => self
+                            .entity_save_ids
+                            .get(&target)
+                            .copied()
+                            .map(|target_save_id| SavedJobState::Working {
+                                target_save_id,
+                                remaining_time,
+                            })
+                            .unwrap_or(SavedJobState::Idle),
+                    },
+                    interactable: entity.interactable.map(|interactable| {
+                        SavedInteractableRuntime {
+                            kind: match interactable.kind {
+                                InteractableKind::ResourcePile => {
+                                    SavedInteractableKind::ResourcePile
+                                }
+                            },
+                            interaction_radius: interactable.interaction_radius,
+                            remaining_uses: interactable.remaining_uses,
+                        }
+                    }),
+                })
+            })
+            .collect::<SaveLoadResult<Vec<_>>>()?;
+
+        Ok(SaveGame {
             save_version: SAVE_VERSION,
             scene_key: SavedSceneKey::from_scene_key(self.scene_key()),
             camera_position: SavedVec2::from_vec2(world.camera().position),
             camera_zoom: world.camera().zoom,
-            selected_entity_index: self
+            selected_entity_save_id: self
                 .selected_entity
-                .and_then(|id| index_by_id.get(&id).copied()),
-            player_entity_index: self.player_id.and_then(|id| index_by_id.get(&id).copied()),
+                .and_then(|id| self.entity_save_ids.get(&id).copied()),
+            player_entity_save_id: self
+                .player_id
+                .and_then(|id| self.entity_save_ids.get(&id).copied()),
+            next_save_id: self.next_save_id,
             resource_count: self.resource_count,
             entities,
-        }
+        })
     }
 
     fn apply_save_game(&mut self, save: SaveGame, world: &mut SceneWorld) -> SaveLoadResult<()> {
@@ -305,6 +427,7 @@ impl GameplayScene {
         world.camera_mut().set_zoom_clamped(save.camera_zoom);
 
         let mut spawned_ids = Vec::with_capacity(save.entities.len());
+        let mut spawned_ids_by_save_id = HashMap::with_capacity(save.entities.len());
         for saved_entity in &save.entities {
             let renderable_kind = if saved_entity.interactable.is_some() {
                 pile_archetype
@@ -330,13 +453,24 @@ impl GameplayScene {
                 },
             );
             spawned_ids.push(id);
+            if spawned_ids_by_save_id
+                .insert(saved_entity.save_id, id)
+                .is_some()
+            {
+                return Err(format!(
+                    "duplicate save_id {} encountered while applying save",
+                    saved_entity.save_id
+                ));
+            }
         }
         world.apply_pending();
 
-        for (index, saved_entity) in save.entities.iter().enumerate() {
-            let id = spawned_ids[index];
+        for (saved_entity, id) in save.entities.iter().zip(spawned_ids.into_iter()) {
             let Some(entity) = world.find_entity_mut(id) else {
-                return Err(format!("spawned entity missing at index {index}"));
+                return Err(format!(
+                    "spawned entity missing for save_id {}",
+                    saved_entity.save_id
+                ));
             };
 
             entity.transform.position = saved_entity.position.to_vec2();
@@ -352,15 +486,15 @@ impl GameplayScene {
                 remaining_uses: interactable.remaining_uses,
             });
             entity.interaction_target = saved_entity
-                .interaction_target_index
-                .and_then(|target_index| spawned_ids.get(target_index).copied());
+                .interaction_target_save_id
+                .and_then(|target_save_id| spawned_ids_by_save_id.get(&target_save_id).copied());
             entity.job_state = match saved_entity.job_state {
                 SavedJobState::Idle => JobState::Idle,
                 SavedJobState::Working {
-                    target_index,
+                    target_save_id,
                     remaining_time,
-                } => spawned_ids
-                    .get(target_index)
+                } => spawned_ids_by_save_id
+                    .get(&target_save_id)
                     .copied()
                     .map(|target| JobState::Working {
                         target,
@@ -371,11 +505,12 @@ impl GameplayScene {
         }
 
         self.selected_entity = save
-            .selected_entity_index
-            .and_then(|index| spawned_ids.get(index).copied());
+            .selected_entity_save_id
+            .and_then(|save_id| spawned_ids_by_save_id.get(&save_id).copied());
         self.player_id = save
-            .player_entity_index
-            .and_then(|index| spawned_ids.get(index).copied());
+            .player_entity_save_id
+            .and_then(|save_id| spawned_ids_by_save_id.get(&save_id).copied());
+        self.rebuild_save_id_map_from_loaded(world, &spawned_ids_by_save_id, save.next_save_id)?;
         self.resource_count = save.resource_count;
         Ok(())
     }
@@ -383,6 +518,8 @@ impl GameplayScene {
 
 impl Scene for GameplayScene {
     fn load(&mut self, world: &mut SceneWorld) {
+        self.entity_save_ids.clear();
+        self.next_save_id = 0;
         let player_archetype = resolve_player_archetype(world);
         let pile_archetype = resolve_resource_pile_archetype(world);
         world.set_tilemap(build_ground_tilemap(self.scene_key()));
@@ -454,6 +591,8 @@ impl Scene for GameplayScene {
                 remaining_uses: RESOURCE_PILE_STARTING_USES,
             });
         }
+        self.sync_save_id_map_with_world(world)
+            .expect("initial save_id assignment should not fail");
         info!(
             scene = self.scene_name,
             entity_count = world.entity_count(),
@@ -711,6 +850,8 @@ impl Scene for GameplayScene {
         self.resource_count = 0;
         self.interactable_cache.clear();
         self.completed_target_ids.clear();
+        self.entity_save_ids.clear();
+        self.next_save_id = 0;
     }
 
     fn debug_title(&self, world: &SceneWorld) -> Option<String> {
@@ -1098,30 +1239,33 @@ mod tests {
             scene_key,
             camera_position: SavedVec2 { x: 3.0, y: -1.0 },
             camera_zoom: 1.4,
-            selected_entity_index: Some(0),
-            player_entity_index: Some(0),
+            selected_entity_save_id: Some(10),
+            player_entity_save_id: Some(10),
+            next_save_id: 21,
             resource_count: 2,
             entities: vec![
                 SavedEntityRuntime {
+                    save_id: 10,
                     position: SavedVec2 { x: 1.0, y: 2.0 },
                     rotation_radians: None,
                     selectable: true,
                     actor: true,
                     move_target_world: Some(SavedVec2 { x: 4.0, y: 2.0 }),
-                    interaction_target_index: Some(1),
+                    interaction_target_save_id: Some(20),
                     job_state: SavedJobState::Working {
-                        target_index: 1,
+                        target_save_id: 20,
                         remaining_time: 1.5,
                     },
                     interactable: None,
                 },
                 SavedEntityRuntime {
+                    save_id: 20,
                     position: SavedVec2 { x: 5.0, y: 6.0 },
                     rotation_radians: None,
                     selectable: false,
                     actor: false,
                     move_target_world: None,
-                    interaction_target_index: None,
+                    interaction_target_save_id: None,
                     job_state: SavedJobState::Idle,
                     interactable: Some(SavedInteractableRuntime {
                         kind: SavedInteractableKind::ResourcePile,
@@ -1798,6 +1942,20 @@ mod tests {
         assert_eq!(world.entity_count(), before_entity_count);
         assert_eq!(world.entities()[0].transform.position, before_first_pos);
         assert_eq!(scene.resource_count, before_resource_count);
+
+        let mut bad_reference = sample_save_game(SavedSceneKey::A);
+        bad_reference.selected_entity_save_id = Some(9999);
+        assert!(GameplayScene::validate_save_game(&bad_reference, SavedSceneKey::A).is_err());
+        assert_eq!(world.entity_count(), before_entity_count);
+        assert_eq!(world.entities()[0].transform.position, before_first_pos);
+        assert_eq!(scene.resource_count, before_resource_count);
+
+        let mut bad_next_save_id = sample_save_game(SavedSceneKey::A);
+        bad_next_save_id.next_save_id = 20;
+        assert!(GameplayScene::validate_save_game(&bad_next_save_id, SavedSceneKey::A).is_err());
+        assert_eq!(world.entity_count(), before_entity_count);
+        assert_eq!(world.entities()[0].transform.position, before_first_pos);
+        assert_eq!(scene.resource_count, before_resource_count);
     }
 
     #[test]
@@ -1808,7 +1966,7 @@ mod tests {
     }
 
     #[test]
-    fn index_based_remap_restores_refs_correctly() {
+    fn save_id_based_remap_restores_refs_correctly() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
         seed_def_database(&mut world);
@@ -1833,6 +1991,122 @@ mod tests {
             }
         );
         assert_eq!(scene.resource_count, 2);
+    }
+
+    #[test]
+    fn reorder_entities_before_load_still_resolves_refs_by_save_id() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities.swap(0, 1);
+        GameplayScene::validate_save_game(&save, SavedSceneKey::A).expect("valid");
+        scene.apply_save_game(save, &mut world).expect("apply");
+
+        let player_id = scene.player_id.expect("player");
+        let selected_id = scene.selected_entity.expect("selected");
+        assert_eq!(player_id, selected_id);
+
+        let player = world.find_entity(player_id).expect("player entity");
+        let target_id = player.interaction_target.expect("interaction target");
+        assert!(world
+            .find_entity(target_id)
+            .expect("target entity")
+            .interactable
+            .is_some());
+        assert_eq!(
+            player.job_state,
+            JobState::Working {
+                target: target_id,
+                remaining_time: 1.5
+            }
+        );
+    }
+
+    #[test]
+    fn sync_save_id_map_assigns_only_missing_and_preserves_existing_ids() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let first = world.spawn(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "first",
+            },
+        );
+        let second = world.spawn(
+            Transform {
+                position: Vec2 { x: 1.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "second",
+            },
+        );
+        world.apply_pending();
+
+        scene.entity_save_ids.insert(first, 42);
+        scene.next_save_id = 100;
+        scene.sync_save_id_map_with_world(&world).expect("sync");
+        assert_eq!(scene.entity_save_ids.get(&first).copied(), Some(42));
+        assert_eq!(scene.entity_save_ids.get(&second).copied(), Some(100));
+        assert_eq!(scene.next_save_id, 101);
+
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("sync again");
+        assert_eq!(scene.entity_save_ids.get(&first).copied(), Some(42));
+        assert_eq!(scene.entity_save_ids.get(&second).copied(), Some(100));
+        assert_eq!(scene.next_save_id, 101);
+
+        assert!(world.despawn(first));
+        world.apply_pending();
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("sync remove");
+        assert_eq!(scene.entity_save_ids.get(&first), None);
+        assert_eq!(scene.entity_save_ids.get(&second).copied(), Some(100));
+        assert_eq!(scene.next_save_id, 101);
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_save_ids() {
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[1].save_id = save.entities[0].save_id;
+        assert!(GameplayScene::validate_save_game(&save, SavedSceneKey::A).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_missing_save_id_references() {
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[0].interaction_target_save_id = Some(9999);
+        assert!(GameplayScene::validate_save_game(&save, SavedSceneKey::A).is_err());
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[0].job_state = SavedJobState::Working {
+            target_save_id: 9999,
+            remaining_time: 1.5,
+        };
+        assert!(GameplayScene::validate_save_game(&save, SavedSceneKey::A).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_invalid_next_save_id() {
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.next_save_id = 20;
+        assert!(GameplayScene::validate_save_game(&save, SavedSceneKey::A).is_err());
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities.clear();
+        save.selected_entity_save_id = None;
+        save.player_entity_save_id = None;
+        save.next_save_id = 1;
+        assert!(GameplayScene::validate_save_game(&save, SavedSceneKey::A).is_err());
     }
 
     #[test]
@@ -1863,7 +2137,7 @@ mod tests {
         world.camera_mut().position = Vec2 { x: 1.0, y: -1.0 };
         world.camera_mut().set_zoom_clamped(1.6);
 
-        let save = scene.build_save_game(&world);
+        let save = scene.build_save_game(&world).expect("save");
         {
             let entity = world.find_entity_mut(actor).expect("actor");
             entity.transform.position = Vec2 { x: 9.0, y: 9.0 };
