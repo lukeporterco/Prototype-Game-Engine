@@ -34,3 +34,11 @@ $RECYCLE.BIN/
 # Optional: local env files
 .env
 .env.*
+
+#.gitignore
+.gitignore
+/.gitignore
+
+#GPT Project Files
+GPTContext.md
+/GPTContext.md
