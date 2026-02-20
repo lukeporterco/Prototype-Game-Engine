@@ -310,12 +310,24 @@ pub struct Interactable {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum JobState {
+pub enum OrderState {
     Idle,
+    MoveTo {
+        point: Vec2,
+    },
+    Interact {
+        target_save_id: u64,
+    },
     Working {
-        target: EntityId,
+        target_save_id: u64,
         remaining_time: f32,
     },
+}
+
+impl Default for OrderState {
+    fn default() -> Self {
+        Self::Idle
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -362,10 +374,8 @@ pub struct Entity {
     pub renderable: RenderableDesc,
     pub selectable: bool,
     pub actor: bool,
-    pub move_target_world: Option<Vec2>,
+    pub order_state: OrderState,
     pub interactable: Option<Interactable>,
-    pub job_state: JobState,
-    pub interaction_target: Option<EntityId>,
     applied_spawn_order: u64,
 }
 
@@ -427,10 +437,8 @@ impl SceneWorld {
             renderable,
             selectable,
             actor,
-            move_target_world: None,
+            order_state: OrderState::Idle,
             interactable: None,
-            job_state: JobState::Idle,
-            interaction_target: None,
             applied_spawn_order: 0,
         });
         id
@@ -1347,10 +1355,8 @@ mod tests {
         let actor = world.find_entity(actor_id).expect("actor exists");
         assert!(actor.actor);
         assert!(!actor.selectable);
-        assert!(actor.move_target_world.is_none());
+        assert_eq!(actor.order_state, OrderState::Idle);
         assert!(actor.interactable.is_none());
-        assert_eq!(actor.job_state, JobState::Idle);
-        assert!(actor.interaction_target.is_none());
     }
 
     #[test]

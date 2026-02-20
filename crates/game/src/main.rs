@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use engine::{
     resolve_app_paths, run_app, screen_to_world_px, ContentPlanRequest, DebugInfoSnapshot,
     DebugJobState, DebugMarker, DebugMarkerKind, EntityArchetype, EntityId, InputAction,
-    InputSnapshot, Interactable, InteractableKind, JobState, LoopConfig, RenderableDesc,
+    InputSnapshot, Interactable, InteractableKind, LoopConfig, OrderState, RenderableDesc,
     RenderableKind, Scene, SceneCommand, SceneKey, SceneWorld, Tilemap, Transform, Vec2,
 };
 use serde::{Deserialize, Serialize};
@@ -120,6 +120,7 @@ struct GameplayScene {
     interactable_cache: Vec<(EntityId, Vec2, f32)>,
     completed_target_ids: Vec<EntityId>,
     entity_save_ids: HashMap<EntityId, u64>,
+    save_id_to_entity: HashMap<u64, EntityId>,
     next_save_id: u64,
 }
 
@@ -136,6 +137,7 @@ impl GameplayScene {
             interactable_cache: Vec::new(),
             completed_target_ids: Vec::new(),
             entity_save_ids: HashMap::new(),
+            save_id_to_entity: HashMap::new(),
             next_save_id: 0,
         }
     }
@@ -156,6 +158,32 @@ impl GameplayScene {
         Ok(save_id)
     }
 
+    fn rebuild_reverse_save_id_map(&mut self) {
+        self.save_id_to_entity.clear();
+        for (entity_id, save_id) in &self.entity_save_ids {
+            self.save_id_to_entity.insert(*save_id, *entity_id);
+        }
+    }
+
+    fn remove_entity_save_mapping(&mut self, entity_id: EntityId) {
+        if let Some(save_id) = self.entity_save_ids.remove(&entity_id) {
+            self.save_id_to_entity.remove(&save_id);
+        }
+    }
+
+    fn save_id_for_entity(&self, entity_id: EntityId) -> Option<u64> {
+        self.entity_save_ids.get(&entity_id).copied()
+    }
+
+    fn resolve_runtime_target_id(
+        &self,
+        target_save_id: u64,
+        world: &SceneWorld,
+    ) -> Option<EntityId> {
+        let target_id = self.save_id_to_entity.get(&target_save_id).copied()?;
+        world.find_entity(target_id).map(|_| target_id)
+    }
+
     fn sync_save_id_map_with_world(&mut self, world: &SceneWorld) -> SaveLoadResult<()> {
         let live_ids: Vec<EntityId> = world.entities().iter().map(|entity| entity.id).collect();
         let live_id_set: HashSet<EntityId> = live_ids.iter().copied().collect();
@@ -172,6 +200,7 @@ impl GameplayScene {
             let save_id = self.alloc_next_save_id()?;
             self.entity_save_ids.insert(entity_id, save_id);
         }
+        self.rebuild_reverse_save_id_map();
         Ok(())
     }
 
@@ -199,6 +228,7 @@ impl GameplayScene {
         for (save_id, entity_id) in spawned_ids_by_save_id {
             self.entity_save_ids.insert(*entity_id, *save_id);
         }
+        self.rebuild_reverse_save_id_map();
 
         if self.entity_save_ids.len() != world.entity_count() {
             return Err(format!(
@@ -328,6 +358,54 @@ impl GameplayScene {
         Ok(())
     }
 
+    fn saved_order_fields_from_runtime(
+        order_state: OrderState,
+    ) -> (Option<SavedVec2>, Option<u64>, SavedJobState) {
+        match order_state {
+            OrderState::Idle => (None, None, SavedJobState::Idle),
+            OrderState::MoveTo { point } => {
+                (Some(SavedVec2::from_vec2(point)), None, SavedJobState::Idle)
+            }
+            OrderState::Interact { target_save_id } => {
+                (None, Some(target_save_id), SavedJobState::Idle)
+            }
+            OrderState::Working {
+                target_save_id,
+                remaining_time,
+            } => (
+                None,
+                Some(target_save_id),
+                SavedJobState::Working {
+                    target_save_id,
+                    remaining_time,
+                },
+            ),
+        }
+    }
+
+    fn runtime_order_state_from_saved(entity: &SavedEntityRuntime) -> OrderState {
+        match entity.job_state {
+            SavedJobState::Working {
+                target_save_id,
+                remaining_time,
+            } => OrderState::Working {
+                target_save_id,
+                remaining_time,
+            },
+            SavedJobState::Idle => {
+                if let Some(target_save_id) = entity.interaction_target_save_id {
+                    OrderState::Interact { target_save_id }
+                } else if let Some(point) = entity.move_target_world {
+                    OrderState::MoveTo {
+                        point: point.to_vec2(),
+                    }
+                } else {
+                    OrderState::Idle
+                }
+            }
+        }
+    }
+
     fn build_save_game(&mut self, world: &SceneWorld) -> SaveLoadResult<SaveGame> {
         self.sync_save_id_map_with_world(world)?;
 
@@ -342,6 +420,8 @@ impl GameplayScene {
                     .ok_or_else(|| {
                         format!("missing save_id mapping for entity id {}", entity.id.0)
                     })?;
+                let (move_target_world, interaction_target_save_id, job_state) =
+                    Self::saved_order_fields_from_runtime(entity.order_state);
 
                 Ok(SavedEntityRuntime {
                     save_id,
@@ -349,25 +429,9 @@ impl GameplayScene {
                     rotation_radians: entity.transform.rotation_radians,
                     selectable: entity.selectable,
                     actor: entity.actor,
-                    move_target_world: entity.move_target_world.map(SavedVec2::from_vec2),
-                    interaction_target_save_id: entity
-                        .interaction_target
-                        .and_then(|id| self.entity_save_ids.get(&id).copied()),
-                    job_state: match entity.job_state {
-                        JobState::Idle => SavedJobState::Idle,
-                        JobState::Working {
-                            target,
-                            remaining_time,
-                        } => self
-                            .entity_save_ids
-                            .get(&target)
-                            .copied()
-                            .map(|target_save_id| SavedJobState::Working {
-                                target_save_id,
-                                remaining_time,
-                            })
-                            .unwrap_or(SavedJobState::Idle),
-                    },
+                    move_target_world,
+                    interaction_target_save_id,
+                    job_state,
                     interactable: entity.interactable.map(|interactable| {
                         SavedInteractableRuntime {
                             kind: match interactable.kind {
@@ -423,6 +487,8 @@ impl GameplayScene {
         world.clear();
         self.interactable_cache.clear();
         self.completed_target_ids.clear();
+        self.entity_save_ids.clear();
+        self.save_id_to_entity.clear();
         world.camera_mut().position = save.camera_position.to_vec2();
         world.camera_mut().set_zoom_clamped(save.camera_zoom);
 
@@ -477,7 +543,7 @@ impl GameplayScene {
             entity.transform.rotation_radians = saved_entity.rotation_radians;
             entity.selectable = saved_entity.selectable;
             entity.actor = saved_entity.actor;
-            entity.move_target_world = saved_entity.move_target_world.map(SavedVec2::to_vec2);
+            entity.order_state = Self::runtime_order_state_from_saved(saved_entity);
             entity.interactable = saved_entity.interactable.map(|interactable| Interactable {
                 kind: match interactable.kind {
                     SavedInteractableKind::ResourcePile => InteractableKind::ResourcePile,
@@ -485,23 +551,6 @@ impl GameplayScene {
                 interaction_radius: interactable.interaction_radius,
                 remaining_uses: interactable.remaining_uses,
             });
-            entity.interaction_target = saved_entity
-                .interaction_target_save_id
-                .and_then(|target_save_id| spawned_ids_by_save_id.get(&target_save_id).copied());
-            entity.job_state = match saved_entity.job_state {
-                SavedJobState::Idle => JobState::Idle,
-                SavedJobState::Working {
-                    target_save_id,
-                    remaining_time,
-                } => spawned_ids_by_save_id
-                    .get(&target_save_id)
-                    .copied()
-                    .map(|target| JobState::Working {
-                        target,
-                        remaining_time,
-                    })
-                    .unwrap_or(JobState::Idle),
-            };
         }
 
         self.selected_entity = save
@@ -519,6 +568,7 @@ impl GameplayScene {
 impl Scene for GameplayScene {
     fn load(&mut self, world: &mut SceneWorld) {
         self.entity_save_ids.clear();
+        self.save_id_to_entity.clear();
         self.next_save_id = 0;
         let player_archetype = resolve_player_archetype(world);
         let pile_archetype = resolve_resource_pile_archetype(world);
@@ -667,22 +717,23 @@ impl Scene for GameplayScene {
                 let interactable_target = world
                     .pick_topmost_interactable_at_cursor(cursor_px, window_size)
                     .and_then(|id| {
-                        world
+                        let target_world = world
                             .find_entity(id)
-                            .map(|entity| (id, entity.transform.position))
+                            .map(|entity| entity.transform.position)?;
+                        let target_save_id = self.save_id_for_entity(id)?;
+                        Some((target_save_id, target_world))
                     });
 
                 let mut marker_position = None::<Vec2>;
                 if let Some(entity) = world.find_entity_mut(selected_id) {
                     if entity.actor {
-                        entity.job_state = JobState::Idle;
-                        if let Some((target_id, target_world)) = interactable_target {
-                            entity.move_target_world = Some(target_world);
-                            entity.interaction_target = Some(target_id);
+                        if let Some((target_save_id, target_world)) = interactable_target {
+                            entity.order_state = OrderState::Interact { target_save_id };
                             marker_position = Some(target_world);
                         } else {
-                            entity.move_target_world = Some(ground_target);
-                            entity.interaction_target = None;
+                            entity.order_state = OrderState::MoveTo {
+                                point: ground_target,
+                            };
                             marker_position = Some(ground_target);
                         }
                     }
@@ -747,75 +798,78 @@ impl Scene for GameplayScene {
                 continue;
             }
 
-            if let Some(target) = entity.move_target_world {
-                let (next, arrived) = step_toward(
-                    entity.transform.position,
-                    target,
-                    self.player_move_speed,
-                    fixed_dt_seconds,
-                    MOVE_ARRIVAL_THRESHOLD,
-                );
-                entity.transform.position = next;
-                if arrived {
-                    entity.move_target_world = None;
+            match entity.order_state {
+                OrderState::Idle => {}
+                OrderState::MoveTo { point } => {
+                    let (next, arrived) = step_toward(
+                        entity.transform.position,
+                        point,
+                        self.player_move_speed,
+                        fixed_dt_seconds,
+                        MOVE_ARRIVAL_THRESHOLD,
+                    );
+                    entity.transform.position = next;
+                    if arrived {
+                        entity.order_state = OrderState::Idle;
+                    }
                 }
-            }
-
-            let mut started_work_this_tick = false;
-            if let Some(interaction_target) = entity.interaction_target {
-                if let Some((target_world, radius)) =
-                    interactable_target_info(&self.interactable_cache, interaction_target)
-                {
-                    if matches!(entity.job_state, JobState::Idle) {
+                OrderState::Interact { target_save_id } => {
+                    if let Some((_, target_world, radius)) = interactable_target_info_by_save_id(
+                        &self.interactable_cache,
+                        &self.save_id_to_entity,
+                        target_save_id,
+                    ) {
                         let dx = target_world.x - entity.transform.position.x;
                         let dy = target_world.y - entity.transform.position.y;
                         if dx * dx + dy * dy <= radius * radius {
-                            entity.job_state = JobState::Working {
-                                target: interaction_target,
+                            entity.order_state = OrderState::Working {
+                                target_save_id,
                                 remaining_time: JOB_DURATION_SECONDS,
                             };
-                            entity.move_target_world = None;
-                            started_work_this_tick = true;
+                        } else {
+                            let (next, _) = step_toward(
+                                entity.transform.position,
+                                target_world,
+                                self.player_move_speed,
+                                fixed_dt_seconds,
+                                MOVE_ARRIVAL_THRESHOLD,
+                            );
+                            entity.transform.position = next;
                         }
-                    }
-                } else {
-                    entity.interaction_target = None;
-                    entity.job_state = JobState::Idle;
-                    entity.move_target_world = None;
-                }
-            }
-
-            if started_work_this_tick {
-                continue;
-            }
-
-            if let JobState::Working {
-                target,
-                remaining_time,
-            } = entity.job_state
-            {
-                if has_interactable_target(&self.interactable_cache, target) {
-                    let next_remaining = remaining_time - fixed_dt_seconds;
-                    if next_remaining <= 0.0 {
-                        entity.job_state = JobState::Idle;
-                        entity.interaction_target = None;
-                        completed_jobs = completed_jobs.saturating_add(1);
-                        self.completed_target_ids.push(target);
                     } else {
-                        entity.job_state = JobState::Working {
-                            target,
-                            remaining_time: next_remaining,
-                        };
+                        entity.order_state = OrderState::Idle;
                     }
-                } else {
-                    entity.job_state = JobState::Idle;
-                    entity.interaction_target = None;
+                }
+                OrderState::Working {
+                    target_save_id,
+                    remaining_time,
+                } => {
+                    if let Some((target_id, _, _)) = interactable_target_info_by_save_id(
+                        &self.interactable_cache,
+                        &self.save_id_to_entity,
+                        target_save_id,
+                    ) {
+                        let next_remaining = remaining_time - fixed_dt_seconds;
+                        if next_remaining <= 0.0 {
+                            entity.order_state = OrderState::Idle;
+                            completed_jobs = completed_jobs.saturating_add(1);
+                            self.completed_target_ids.push(target_id);
+                        } else {
+                            entity.order_state = OrderState::Working {
+                                target_save_id,
+                                remaining_time: next_remaining,
+                            };
+                        }
+                    } else {
+                        entity.order_state = OrderState::Idle;
+                    }
                 }
             }
         }
 
         self.resource_count = self.resource_count.saturating_add(completed_jobs);
-        for target_id in self.completed_target_ids.iter().copied() {
+        for index in 0..self.completed_target_ids.len() {
+            let target_id = self.completed_target_ids[index];
             let mut should_despawn = false;
             if let Some(target) = world.find_entity_mut(target_id) {
                 if let Some(interactable) = target.interactable.as_mut() {
@@ -827,6 +881,7 @@ impl Scene for GameplayScene {
             }
             if should_despawn {
                 world.despawn(target_id);
+                self.remove_entity_save_mapping(target_id);
             }
         }
 
@@ -851,6 +906,7 @@ impl Scene for GameplayScene {
         self.interactable_cache.clear();
         self.completed_target_ids.clear();
         self.entity_save_ids.clear();
+        self.save_id_to_entity.clear();
         self.next_save_id = 0;
     }
 
@@ -878,20 +934,15 @@ impl Scene for GameplayScene {
         if !entity.actor {
             return None;
         }
-        if let Some(target) = entity.move_target_world {
-            return Some(target);
+        match entity.order_state {
+            OrderState::Idle => None,
+            OrderState::MoveTo { point } => Some(point),
+            OrderState::Interact { target_save_id }
+            | OrderState::Working { target_save_id, .. } => self
+                .resolve_runtime_target_id(target_save_id, world)
+                .and_then(|target_id| world.find_entity(target_id))
+                .map(|target| target.transform.position),
         }
-        if let Some(target_id) = entity.interaction_target {
-            return world
-                .find_entity(target_id)
-                .map(|target| target.transform.position);
-        }
-        if let JobState::Working { target, .. } = entity.job_state {
-            return world
-                .find_entity(target)
-                .map(|target| target.transform.position);
-        }
-        None
     }
 
     fn debug_resource_count(&self) -> Option<u32> {
@@ -918,17 +969,20 @@ impl Scene for GameplayScene {
         if let Some(selected_id) = self.selected_entity {
             if let Some(entity) = world.find_entity(selected_id) {
                 selected_position_world = Some(entity.transform.position);
-                selected_order_world = entity.move_target_world.or_else(|| {
-                    entity
-                        .interaction_target
+                selected_order_world = match entity.order_state {
+                    OrderState::Idle => None,
+                    OrderState::MoveTo { point } => Some(point),
+                    OrderState::Interact { target_save_id }
+                    | OrderState::Working { target_save_id, .. } => self
+                        .resolve_runtime_target_id(target_save_id, world)
                         .and_then(|target_id| world.find_entity(target_id))
-                        .map(|target| target.transform.position)
-                });
-                selected_job_state = match entity.job_state {
-                    JobState::Idle => DebugJobState::Idle,
-                    JobState::Working { remaining_time, .. } => {
+                        .map(|target| target.transform.position),
+                };
+                selected_job_state = match entity.order_state {
+                    OrderState::Working { remaining_time, .. } => {
                         DebugJobState::Working { remaining_time }
                     }
+                    _ => DebugJobState::Idle,
                 };
             }
         }
@@ -1023,18 +1077,16 @@ fn try_resolve_resource_pile_archetype(world: &SceneWorld) -> SaveLoadResult<Ent
     Ok(pile)
 }
 
-fn interactable_target_info(
+fn interactable_target_info_by_save_id(
     interactables: &[(EntityId, Vec2, f32)],
-    target: EntityId,
-) -> Option<(Vec2, f32)> {
+    save_id_to_entity: &HashMap<u64, EntityId>,
+    target_save_id: u64,
+) -> Option<(EntityId, Vec2, f32)> {
+    let target_id = save_id_to_entity.get(&target_save_id).copied()?;
     interactables
         .iter()
-        .find(|(id, _, _)| *id == target)
-        .map(|(_, position, radius)| (*position, *radius))
-}
-
-fn has_interactable_target(interactables: &[(EntityId, Vec2, f32)], target: EntityId) -> bool {
-    interactables.iter().any(|(id, _, _)| *id == target)
+        .find(|(id, _, _)| *id == target_id)
+        .map(|(id, position, radius)| (*id, *position, *radius))
 }
 
 fn movement_delta(input: &InputSnapshot, fixed_dt_seconds: f32, speed: f32) -> Vec2 {
@@ -1277,6 +1329,36 @@ mod tests {
         }
     }
 
+    fn assert_vec2_close(actual: Vec2, expected: Vec2, epsilon: f32) {
+        assert!(
+            (actual.x - expected.x).abs() <= epsilon,
+            "x {} vs {}",
+            actual.x,
+            expected.x
+        );
+        assert!(
+            (actual.y - expected.y).abs() <= epsilon,
+            "y {} vs {}",
+            actual.y,
+            expected.y
+        );
+    }
+
+    fn interactable_entity_count(world: &SceneWorld) -> usize {
+        world
+            .entities()
+            .iter()
+            .filter(|entity| entity.interactable.is_some())
+            .count()
+    }
+
+    fn advance(scene: &mut GameplayScene, world: &mut SceneWorld, steps: usize, fixed_dt: f32) {
+        for _ in 0..steps {
+            scene.update(fixed_dt, &InputSnapshot::empty(), world);
+            world.apply_pending();
+        }
+    }
+
     #[test]
     fn movement_magnitude_is_speed_times_dt() {
         let input = snapshot_from_actions(&[InputAction::MoveRight]);
@@ -1464,11 +1546,11 @@ mod tests {
         let click = right_click_snapshot(Vec2 { x: 672.0, y: 360.0 }, (1280, 720));
         scene.update(1.0 / 60.0, &click, &mut world);
 
-        let target = world
-            .find_entity(actor)
-            .expect("actor")
-            .move_target_world
-            .expect("target");
+        let target = world.find_entity(actor).expect("actor");
+        let target = match target.order_state {
+            OrderState::MoveTo { point } => point,
+            _ => panic!("expected move order"),
+        };
         assert!((target.x - 1.0).abs() < 0.0001);
         assert!(target.y.abs() < 0.0001);
     }
@@ -1497,11 +1579,11 @@ mod tests {
             .with_window_size((1280, 720));
         scene.update(1.0 / 60.0, &input, &mut world);
 
-        let target = world
-            .find_entity(actor)
-            .expect("actor")
-            .move_target_world
-            .expect("target");
+        let target = world.find_entity(actor).expect("actor");
+        let target = match target.order_state {
+            OrderState::MoveTo { point } => point,
+            _ => panic!("expected move order"),
+        };
         assert!((world.camera().zoom - 1.1).abs() < 0.0001);
         assert!((target.x - (32.0 / (32.0 * 1.1))).abs() < 0.0001);
         assert!(target.y.abs() < 0.0001);
@@ -1554,11 +1636,10 @@ mod tests {
 
         let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
         scene.update(1.0 / 60.0, &click, &mut world);
-        assert!(world
-            .find_entity(actor)
-            .expect("actor")
-            .move_target_world
-            .is_none());
+        assert_eq!(
+            world.find_entity(actor).expect("actor").order_state,
+            OrderState::Idle
+        );
     }
 
     #[test]
@@ -1580,11 +1661,10 @@ mod tests {
 
         let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
         scene.update(1.0 / 60.0, &click, &mut world);
-        assert!(world
-            .find_entity(non_actor)
-            .expect("non_actor")
-            .move_target_world
-            .is_none());
+        assert_eq!(
+            world.find_entity(non_actor).expect("non_actor").order_state,
+            OrderState::Idle
+        );
     }
 
     #[test]
@@ -1628,7 +1708,9 @@ mod tests {
         world.apply_pending();
         {
             let entity = world.find_entity_mut(actor).expect("actor");
-            entity.move_target_world = Some(Vec2 { x: 0.2, y: 0.0 });
+            entity.order_state = OrderState::MoveTo {
+                point: Vec2 { x: 0.2, y: 0.0 },
+            };
         }
 
         for _ in 0..10 {
@@ -1636,7 +1718,7 @@ mod tests {
         }
 
         let entity = world.find_entity(actor).expect("actor");
-        assert!(entity.move_target_world.is_none());
+        assert_eq!(entity.order_state, OrderState::Idle);
         assert!((entity.transform.position.x - 0.2).abs() <= MOVE_ARRIVAL_THRESHOLD);
     }
 
@@ -1657,14 +1739,20 @@ mod tests {
         let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 3);
         world.find_entity_mut(actor).expect("actor").selectable = true;
         scene.selected_entity = Some(actor);
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("save-id sync");
 
         let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
         scene.update(1.0 / 60.0, &click, &mut world);
 
         let updated = world.find_entity(actor).expect("actor");
-        assert_eq!(updated.interaction_target, Some(pile));
-        assert!(updated.move_target_world.is_some());
-        assert_eq!(updated.job_state, JobState::Idle);
+        let target_save_id = scene
+            .entity_save_ids
+            .get(&pile)
+            .copied()
+            .expect("pile save id");
+        assert_eq!(updated.order_state, OrderState::Interact { target_save_id });
     }
 
     #[test]
@@ -1682,10 +1770,19 @@ mod tests {
             },
         );
         let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 1);
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("save-id sync");
+        let pile_save_id = scene
+            .entity_save_ids
+            .get(&pile)
+            .copied()
+            .expect("pile save id");
         {
             let entity = world.find_entity_mut(actor).expect("actor");
-            entity.interaction_target = Some(pile);
-            entity.job_state = JobState::Idle;
+            entity.order_state = OrderState::Interact {
+                target_save_id: pile_save_id,
+            };
         }
 
         for _ in 0..40 {
@@ -1694,8 +1791,7 @@ mod tests {
         }
 
         let actor_entity = world.find_entity(actor).expect("actor");
-        assert_eq!(actor_entity.job_state, JobState::Idle);
-        assert_eq!(actor_entity.interaction_target, None);
+        assert_eq!(actor_entity.order_state, OrderState::Idle);
         assert_eq!(scene.resource_count, 1);
         assert!(world.find_entity(pile).is_none());
     }
@@ -1715,19 +1811,18 @@ mod tests {
             },
         );
         world.apply_pending();
+        scene.save_id_to_entity.insert(9999, EntityId(9999));
         {
             let entity = world.find_entity_mut(actor).expect("actor");
-            entity.interaction_target = Some(EntityId(9999));
-            entity.job_state = JobState::Working {
-                target: EntityId(9999),
+            entity.order_state = OrderState::Working {
+                target_save_id: 9999,
                 remaining_time: 1.0,
             };
         }
 
         scene.update(0.1, &InputSnapshot::empty(), &mut world);
         let actor_entity = world.find_entity(actor).expect("actor");
-        assert_eq!(actor_entity.job_state, JobState::Idle);
-        assert_eq!(actor_entity.interaction_target, None);
+        assert_eq!(actor_entity.order_state, OrderState::Idle);
     }
 
     #[test]
@@ -1745,11 +1840,18 @@ mod tests {
             },
         );
         let pile = spawn_interactable_pile(&mut world_a, Vec2 { x: 0.0, y: 0.0 }, 1);
+        scene_a
+            .sync_save_id_map_with_world(&world_a)
+            .expect("save-id sync");
+        let pile_save_id = scene_a
+            .entity_save_ids
+            .get(&pile)
+            .copied()
+            .expect("pile save id");
         {
             let entity = world_a.find_entity_mut(actor).expect("actor");
-            entity.interaction_target = Some(pile);
-            entity.job_state = JobState::Working {
-                target: pile,
+            entity.order_state = OrderState::Working {
+                target_save_id: pile_save_id,
                 remaining_time: 1.0,
             };
         }
@@ -1766,8 +1868,8 @@ mod tests {
         world_b.apply_pending();
 
         scene_a.update(0.1, &InputSnapshot::empty(), &mut world_a);
-        let before_pause = match world_a.find_entity(actor).expect("actor").job_state {
-            JobState::Working { remaining_time, .. } => remaining_time,
+        let before_pause = match world_a.find_entity(actor).expect("actor").order_state {
+            OrderState::Working { remaining_time, .. } => remaining_time,
             _ => panic!("expected working"),
         };
 
@@ -1776,8 +1878,8 @@ mod tests {
             world_b.apply_pending();
         }
 
-        let after_pause = match world_a.find_entity(actor).expect("actor").job_state {
-            JobState::Working { remaining_time, .. } => remaining_time,
+        let after_pause = match world_a.find_entity(actor).expect("actor").order_state {
+            OrderState::Working { remaining_time, .. } => remaining_time,
             _ => panic!("expected working"),
         };
         assert!((before_pause - after_pause).abs() < 0.0001);
@@ -1788,7 +1890,7 @@ mod tests {
         }
 
         let actor_entity = world_a.find_entity(actor).expect("actor");
-        assert_eq!(actor_entity.job_state, JobState::Idle);
+        assert_eq!(actor_entity.order_state, OrderState::Idle);
         assert_eq!(scene_a.resource_count, 1);
     }
 
@@ -1807,12 +1909,20 @@ mod tests {
             },
         );
         let pile = spawn_interactable_pile(&mut world_a, Vec2 { x: 1.0, y: 0.0 }, 3);
+        scene_a
+            .sync_save_id_map_with_world(&world_a)
+            .expect("save-id sync");
+        let pile_save_id = scene_a
+            .entity_save_ids
+            .get(&pile)
+            .copied()
+            .expect("pile save id");
         {
             let entity = world_a.find_entity_mut(actor).expect("actor");
             entity.selectable = true;
-            entity.move_target_world = Some(Vec2 { x: 1.0, y: 0.0 });
-            entity.interaction_target = Some(pile);
-            entity.job_state = JobState::Idle;
+            entity.order_state = OrderState::Interact {
+                target_save_id: pile_save_id,
+            };
         }
         scene_a.selected_entity = Some(actor);
         scene_a.resource_count = 2;
@@ -1841,9 +1951,7 @@ mod tests {
         assert_eq!(scene_a.selected_entity, before_selection);
         assert_eq!(scene_a.resource_count, before_items);
         assert_eq!(after.transform.position, before.transform.position);
-        assert_eq!(after.move_target_world, before.move_target_world);
-        assert_eq!(after.interaction_target, before.interaction_target);
-        assert_eq!(after.job_state, before.job_state);
+        assert_eq!(after.order_state, before.order_state);
     }
 
     #[test]
@@ -1861,12 +1969,19 @@ mod tests {
             },
         );
         let pile = spawn_interactable_pile(&mut world, Vec2 { x: 3.0, y: 4.0 }, 2);
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("save-id sync");
+        let pile_save_id = scene
+            .entity_save_ids
+            .get(&pile)
+            .copied()
+            .expect("pile save id");
         {
             let entity = world.find_entity_mut(actor).expect("actor");
             entity.selectable = true;
-            entity.move_target_world = Some(Vec2 { x: 5.0, y: 6.0 });
-            entity.job_state = JobState::Working {
-                target: pile,
+            entity.order_state = OrderState::Working {
+                target_save_id: pile_save_id,
                 remaining_time: 1.2,
             };
         }
@@ -1881,7 +1996,7 @@ mod tests {
             snapshot.selected_position_world,
             Some(Vec2 { x: 1.0, y: 2.0 })
         );
-        assert_eq!(snapshot.selected_order_world, Some(Vec2 { x: 5.0, y: 6.0 }));
+        assert_eq!(snapshot.selected_order_world, Some(Vec2 { x: 3.0, y: 4.0 }));
         assert_eq!(
             snapshot.selected_job_state,
             DebugJobState::Working {
@@ -1982,11 +2097,15 @@ mod tests {
         assert!(actor.actor);
         assert_eq!(scene.selected_entity, Some(actor.id));
         assert_eq!(scene.player_id, Some(actor.id));
-        assert_eq!(actor.interaction_target, Some(target.id));
+        let target_save_id = scene
+            .entity_save_ids
+            .get(&target.id)
+            .copied()
+            .expect("target save id");
         assert_eq!(
-            actor.job_state,
-            JobState::Working {
-                target: target.id,
+            actor.order_state,
+            OrderState::Working {
+                target_save_id,
                 remaining_time: 1.5
             }
         );
@@ -2009,16 +2128,24 @@ mod tests {
         assert_eq!(player_id, selected_id);
 
         let player = world.find_entity(player_id).expect("player entity");
-        let target_id = player.interaction_target.expect("interaction target");
+        let target_save_id = match player.order_state {
+            OrderState::Working { target_save_id, .. } => target_save_id,
+            _ => panic!("expected working"),
+        };
+        let target_id = scene
+            .save_id_to_entity
+            .get(&target_save_id)
+            .copied()
+            .expect("interaction target");
         assert!(world
             .find_entity(target_id)
             .expect("target entity")
             .interactable
             .is_some());
         assert_eq!(
-            player.job_state,
-            JobState::Working {
-                target: target_id,
+            player.order_state,
+            OrderState::Working {
+                target_save_id,
                 remaining_time: 1.5
             }
         );
@@ -2110,6 +2237,209 @@ mod tests {
     }
 
     #[test]
+    fn saved_runtime_order_precedence_working_then_interact_then_move() {
+        let mut saved = SavedEntityRuntime {
+            save_id: 10,
+            position: SavedVec2 { x: 0.0, y: 0.0 },
+            rotation_radians: None,
+            selectable: true,
+            actor: true,
+            move_target_world: Some(SavedVec2 { x: 9.0, y: 9.0 }),
+            interaction_target_save_id: Some(20),
+            job_state: SavedJobState::Idle,
+            interactable: None,
+        };
+
+        assert_eq!(
+            GameplayScene::runtime_order_state_from_saved(&saved),
+            OrderState::Interact { target_save_id: 20 }
+        );
+
+        saved.job_state = SavedJobState::Working {
+            target_save_id: 20,
+            remaining_time: 1.25,
+        };
+        assert_eq!(
+            GameplayScene::runtime_order_state_from_saved(&saved),
+            OrderState::Working {
+                target_save_id: 20,
+                remaining_time: 1.25
+            }
+        );
+    }
+
+    #[test]
+    fn move_order_save_load_midway_matches_baseline_trajectory() {
+        let mut baseline_scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut baseline_world = SceneWorld::default();
+        seed_def_database(&mut baseline_world);
+        let baseline_actor = baseline_world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        baseline_world.apply_pending();
+        baseline_world
+            .find_entity_mut(baseline_actor)
+            .expect("actor")
+            .selectable = true;
+        baseline_scene.player_id = Some(baseline_actor);
+        baseline_scene.selected_entity = Some(baseline_actor);
+
+        let mut resumed_scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut resumed_world = SceneWorld::default();
+        seed_def_database(&mut resumed_world);
+        let resumed_actor = resumed_world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        resumed_world.apply_pending();
+        resumed_world
+            .find_entity_mut(resumed_actor)
+            .expect("actor")
+            .selectable = true;
+        resumed_scene.player_id = Some(resumed_actor);
+        resumed_scene.selected_entity = Some(resumed_actor);
+
+        let click = right_click_snapshot(Vec2 { x: 672.0, y: 360.0 }, (1280, 720));
+        baseline_scene.update(1.0 / 60.0, &click, &mut baseline_world);
+        resumed_scene.update(1.0 / 60.0, &click, &mut resumed_world);
+
+        advance(&mut baseline_scene, &mut baseline_world, 8, 0.1);
+        advance(&mut resumed_scene, &mut resumed_world, 8, 0.1);
+
+        let save = resumed_scene.build_save_game(&resumed_world).expect("save");
+        {
+            let entity = resumed_world.find_entity_mut(resumed_actor).expect("actor");
+            entity.transform.position = Vec2 { x: 123.0, y: 456.0 };
+            entity.order_state = OrderState::Idle;
+        }
+        resumed_scene
+            .apply_save_game(save, &mut resumed_world)
+            .expect("apply");
+
+        advance(&mut baseline_scene, &mut baseline_world, 12, 0.1);
+        advance(&mut resumed_scene, &mut resumed_world, 12, 0.1);
+
+        let baseline = baseline_world
+            .find_entity(baseline_actor)
+            .expect("baseline");
+        let resumed = resumed_world
+            .find_entity(resumed_scene.player_id.expect("resumed player"))
+            .expect("resumed");
+        assert_vec2_close(
+            resumed.transform.position,
+            baseline.transform.position,
+            0.0001,
+        );
+        assert_eq!(resumed.order_state, baseline.order_state);
+    }
+
+    #[test]
+    fn interact_workflow_save_load_mid_work_matches_baseline_outcome() {
+        let mut baseline_scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut baseline_world = SceneWorld::default();
+        seed_def_database(&mut baseline_world);
+        let baseline_actor = baseline_world.spawn_actor(
+            Transform {
+                position: Vec2 { x: -2.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let _baseline_pile =
+            spawn_interactable_pile(&mut baseline_world, Vec2 { x: 0.0, y: 0.0 }, 1);
+        baseline_scene.player_id = Some(baseline_actor);
+        baseline_scene.selected_entity = Some(baseline_actor);
+        baseline_scene
+            .sync_save_id_map_with_world(&baseline_world)
+            .expect("sync");
+
+        let mut resumed_scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut resumed_world = SceneWorld::default();
+        seed_def_database(&mut resumed_world);
+        let resumed_actor = resumed_world.spawn_actor(
+            Transform {
+                position: Vec2 { x: -2.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let _resumed_pile = spawn_interactable_pile(&mut resumed_world, Vec2 { x: 0.0, y: 0.0 }, 1);
+        resumed_scene.player_id = Some(resumed_actor);
+        resumed_scene.selected_entity = Some(resumed_actor);
+        resumed_scene
+            .sync_save_id_map_with_world(&resumed_world)
+            .expect("sync");
+
+        let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        baseline_scene.update(1.0 / 60.0, &click, &mut baseline_world);
+        resumed_scene.update(1.0 / 60.0, &click, &mut resumed_world);
+
+        let mut saw_working = false;
+        for _ in 0..30 {
+            advance(&mut baseline_scene, &mut baseline_world, 1, 0.1);
+            advance(&mut resumed_scene, &mut resumed_world, 1, 0.1);
+            let baseline_state = baseline_world
+                .find_entity(baseline_actor)
+                .expect("actor")
+                .order_state;
+            let resumed_state = resumed_world
+                .find_entity(resumed_actor)
+                .expect("actor")
+                .order_state;
+            if matches!(baseline_state, OrderState::Working { .. })
+                && matches!(resumed_state, OrderState::Working { .. })
+            {
+                saw_working = true;
+                break;
+            }
+        }
+        assert!(saw_working, "expected both branches to enter working state");
+
+        advance(&mut baseline_scene, &mut baseline_world, 3, 0.1);
+        advance(&mut resumed_scene, &mut resumed_world, 3, 0.1);
+
+        let save = resumed_scene.build_save_game(&resumed_world).expect("save");
+        resumed_scene.resource_count = 99;
+        resumed_scene
+            .apply_save_game(save, &mut resumed_world)
+            .expect("apply");
+
+        advance(&mut baseline_scene, &mut baseline_world, 30, 0.1);
+        advance(&mut resumed_scene, &mut resumed_world, 30, 0.1);
+
+        let baseline_actor_entity = baseline_world.find_entity(baseline_actor).expect("actor");
+        let resumed_actor_entity = resumed_world
+            .find_entity(resumed_scene.player_id.expect("resumed player"))
+            .expect("actor");
+        assert_eq!(baseline_actor_entity.order_state, OrderState::Idle);
+        assert_eq!(resumed_actor_entity.order_state, OrderState::Idle);
+        assert_eq!(resumed_scene.resource_count, baseline_scene.resource_count);
+        assert_eq!(
+            interactable_entity_count(&resumed_world),
+            interactable_entity_count(&baseline_world)
+        );
+    }
+
+    #[test]
     fn save_mid_move_then_load_restores_resumable_state() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -2129,7 +2459,9 @@ mod tests {
         {
             let entity = world.find_entity_mut(actor).expect("actor");
             entity.selectable = true;
-            entity.move_target_world = Some(Vec2 { x: 2.0, y: 0.0 });
+            entity.order_state = OrderState::MoveTo {
+                point: Vec2 { x: 2.0, y: 0.0 },
+            };
         }
         scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
@@ -2141,7 +2473,7 @@ mod tests {
         {
             let entity = world.find_entity_mut(actor).expect("actor");
             entity.transform.position = Vec2 { x: 9.0, y: 9.0 };
-            entity.move_target_world = None;
+            entity.order_state = OrderState::Idle;
         }
         scene.selected_entity = None;
         scene.resource_count = 0;
@@ -2160,8 +2492,10 @@ mod tests {
         assert!((world.camera().zoom - 1.6).abs() < 0.0001);
         assert_eq!(restored_actor.transform.position, Vec2 { x: 0.0, y: 0.0 });
         assert_eq!(
-            restored_actor.move_target_world,
-            Some(Vec2 { x: 2.0, y: 0.0 })
+            restored_actor.order_state,
+            OrderState::MoveTo {
+                point: Vec2 { x: 2.0, y: 0.0 }
+            }
         );
         let restored_actor_id = restored_actor.id;
 

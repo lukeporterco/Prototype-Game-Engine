@@ -14,8 +14,8 @@ pub use rendering::{
 };
 pub use scene::{
     Camera2D, DebugInfoSnapshot, DebugJobState, DebugMarker, DebugMarkerKind, Entity, EntityId,
-    InputSnapshot, Interactable, InteractableKind, JobState, RenderableDesc, RenderableKind, Scene,
-    SceneCommand, SceneKey, SceneVisualState, SceneWorld, Tilemap, TilemapError, Transform, Vec2,
-    CAMERA_ZOOM_DEFAULT, CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN, CAMERA_ZOOM_STEP,
+    InputSnapshot, Interactable, InteractableKind, OrderState, RenderableDesc, RenderableKind,
+    Scene, SceneCommand, SceneKey, SceneVisualState, SceneWorld, Tilemap, TilemapError, Transform,
+    Vec2, CAMERA_ZOOM_DEFAULT, CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN, CAMERA_ZOOM_STEP,
 };
 pub(crate) use tools::{OverlayData, PerfStats};

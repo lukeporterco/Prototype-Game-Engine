@@ -835,3 +835,53 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - view bounds math and tiny viewport safety
   - tile visible-rect formula/clamping/outside-map handling
   - point-radius culling behavior in negative coordinates
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 28)
+- Runtime order seam consolidated to `OrderState` in `crates/engine/src/app/scene.rs`:
+  - `Idle`
+  - `MoveTo { point: Vec2 }`
+  - `Interact { target_save_id: u64 }`
+  - `Working { target_save_id: u64, remaining_time: f32 }`
+- Engine `Entity` runtime fields migrated:
+  - removed: `move_target_world`, `interaction_target`, `job_state`
+  - added: `order_state: OrderState`
+- Public exports updated:
+  - `OrderState` is re-exported from `crates/engine/src/app/mod.rs` and `crates/engine/src/lib.rs`
+  - `JobState` export removed.
+- Gameplay save-id ownership contract in `crates/game/src/main.rs`:
+  - keeps both maps for O(1) target resolution:
+    - `entity_save_ids: HashMap<EntityId, u64>`
+    - `save_id_to_entity: HashMap<u64, EntityId>`
+  - maps are rebuilt/synced on load/sync paths and cleared on unload/reset paths.
+- Target resolution contract:
+  - `OrderState` stores only stable `target_save_id` for interact/work states.
+  - each tick resolves save-id -> runtime `EntityId` via `save_id_to_entity` and validates entity existence.
+  - unresolved or invalid targets force actor `OrderState::Idle`.
+- Behavior lock preserved:
+  - right-click still prefers interactable target over ground move.
+  - `Interact` owns movement toward target until within interaction radius (no split move order stored).
+  - on work completion: resource increments, target usage decrements, despawn when empty.
+  - save-id mappings are removed when target despawns to keep resolution strict.
+- Save/load compatibility lock:
+  - on-disk schema remains `SAVE_VERSION = 3` and unchanged fields:
+    - `move_target_world`
+    - `interaction_target_save_id`
+    - `job_state`
+  - runtime -> saved conversion maps from `OrderState` to existing v3 fields.
+  - saved -> runtime conversion precedence:
+    1. `job_state == Working` -> `OrderState::Working`
+    2. else `interaction_target_save_id` -> `OrderState::Interact`
+    3. else `move_target_world` -> `OrderState::MoveTo`
+    4. else `OrderState::Idle`
+- Debug seam updated:
+  - `debug_selected_target` and `debug_info_snapshot.selected_order_world` now derive from `OrderState` and save-id resolution.
+  - `selected_job_state` reports `Working` only for `OrderState::Working`, otherwise `Idle`/`None` as before.
+- Test coverage added/updated:
+  - migration assertions for `order_state`
+  - precedence test for saved->runtime conversion
+  - move-order save/load determinism branch test
+  - interact workflow save/load mid-work parity test
+- Pitfall recorded:
+  - `apply_save_game` requires `DefDatabase` present when saved entities include actor/interactable data; tests that restore saves must seed defs first.
