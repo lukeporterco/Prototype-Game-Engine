@@ -7,12 +7,13 @@ use pixels::{Error, Pixels, SurfaceTexture};
 use winit::window::Window;
 
 use crate::app::{
-    tools::draw_overlay, DebugMarkerKind, OverlayData, RenderableKind, SceneWorld, Vec2,
+    tools::draw_overlay, Camera2D, DebugMarkerKind, OverlayData, RenderableKind, SceneWorld,
+    Tilemap, Vec2,
 };
 use crate::sprite_keys::validate_sprite_key;
 
 use super::transform::camera_pixels_per_world;
-use super::{world_to_screen_px, Viewport, PLACEHOLDER_HALF_SIZE_PX};
+use super::{world_to_screen_px, Viewport, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX};
 
 const CLEAR_COLOR: [u8; 4] = [20, 22, 28, 255];
 const PLACEHOLDER_COLOR: [u8; 4] = [220, 220, 240, 255];
@@ -29,6 +30,24 @@ const ORDER_MARKER_COLOR: [u8; 4] = [255, 120, 120, 255];
 const SELECTED_HIGHLIGHT_HALF_SIZE_PX: i32 = 10;
 const HOVER_HIGHLIGHT_HALF_SIZE_PX: i32 = 8;
 const ORDER_MARKER_HALF_SIZE_PX: i32 = 6;
+const VIEW_CULL_PADDING_PX: f32 = 16.0;
+const ENTITY_CULL_RADIUS_WORLD_TILES: f32 = 0.5;
+
+#[derive(Debug, Clone, Copy)]
+struct WorldBounds {
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TileRectInclusive {
+    x_min: u32,
+    x_max: u32,
+    y_min: u32,
+    y_max: u32,
+}
 
 struct LoadedSprite {
     width: u32,
@@ -93,18 +112,31 @@ impl Renderer {
         for chunk in frame.chunks_exact_mut(4) {
             chunk.copy_from_slice(&CLEAR_COLOR);
         }
+        let view_bounds = view_bounds_world(
+            world.camera(),
+            (self.viewport.width, self.viewport.height),
+            VIEW_CULL_PADDING_PX,
+        );
 
         draw_tilemap(
             frame,
             self.viewport.width,
             self.viewport.height,
             world,
+            &view_bounds,
             sprite_cache,
             asset_root,
         );
         draw_world_grid(frame, self.viewport.width, self.viewport.height, world);
 
         for entity in world.entities() {
+            if !bounds_intersects_point_radius(
+                &view_bounds,
+                entity.transform.position,
+                ENTITY_CULL_RADIUS_WORLD_TILES,
+            ) {
+                continue;
+            }
             let (cx, cy) = world_to_screen_px(
                 world.camera(),
                 (self.viewport.width, self.viewport.height),
@@ -147,7 +179,13 @@ impl Renderer {
             }
         }
 
-        draw_affordances(frame, self.viewport.width, self.viewport.height, world);
+        draw_affordances(
+            frame,
+            self.viewport.width,
+            self.viewport.height,
+            world,
+            &view_bounds,
+        );
 
         if let Some(data) = overlay_data {
             draw_overlay(frame, self.viewport.width, self.viewport.height, data);
@@ -157,23 +195,38 @@ impl Renderer {
     }
 }
 
-fn draw_affordances(frame: &mut [u8], width: u32, height: u32, world: &SceneWorld) {
+fn draw_affordances(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    world: &SceneWorld,
+    view_bounds: &WorldBounds,
+) {
     let visuals = world.visual_state();
 
     if let Some(selected_id) = visuals.selected_actor {
         if let Some(entity) = world.find_entity(selected_id) {
             if entity.actor {
-                let (cx, cy) =
-                    world_to_screen_px(world.camera(), (width, height), entity.transform.position);
-                draw_square_outline(
-                    frame,
-                    width,
-                    height,
-                    cx,
-                    cy,
-                    SELECTED_HIGHLIGHT_HALF_SIZE_PX,
-                    SELECTED_HIGHLIGHT_COLOR,
-                );
+                if bounds_intersects_point_radius(
+                    view_bounds,
+                    entity.transform.position,
+                    ENTITY_CULL_RADIUS_WORLD_TILES,
+                ) {
+                    let (cx, cy) = world_to_screen_px(
+                        world.camera(),
+                        (width, height),
+                        entity.transform.position,
+                    );
+                    draw_square_outline(
+                        frame,
+                        width,
+                        height,
+                        cx,
+                        cy,
+                        SELECTED_HIGHLIGHT_HALF_SIZE_PX,
+                        SELECTED_HIGHLIGHT_COLOR,
+                    );
+                }
             }
         }
     }
@@ -181,23 +234,39 @@ fn draw_affordances(frame: &mut [u8], width: u32, height: u32, world: &SceneWorl
     if let Some(hovered_id) = visuals.hovered_interactable {
         if let Some(entity) = world.find_entity(hovered_id) {
             if entity.interactable.is_some() {
-                let (cx, cy) =
-                    world_to_screen_px(world.camera(), (width, height), entity.transform.position);
-                draw_square_outline(
-                    frame,
-                    width,
-                    height,
-                    cx,
-                    cy,
-                    HOVER_HIGHLIGHT_HALF_SIZE_PX,
-                    HOVER_HIGHLIGHT_COLOR,
-                );
+                if bounds_intersects_point_radius(
+                    view_bounds,
+                    entity.transform.position,
+                    ENTITY_CULL_RADIUS_WORLD_TILES,
+                ) {
+                    let (cx, cy) = world_to_screen_px(
+                        world.camera(),
+                        (width, height),
+                        entity.transform.position,
+                    );
+                    draw_square_outline(
+                        frame,
+                        width,
+                        height,
+                        cx,
+                        cy,
+                        HOVER_HIGHLIGHT_HALF_SIZE_PX,
+                        HOVER_HIGHLIGHT_COLOR,
+                    );
+                }
             }
         }
     }
 
     for marker in world.debug_markers() {
         if matches!(marker.kind, DebugMarkerKind::Order) {
+            if !bounds_intersects_point_radius(
+                view_bounds,
+                marker.position_world,
+                ENTITY_CULL_RADIUS_WORLD_TILES,
+            ) {
+                continue;
+            }
             let (cx, cy) =
                 world_to_screen_px(world.camera(), (width, height), marker.position_world);
             draw_cross(
@@ -218,16 +287,20 @@ fn draw_tilemap(
     width: u32,
     height: u32,
     world: &SceneWorld,
+    view_bounds: &WorldBounds,
     sprite_cache: &mut HashMap<String, Option<LoadedSprite>>,
     asset_root: &Path,
 ) {
     let Some(tilemap) = world.tilemap() else {
         return;
     };
+    let Some(visible_rect) = visible_tile_rect(tilemap, view_bounds) else {
+        return;
+    };
     let pixels_per_world = camera_pixels_per_world(world.camera());
 
-    for y in 0..tilemap.height() {
-        for x in 0..tilemap.width() {
+    for y in visible_rect.y_min..=visible_rect.y_max {
+        for x in visible_rect.x_min..=visible_rect.x_max {
             let Some(tile_id) = tilemap.tile_at(x, y) else {
                 continue;
             };
@@ -244,6 +317,66 @@ fn draw_tilemap(
             draw_tile_fallback(frame, width, height, cx, cy, tile_id, pixels_per_world);
         }
     }
+}
+
+fn view_bounds_world(camera: &Camera2D, window_size: (u32, u32), padding_px: f32) -> WorldBounds {
+    let pixels_per_world = camera_pixels_per_world(camera);
+    let safe_pixels_per_world = if pixels_per_world.is_finite() && pixels_per_world > f32::EPSILON {
+        pixels_per_world
+    } else {
+        PIXELS_PER_WORLD
+    };
+    let half_w_world = window_size.0 as f32 / (2.0 * safe_pixels_per_world);
+    let half_h_world = window_size.1 as f32 / (2.0 * safe_pixels_per_world);
+    let padding_world = (padding_px.max(0.0) / safe_pixels_per_world).max(0.0);
+
+    WorldBounds {
+        min_x: camera.position.x - half_w_world - padding_world,
+        max_x: camera.position.x + half_w_world + padding_world,
+        min_y: camera.position.y - half_h_world - padding_world,
+        max_y: camera.position.y + half_h_world + padding_world,
+    }
+}
+
+fn bounds_intersects_point_radius(bounds: &WorldBounds, center: Vec2, radius_world: f32) -> bool {
+    let radius = radius_world.max(0.0);
+    let min_x = center.x - radius;
+    let max_x = center.x + radius;
+    let min_y = center.y - radius;
+    let max_y = center.y + radius;
+
+    !(max_x < bounds.min_x || min_x > bounds.max_x || max_y < bounds.min_y || min_y > bounds.max_y)
+}
+
+fn visible_tile_rect(tilemap: &Tilemap, bounds: &WorldBounds) -> Option<TileRectInclusive> {
+    if tilemap.width() == 0 || tilemap.height() == 0 {
+        return None;
+    }
+
+    let origin = tilemap.origin();
+    let raw_x_min = (bounds.min_x - origin.x).floor() as i32;
+    let raw_x_max = (bounds.max_x - origin.x).ceil() as i32 - 1;
+    let raw_y_min = (bounds.min_y - origin.y).floor() as i32;
+    let raw_y_max = (bounds.max_y - origin.y).ceil() as i32 - 1;
+
+    let x_limit = tilemap.width() as i32 - 1;
+    let y_limit = tilemap.height() as i32 - 1;
+
+    let x_min = raw_x_min.max(0);
+    let x_max = raw_x_max.min(x_limit);
+    let y_min = raw_y_min.max(0);
+    let y_max = raw_y_max.min(y_limit);
+
+    if x_min > x_max || y_min > y_max {
+        return None;
+    }
+
+    Some(TileRectInclusive {
+        x_min: x_min as u32,
+        x_max: x_max as u32,
+        y_min: y_min as u32,
+        y_max: y_max as u32,
+    })
 }
 
 fn tile_sprite_key(tile_id: u16) -> Option<&'static str> {
@@ -579,6 +712,155 @@ mod tests {
     }
 
     #[test]
+    fn view_bounds_world_centered_camera_expands_with_padding() {
+        let camera = Camera2D::default();
+        let bounds = view_bounds_world(&camera, (64, 64), 16.0);
+        let expected_half_world = 64.0 / (2.0 * crate::app::PIXELS_PER_WORLD);
+        let expected_padding_world = 16.0 / crate::app::PIXELS_PER_WORLD;
+        let expected_extent = expected_half_world + expected_padding_world;
+
+        assert!((bounds.min_x + expected_extent).abs() < 0.0001);
+        assert!((bounds.max_x - expected_extent).abs() < 0.0001);
+        assert!((bounds.min_y + expected_extent).abs() < 0.0001);
+        assert!((bounds.max_y - expected_extent).abs() < 0.0001);
+    }
+
+    #[test]
+    fn view_bounds_world_handles_negative_camera_and_zoom() {
+        let camera = Camera2D {
+            position: Vec2 { x: -10.0, y: -5.0 },
+            zoom: 2.0,
+        };
+        let bounds = view_bounds_world(&camera, (128, 64), VIEW_CULL_PADDING_PX);
+        assert!(bounds.min_x < -10.0);
+        assert!(bounds.max_x > -10.0);
+        assert!(bounds.min_y < -5.0);
+        assert!(bounds.max_y > -5.0);
+    }
+
+    #[test]
+    fn view_bounds_world_tiny_viewport_is_finite_and_safe() {
+        let camera = Camera2D::default();
+        let bounds = view_bounds_world(&camera, (1, 1), VIEW_CULL_PADDING_PX);
+        assert!(bounds.min_x.is_finite());
+        assert!(bounds.max_x.is_finite());
+        assert!(bounds.min_y.is_finite());
+        assert!(bounds.max_y.is_finite());
+        assert!(bounds.min_x <= bounds.max_x);
+        assert!(bounds.min_y <= bounds.max_y);
+    }
+
+    #[test]
+    fn point_radius_visibility_handles_negative_coords() {
+        let bounds = WorldBounds {
+            min_x: -2.0,
+            max_x: 2.0,
+            min_y: -2.0,
+            max_y: 2.0,
+        };
+
+        assert!(bounds_intersects_point_radius(
+            &bounds,
+            Vec2 { x: -2.1, y: 0.0 },
+            0.2
+        ));
+        assert!(!bounds_intersects_point_radius(
+            &bounds,
+            Vec2 { x: -2.3, y: 0.0 },
+            0.2
+        ));
+    }
+
+    #[test]
+    fn visible_tile_rect_matches_floor_ceil_minus_one_formula() {
+        let tilemap =
+            Tilemap::new(10, 10, Vec2 { x: 3.0, y: -2.0 }, vec![0; 100]).expect("tilemap");
+        let bounds = WorldBounds {
+            min_x: 4.2,
+            max_x: 6.1,
+            min_y: -0.8,
+            max_y: 1.01,
+        };
+        let rect = visible_tile_rect(&tilemap, &bounds).expect("rect");
+        assert_eq!(
+            rect,
+            TileRectInclusive {
+                x_min: 1,
+                x_max: 3,
+                y_min: 1,
+                y_max: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn visible_tile_rect_handles_negative_origin_and_coords() {
+        let tilemap = Tilemap::new(8, 6, Vec2 { x: -5.0, y: -4.0 }, vec![0; 48]).expect("tilemap");
+        let bounds = WorldBounds {
+            min_x: -4.8,
+            max_x: -2.1,
+            min_y: -3.6,
+            max_y: -1.2,
+        };
+        let rect = visible_tile_rect(&tilemap, &bounds).expect("rect");
+        assert_eq!(
+            rect,
+            TileRectInclusive {
+                x_min: 0,
+                x_max: 2,
+                y_min: 0,
+                y_max: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn visible_tile_rect_clamps_inclusive_to_map_bounds() {
+        let tilemap = Tilemap::new(4, 3, Vec2 { x: 0.0, y: 0.0 }, vec![0; 12]).expect("tilemap");
+        let bounds = WorldBounds {
+            min_x: -100.0,
+            max_x: 100.0,
+            min_y: -100.0,
+            max_y: 100.0,
+        };
+        let rect = visible_tile_rect(&tilemap, &bounds).expect("rect");
+        assert_eq!(
+            rect,
+            TileRectInclusive {
+                x_min: 0,
+                x_max: 3,
+                y_min: 0,
+                y_max: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn visible_tile_rect_returns_none_when_fully_outside() {
+        let tilemap = Tilemap::new(4, 4, Vec2 { x: 0.0, y: 0.0 }, vec![0; 16]).expect("tilemap");
+        let bounds = WorldBounds {
+            min_x: 10.0,
+            max_x: 12.0,
+            min_y: 10.0,
+            max_y: 12.0,
+        };
+        assert!(visible_tile_rect(&tilemap, &bounds).is_none());
+    }
+
+    #[test]
+    fn visible_tile_rect_tiny_viewport_case_is_safe() {
+        let tilemap = Tilemap::new(2, 2, Vec2 { x: -1.0, y: -1.0 }, vec![0; 4]).expect("tilemap");
+        let camera = Camera2D {
+            position: Vec2 { x: -0.5, y: -0.5 },
+            ..Camera2D::default()
+        };
+        let bounds = view_bounds_world(&camera, (1, 1), VIEW_CULL_PADDING_PX);
+        let rect = visible_tile_rect(&tilemap, &bounds).expect("rect");
+        assert!(rect.x_min <= rect.x_max);
+        assert!(rect.y_min <= rect.y_max);
+    }
+
+    #[test]
     fn camera_pan_shifts_projected_grid_lines_consistently() {
         let camera_a = Camera2D {
             position: Vec2 { x: 0.0, y: 0.0 },
@@ -666,7 +948,8 @@ mod tests {
         world.set_hovered_interactable_visual(Some(EntityId(1000)));
 
         let mut frame = vec![0u8; 64 * 64 * 4];
-        draw_affordances(&mut frame, 64, 64, &world);
+        let bounds = view_bounds_world(world.camera(), (64, 64), VIEW_CULL_PADDING_PX);
+        draw_affordances(&mut frame, 64, 64, &world, &bounds);
         assert!(frame.iter().all(|byte| *byte == 0));
     }
 
@@ -680,7 +963,8 @@ mod tests {
         });
 
         let mut frame = vec![0u8; 64 * 64 * 4];
-        draw_affordances(&mut frame, 64, 64, &world);
+        let bounds = view_bounds_world(world.camera(), (64, 64), VIEW_CULL_PADDING_PX);
+        draw_affordances(&mut frame, 64, 64, &world, &bounds);
         assert!(frame.iter().any(|byte| *byte != 0));
     }
 }

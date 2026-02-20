@@ -810,3 +810,28 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Added startup config log event: `perf_budget_config` with normalized budget values and `consecutive_breach_frames`.
 - Added runtime warning event: `perf_budget_exceeded` including path (`sim`/`render`), threshold, current `last/avg/max`, and consecutive breach counts.
 - No runtime behavior changes beyond logging; no sim/render control flow changes.
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 27)
+- Renderer culling added in `crates/engine/src/app/rendering/renderer.rs` using one per-frame world bounds snapshot:
+  - `view_bounds_world(camera, window_size, padding_px)` computed once in `render_world`.
+  - Culling padding is applied by expanding view bounds from `16px` only.
+- Entity culling contract:
+  - fixed conservative radius in world tile units (`ENTITY_CULL_RADIUS_WORLD_TILES = 0.5`).
+  - padding is not added into entity radius.
+- Affordance culling added (selected actor, hovered interactable, order markers) against shared view bounds.
+- Tilemap culling contract:
+  - visible rect computed via floor/ceil-minus-one with inclusive clamping:
+    - `x_min = floor(min_x - origin.x)`
+    - `x_max = ceil(max_x - origin.x) - 1`
+    - `y_min = floor(min_y - origin.y)`
+    - `y_max = ceil(max_y - origin.y) - 1`
+  - then clamped to map bounds; `None` when no overlap.
+- Safety and correctness:
+  - negative coordinate cases covered.
+  - tiny viewport cases covered with finite-safe bounds math.
+- Added renderer unit tests for:
+  - view bounds math and tiny viewport safety
+  - tile visible-rect formula/clamping/outside-map handling
+  - point-radius culling behavior in negative coordinates
