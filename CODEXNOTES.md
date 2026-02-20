@@ -792,3 +792,21 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Added tests:
   - rolling window math and eviction/max behavior (`perf_stats.rs`)
   - overlay perf line formatting and updated layout/glyph coverage (`overlay.rs`).
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 26)
+- Added soft performance budget config fields to `LoopConfig` in `crates/engine/src/app/loop_runner.rs`:
+  - `sim_budget_ms: Option<f32>`
+  - `render_budget_ms: Option<f32>`
+  - default for both is `None` (disabled).
+- Budget normalization contract:
+  - only finite positive values are active budgets.
+  - `None`, `<= 0`, `NaN`, and `Infinity` are treated as disabled.
+- Added loop-owned consecutive breach gate logic:
+  - `SoftBudgetWarningGate` with fixed `K=3` consecutive breach threshold.
+  - breach condition is strict `last_ms > threshold_ms`.
+  - warning latches once per sustained streak and resets on recovery (`last_ms <= threshold_ms`).
+- Added startup config log event: `perf_budget_config` with normalized budget values and `consecutive_breach_frames`.
+- Added runtime warning event: `perf_budget_exceeded` including path (`sim`/`render`), threshold, current `last/avg/max`, and consecutive breach counts.
+- No runtime behavior changes beyond logging; no sim/render control flow changes.

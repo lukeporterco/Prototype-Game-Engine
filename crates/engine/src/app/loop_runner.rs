@@ -26,6 +26,7 @@ use super::{
 };
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
+const SOFT_BUDGET_CONSECUTIVE_BREACH_FRAMES: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct LoopConfig {
@@ -38,6 +39,8 @@ pub struct LoopConfig {
     pub metrics_log_interval: Duration,
     pub simulated_slow_frame_ms: u64,
     pub fps_cap: Option<u32>,
+    pub sim_budget_ms: Option<f32>,
+    pub render_budget_ms: Option<f32>,
     pub content_plan_request: ContentPlanRequest,
 }
 
@@ -53,6 +56,8 @@ impl Default for LoopConfig {
             metrics_log_interval: Duration::from_secs(1),
             simulated_slow_frame_ms: 0,
             fps_cap: None,
+            sim_budget_ms: None,
+            render_budget_ms: None,
             content_plan_request: ContentPlanRequest::default(),
         }
     }
@@ -129,6 +134,14 @@ pub fn run_app_with_metrics(
     let fixed_dt_seconds = fixed_dt.as_secs_f32();
     let slow_frame_delay = resolve_slow_frame_delay(config.simulated_slow_frame_ms);
     let effective_render_cap = normalize_render_fps_cap(config.fps_cap);
+    let sim_budget_ms = normalize_soft_budget_ms(config.sim_budget_ms);
+    let render_budget_ms = normalize_soft_budget_ms(config.render_budget_ms);
+    let mut sim_budget_gate = sim_budget_ms.map(|threshold| {
+        SoftBudgetWarningGate::new(threshold, SOFT_BUDGET_CONSECUTIVE_BREACH_FRAMES)
+    });
+    let mut render_budget_gate = render_budget_ms.map(|threshold| {
+        SoftBudgetWarningGate::new(threshold, SOFT_BUDGET_CONSECUTIVE_BREACH_FRAMES)
+    });
     let render_frame_target = target_frame_duration(effective_render_cap);
     let mut input_collector = InputCollector::new(config.window_width, config.window_height);
     scenes.set_def_database_for_all(def_database);
@@ -161,6 +174,12 @@ pub fn run_app_with_metrics(
         perf_stats_enabled_by_default = PerfStats::enabled_by_default(),
         perf_window_frames = PerfStats::window_len(),
         "perf_stats_config"
+    );
+    info!(
+        sim_budget_ms,
+        render_budget_ms,
+        consecutive_breach_frames = SOFT_BUDGET_CONSECUTIVE_BREACH_FRAMES,
+        "perf_budget_config"
     );
 
     event_loop
@@ -300,6 +319,13 @@ pub fn run_app_with_metrics(
                         let render_duration = render_timer_start.elapsed();
 
                         perf_stats.record_frame(sim_duration, render_duration);
+                        let perf_snapshot = perf_stats.snapshot();
+                        maybe_warn_budget_breach("sim", &mut sim_budget_gate, perf_snapshot.sim);
+                        maybe_warn_budget_breach(
+                            "render",
+                            &mut render_budget_gate,
+                            perf_snapshot.ren,
+                        );
 
                         if let Err(error) = render_result {
                             warn!(error = %error, "renderer_draw_failed");
@@ -652,6 +678,10 @@ fn normalize_render_fps_cap(cap: Option<u32>) -> Option<u32> {
     cap.filter(|value| *value > 0)
 }
 
+fn normalize_soft_budget_ms(budget_ms: Option<f32>) -> Option<f32> {
+    budget_ms.filter(|value| value.is_finite() && *value > 0.0)
+}
+
 fn target_frame_duration(fps_cap: Option<u32>) -> Option<Duration> {
     fps_cap.map(|fps| Duration::from_secs_f64(1.0 / fps as f64))
 }
@@ -668,6 +698,77 @@ fn format_render_cap(cap: Option<u32>) -> String {
         Some(value) => value.to_string(),
         None => "∞".to_string(),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SoftBudgetWarningGate {
+    threshold_ms: f32,
+    consecutive_required: u32,
+    consecutive_breaches: u32,
+    warned_in_current_streak: bool,
+}
+
+impl SoftBudgetWarningGate {
+    fn new(threshold_ms: f32, consecutive_required: u32) -> Self {
+        Self {
+            threshold_ms,
+            consecutive_required: consecutive_required.max(1),
+            consecutive_breaches: 0,
+            warned_in_current_streak: false,
+        }
+    }
+
+    fn record_and_maybe_trigger(&mut self, last_ms: f32) -> Option<BudgetBreachEvent> {
+        if last_ms > self.threshold_ms {
+            self.consecutive_breaches = self.consecutive_breaches.saturating_add(1);
+            if !self.warned_in_current_streak
+                && self.consecutive_breaches >= self.consecutive_required
+            {
+                self.warned_in_current_streak = true;
+                return Some(BudgetBreachEvent {
+                    threshold_ms: self.threshold_ms,
+                    consecutive_breaches: self.consecutive_breaches,
+                    consecutive_required: self.consecutive_required,
+                });
+            }
+            return None;
+        }
+
+        self.consecutive_breaches = 0;
+        self.warned_in_current_streak = false;
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BudgetBreachEvent {
+    threshold_ms: f32,
+    consecutive_breaches: u32,
+    consecutive_required: u32,
+}
+
+fn maybe_warn_budget_breach(
+    path: &'static str,
+    gate: &mut Option<SoftBudgetWarningGate>,
+    stats: super::tools::RollingMsStats,
+) {
+    let Some(active_gate) = gate.as_mut() else {
+        return;
+    };
+    let Some(event) = active_gate.record_and_maybe_trigger(stats.last_ms) else {
+        return;
+    };
+
+    warn!(
+        path,
+        threshold_ms = event.threshold_ms,
+        consecutive_breaches = event.consecutive_breaches,
+        consecutive_required = event.consecutive_required,
+        last_ms = stats.last_ms,
+        avg_ms = stats.avg_ms,
+        max_ms = stats.max_ms,
+        "perf_budget_exceeded"
+    );
 }
 
 fn resolve_slow_frame_delay(config_slow_frame_ms: u64) -> Duration {
@@ -1046,5 +1147,79 @@ mod tests {
     fn format_render_cap_uses_infinity_when_uncapped() {
         assert_eq!(format_render_cap(None), "∞");
         assert_eq!(format_render_cap(Some(60)), "60");
+    }
+
+    #[test]
+    fn no_trigger_before_k_consecutive_breaches() {
+        let mut gate = SoftBudgetWarningGate::new(5.0, 3);
+
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.5).is_none());
+    }
+
+    #[test]
+    fn triggers_on_exact_kth_breach() {
+        let mut gate = SoftBudgetWarningGate::new(5.0, 3);
+
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        let event = gate.record_and_maybe_trigger(6.0).expect("trigger event");
+        assert_eq!(event.consecutive_breaches, 3);
+        assert_eq!(event.consecutive_required, 3);
+    }
+
+    #[test]
+    fn single_spike_then_recovery_does_not_trigger() {
+        let mut gate = SoftBudgetWarningGate::new(5.0, 3);
+
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(4.9).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+    }
+
+    #[test]
+    fn warning_latches_within_same_streak() {
+        let mut gate = SoftBudgetWarningGate::new(5.0, 3);
+
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_some());
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+    }
+
+    #[test]
+    fn recovery_resets_latch_and_allows_future_warning() {
+        let mut gate = SoftBudgetWarningGate::new(5.0, 3);
+
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_some());
+
+        assert!(gate.record_and_maybe_trigger(4.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_none());
+        assert!(gate.record_and_maybe_trigger(6.0).is_some());
+    }
+
+    #[test]
+    fn at_or_below_threshold_not_counted_as_breach() {
+        let mut gate = SoftBudgetWarningGate::new(5.0, 3);
+
+        assert!(gate.record_and_maybe_trigger(5.0).is_none());
+        assert!(gate.record_and_maybe_trigger(5.0).is_none());
+        assert!(gate.record_and_maybe_trigger(5.1).is_none());
+        assert!(gate.record_and_maybe_trigger(5.1).is_none());
+    }
+
+    #[test]
+    fn normalize_soft_budget_disables_none_and_non_positive() {
+        assert_eq!(normalize_soft_budget_ms(None), None);
+        assert_eq!(normalize_soft_budget_ms(Some(0.0)), None);
+        assert_eq!(normalize_soft_budget_ms(Some(-1.0)), None);
+        assert_eq!(normalize_soft_budget_ms(Some(f32::NAN)), None);
+        assert_eq!(normalize_soft_budget_ms(Some(f32::INFINITY)), None);
+        assert_eq!(normalize_soft_budget_ms(Some(4.0)), Some(4.0));
     }
 }
