@@ -116,7 +116,6 @@ Answer yes/no and include mitigation if any risk is “yes”:
 - Full ECS frameworks
 - Multithreaded simulation or job system
 - Complex mod patch language / inheritance systems
-- Save/load system
 - Networking
 - Advanced rendering features (lighting, animation pipelines)
 - Editors and tool UIs beyond the debug overlay
@@ -128,3 +127,39 @@ A ticket is done when:
 - Any added tests pass
 - VERIFICATION commands in the ticket were run and passed
 - CODEXNOTES.md is updated if a decision, interface, file path convention, performance rule, or pitfall was discovered
+
+## CODEXNOTES.md vs CODEXNOTES_ARCHIVE.md (Separation and Usage)
+
+Purpose and scope
+- `CODEXNOTES.md` is the living context file. It must stay short, current, and immediately useful for implementing the next tickets.
+- `CODEXNOTES_ARCHIVE.md` is historical record. It stores older ticket logs and superseded decisions so the main file does not become noisy.
+
+What belongs in CODEXNOTES.md
+Keep only information that is actively needed to make correct changes right now:
+- Locked decisions that are still in force
+- Current milestone and next-ticket queue
+- Current module map (who owns what)
+- Active data contracts and interfaces (only the latest versions)
+- Active performance rules of thumb
+- Current known issues / pitfalls that still apply
+- References to where things live (file paths, key functions), kept concise
+
+What belongs in CODEXNOTES_ARCHIVE.md
+Move anything that is not needed for near-term work:
+- Completed ticket-by-ticket logs after they’re no longer relevant
+- Deprecated or replaced decisions (keep them for history, but marked deprecated)
+- Old interface versions and old schema versions that are no longer supported
+- One-off investigations and debugging timelines that are solved
+
+When to use each file
+- Read `CODEXNOTES.md` first before any implementation work. Treat it as current truth.
+- Consult `CODEXNOTES_ARCHIVE.md` only when you need history:
+  - Why a decision was made
+  - How an interface evolved
+  - Tracking regressions to an earlier change
+  - Recovering a previously removed approach
+
+Update rules (mandatory)
+- After each ticket, update `CODEXNOTES.md` only with net-new, still-relevant context: decisions, contracts, file paths, pitfalls.
+- If an update would add more than a short set of bullets or it is primarily historical detail, put it in `CODEXNOTES_ARCHIVE.md` and add a brief pointer from `CODEXNOTES.md` (one or two bullets) explaining what moved and why.
+- If you revise an existing note, prefer marking the old one as deprecated and moving the deprecated detail into `CODEXNOTES_ARCHIVE.md`, keeping `CODEXNOTES.md` clean.
