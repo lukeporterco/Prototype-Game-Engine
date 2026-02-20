@@ -771,3 +771,24 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - removed stale `Box::leak` window-lifetime note
   - updated save/load references from index-based v0 wording to stable save-id v3 wording
   - updated FPS cap naming to `LoopConfig.fps_cap` and uncapped display/log to `∞`.
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 25)
+- Added engine-owned perf counters in `crates/engine/src/app/tools/perf_stats.rs`:
+  - `PerfStats` (always-on internally for MVP)
+  - `PerfStatsSnapshot { sim, ren }`
+  - `RollingMsStats { last_ms, avg_ms, max_ms }`
+  - fixed rolling window size: 120 samples, O(1) push with running-sum average over current sample count only.
+- Loop timing boundaries are explicit in `crates/engine/src/app/loop_runner.rs` comments:
+  - `sim_ms`: starts immediately before fixed-step tick loop; ends after tick work + scene switch handling + backlog clamp handling.
+  - `render_ms`: starts immediately before `scenes.render_active()`; ends immediately after `renderer.render_world(...)` returns.
+  - `render_ms` excludes FPS cap sleep and non-render housekeeping.
+- Overlay integration in `crates/engine/src/app/tools/overlay.rs`:
+  - New compact lines: `SIM l/a/m` and `REN l/a/m` with `x.xx/x.xx/x.xx ms` formatting.
+  - Perf snapshot is only read/passed when overlay is visible (`OverlayData` construction remains gated by `overlay_visible.then(...)`).
+- Startup logging now emits one line for perf default config (`perf_stats_config`).
+- Glyph set expanded minimally for uppercase `M`, `N`, `R` to support `SIM/REN` labels.
+- Added tests:
+  - rolling window math and eviction/max behavior (`perf_stats.rs`)
+  - overlay perf line formatting and updated layout/glyph coverage (`overlay.rs`).

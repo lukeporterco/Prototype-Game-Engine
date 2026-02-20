@@ -18,4 +18,4 @@ pub use scene::{
     SceneCommand, SceneKey, SceneVisualState, SceneWorld, Tilemap, TilemapError, Transform, Vec2,
     CAMERA_ZOOM_DEFAULT, CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN, CAMERA_ZOOM_STEP,
 };
-pub(crate) use tools::OverlayData;
+pub(crate) use tools::{OverlayData, PerfStats};

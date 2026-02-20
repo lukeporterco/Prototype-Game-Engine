@@ -21,7 +21,8 @@ use crate::{
 use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
 use super::{
-    InputAction, InputSnapshot, MetricsHandle, OverlayData, Renderer, Scene, SceneCommand, SceneKey,
+    InputAction, InputSnapshot, MetricsHandle, OverlayData, PerfStats, Renderer, Scene,
+    SceneCommand, SceneKey,
 };
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
@@ -153,8 +154,14 @@ pub fn run_app_with_metrics(
     let mut last_frame_instant = Instant::now();
     let mut last_present_instant = Instant::now();
     let mut metrics_accumulator = MetricsAccumulator::new(metrics_log_interval);
+    let mut perf_stats = PerfStats::new();
     let mut last_applied_title: Option<String> = None;
     let mut overlay_visible = true;
+    info!(
+        perf_stats_enabled_by_default = PerfStats::enabled_by_default(),
+        perf_window_frames = PerfStats::window_len(),
+        "perf_stats_config"
+    );
 
     event_loop
         .run(move |event, window_target| match event {
@@ -219,6 +226,9 @@ pub fn run_app_with_metrics(
                         accumulator = accumulator.saturating_add(clamped_frame_dt);
 
                         let step_plan = plan_sim_steps(accumulator, fixed_dt, max_ticks_per_frame);
+                        // sim_ms boundary start:
+                        // starts immediately before the fixed-step tick loop for this frame.
+                        let sim_timer_start = Instant::now();
                         for _ in 0..step_plan.ticks_to_run {
                             let input_snapshot = input_collector.snapshot_for_tick();
                             let command = scenes.update_active(fixed_dt_seconds, &input_snapshot);
@@ -249,6 +259,11 @@ pub fn run_app_with_metrics(
                                 max_ticks_per_frame, "sim_clamp_triggered"
                             );
                         }
+                        // sim_ms boundary end:
+                        // ends immediately after all tick work, scene switch handling,
+                        // and sim backlog clamp handling are complete.
+                        // Excludes cap sleep and all render work.
+                        let sim_duration = sim_timer_start.elapsed();
 
                         // Single authoritative FPS cap sleep point for render pacing.
                         let elapsed_since_last_present =
@@ -259,9 +274,9 @@ pub fn run_app_with_metrics(
                             thread::sleep(cap_sleep);
                         }
 
-                        scenes.render_active();
                         let overlay = overlay_visible.then(|| OverlayData {
                             metrics: metrics_handle.snapshot(),
+                            perf: perf_stats.snapshot(),
                             render_fps_cap: effective_render_cap,
                             slow_frame_delay_ms: slow_frame_delay.as_millis() as u64,
                             entity_count: scenes.active_world().entity_count(),
@@ -271,9 +286,22 @@ pub fn run_app_with_metrics(
                             resource_count: scenes.debug_resource_count_active(),
                             debug_info: scenes.debug_info_snapshot_active(),
                         });
-                        if let Err(error) =
-                            renderer.render_world(scenes.active_world(), overlay.as_ref())
-                        {
+
+                        // render_ms boundary start:
+                        // starts immediately before scene render preparation.
+                        // Excludes cap sleep and non-render loop housekeeping.
+                        let render_timer_start = Instant::now();
+                        scenes.render_active();
+                        let render_result =
+                            renderer.render_world(scenes.active_world(), overlay.as_ref());
+                        // render_ms boundary end:
+                        // ends immediately after renderer.render_world returns.
+                        // Includes scenes.render_active + renderer.render_world only.
+                        let render_duration = render_timer_start.elapsed();
+
+                        perf_stats.record_frame(sim_duration, render_duration);
+
+                        if let Err(error) = render_result {
                             warn!(error = %error, "renderer_draw_failed");
                             window_target.exit();
                         }

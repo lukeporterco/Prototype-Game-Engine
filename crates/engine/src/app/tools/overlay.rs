@@ -1,5 +1,7 @@
 use crate::app::{DebugInfoSnapshot, DebugJobState, EntityId, LoopMetricsSnapshot};
 
+use super::PerfStatsSnapshot;
+
 const GLYPH_WIDTH: i32 = 3;
 const GLYPH_HEIGHT: i32 = 5;
 const TEXT_SCALE: i32 = 3;
@@ -11,6 +13,7 @@ const OVERLAY_COLOR: [u8; 4] = [230, 240, 180, 255];
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OverlayData {
     pub metrics: LoopMetricsSnapshot,
+    pub perf: PerfStatsSnapshot,
     pub render_fps_cap: Option<u32>,
     pub slow_frame_delay_ms: u64,
     pub entity_count: usize,
@@ -52,6 +55,8 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
         ),
         format!("TPS: {:.1}", data.metrics.tps),
         format!("Frame: {:.2} ms", data.metrics.frame_time_ms),
+        format_perf_line("SIM", data.perf.sim),
+        format_perf_line("REN", data.perf.ren),
         format!("Entities: {}", data.entity_count),
         format!("Content: {}", data.content_status),
         match data.selected_entity {
@@ -103,6 +108,13 @@ fn format_fps_line(current_fps: f32, cap: Option<u32>, slow_frame_delay_ms: u64)
     format!(
         "[{:.0} / {}] dbg+{}ms",
         current_fps, cap_text, slow_frame_delay_ms
+    )
+}
+
+fn format_perf_line(label: &str, stats: super::RollingMsStats) -> String {
+    format!(
+        "{} l/a/m: {:.2}/{:.2}/{:.2} ms",
+        label, stats.last_ms, stats.avg_ms, stats.max_ms
     )
 }
 
@@ -306,6 +318,15 @@ fn glyph_for(ch: char) -> Option<Glyph> {
         'I' => Glyph {
             rows: [0b111, 0b010, 0b010, 0b010, 0b111],
         },
+        'M' => Glyph {
+            rows: [0b101, 0b111, 0b111, 0b101, 0b101],
+        },
+        'N' => Glyph {
+            rows: [0b101, 0b111, 0b111, 0b111, 0b101],
+        },
+        'R' => Glyph {
+            rows: [0b110, 0b101, 0b110, 0b101, 0b101],
+        },
         'p' => Glyph {
             rows: [0b000, 0b110, 0b101, 0b110, 0b100],
         },
@@ -362,7 +383,7 @@ mod tests {
         let required: HashSet<char> = [
             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.', ':', ' ', '-', 'F', 'P', 'S',
             'T', 'r', 'a', 'm', 'e', 'E', 'f', 'n', 't', 'i', 's', 'C', 'o', 'l', 'd', 'S', 'g',
-            ',', 'I', 'p', 'c', 'j', 'b', 'w', 'k', '/', '[', ']', '+',
+            ',', 'I', 'M', 'N', 'R', 'p', 'c', 'j', 'b', 'w', 'k', '/', '[', ']', '+',
         ]
         .into_iter()
         .collect();
@@ -415,6 +436,7 @@ mod tests {
     fn inspect_block_lines_follow_scaled_layout() {
         let data = OverlayData {
             metrics: LoopMetricsSnapshot::default(),
+            perf: PerfStatsSnapshot::default(),
             render_fps_cap: Some(240),
             slow_frame_delay_ms: 0,
             entity_count: 3,
@@ -436,11 +458,11 @@ mod tests {
             }),
         };
         let lines = build_overlay_lines(&data);
-        assert_eq!(lines.len(), 14);
-        assert_eq!(lines[8], "Inspect");
+        assert_eq!(lines.len(), 16);
+        assert_eq!(lines[10], "Inspect");
         assert_eq!(
             OVERLAY_PADDING + (lines.len() as i32 - 1) * LINE_ADVANCE,
-            291
+            333
         );
     }
 
@@ -454,5 +476,18 @@ mod tests {
     fn fps_line_formats_cap_off_with_infinity_text() {
         let line = format_fps_line(144.4, None, 0);
         assert_eq!(line, "[144 / ∞] dbg+0ms");
+    }
+
+    #[test]
+    fn perf_line_formats_last_avg_max() {
+        let line = format_perf_line(
+            "SIM",
+            super::super::RollingMsStats {
+                last_ms: 1.25,
+                avg_ms: 2.5,
+                max_ms: 5.75,
+            },
+        );
+        assert_eq!(line, "SIM l/a/m: 1.25/2.50/5.75 ms");
     }
 }
