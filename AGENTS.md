@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Project
-Proto GE: a prototype-first Rust game engine + colony-sim vertical slice (RimWorld-inspired).
+Proto GE: a prototype-first Rust game engine + colony-sim vertical slice (RimWorld-inspired).  
 Primary goals: ship a playable vertical slice fast, keep seams clean, and optimize for low-end PCs through architecture (not premature complexity).
 
 ## Roles
@@ -10,13 +10,13 @@ Primary goals: ship a playable vertical slice fast, keep seams clean, and optimi
 - Human: chooses priorities, runs builds/tests, resolves product decisions.
 
 ## North Star (Vertical Slice)
-1) Launch engine (window + loop)
-2) Load a scene
-3) Spawn a few entities with transforms
-4) Player input moves something
-5) Camera renders it
-6) Debug overlay (FPS, TPS, counts)
-7) Clean quit
+1) Launch engine (window + loop)  
+2) Load a scene  
+3) Spawn a few entities with transforms  
+4) Player input moves something  
+5) Camera renders it  
+6) Debug overlay (FPS, TPS, counts)  
+7) Clean quit  
 
 Everything else is optional until this works.
 
@@ -38,8 +38,25 @@ Everything else is optional until this works.
 - Keep code modular by module responsibility (App/Loop, Scene, Rendering, Assets, Input, Tools).
 - Prefer clear, explicit data structures over clever abstractions.
 
+## Repo-first workflow (Required)
+Before implementing any ticket, Codex must inspect repo reality and use it as the primary source of truth.
+
+Inspect first, in this order:
+1) Rules and overview
+- AGENTS.md
+- CODEXNOTES.md
+- README.md and docs/ (if present)
+
+2) Build, dependency, and run commands
+- Build system entry points (Cargo.toml, build scripts, CI workflows, and similar)
+
+3) Relevant source areas
+- src/, engine/, runtime/, tools/, tests/ (or closest equivalents)
+
+If anything is unclear, Codex must report what it found and propose a minimal plan before editing code.
+
 ## CODEXNOTES.md (Living Context)
-Codex may read and update `CODEXNOTES.md` to preserve structured context across threads.
+Codex may read and update `CODEXNOTES.md` to preserve structured context across threads.  
 Rules for editing:
 - Append-only by default; if you revise, keep prior decisions and mark them as deprecated instead of deleting.
 - Use concise bullet points and headings.
@@ -56,14 +73,44 @@ Suggested sections inside CODEXNOTES.md:
 - Known issues / TODO
 
 ## Ticket Format
-When implementing work, follow the ticket’s “CODEX INPUT” section only.
+When implementing work, follow the ticket’s “CODEX INPUT” section only.  
 If there is a “NOTES” section, treat it as guidance and constraints, not extra scope.
+
+### Required per-ticket sections (Non-negotiable)
+Every CODEX INPUT must include these subsections.
+
+DO NOT (mandatory)
+- Collateral edits forbidden.
+- No broad refactors.
+- No formatting-only changes.
+- No renames unless required by the ticket.
+- Do not touch files outside the allowed list (or outside the minimal set of files required for the ticket).
+- Do not introduce new dependencies unless the ticket explicitly requires it and you update manifests accordingly.
+
+VERIFICATION (mandatory)
+- Provide concrete commands to run (build, test, lint or fmt if applicable).
+- Include expected outcomes.
+- If commands are unknown, discover the correct commands from build files and CI configs before implementation.
+- If verification fails, fix and re-run until passing.
 
 ## How to Work (Codex Operating Rules)
 - Before editing: restate the ticket goal and list the files you expect to touch.
 - Implement the smallest version that satisfies acceptance criteria.
 - Prefer adding a minimal test or smoke check when feasible.
 - When blocked: write a short note in CODEXNOTES.md describing what you found, what you tried, and the next step.
+
+### Implementation behavior rules (Anti-slop)
+- No guessing: do not silently assume architecture, file locations, commands, or dependencies. If repo inspection does not resolve a question, pick the safest minimal path and state the assumption clearly in the ticket or CODEXNOTES.md.
+- No “catfish code”: do not produce code that looks plausible but is not wired into real project structure, real build steps, or real runtime behavior.
+- Small, verifiable steps: implement the smallest working slice first, verify, then extend. Do not attempt large end-to-end builds in one step.
+
+### Architecture invariants checklist (Required for any non-trivial change)
+Answer yes/no and include mitigation if any risk is “yes”:
+- Does this introduce new global state or singletons?
+- Does this change dependency direction (engine depending on game, engine depending on tools)?
+- Does this require cross-module knowledge that breaks boundaries?
+- Is the seam demonstrably extensible or swappable without editing unrelated modules?
+- Can it be verified without manual guesswork?
 
 ## Hard Cuts (Do Not Add Yet)
 - Full ECS frameworks
@@ -79,11 +126,5 @@ A ticket is done when:
 - Acceptance criteria are met
 - Build/run succeeds
 - Any added tests pass
-- CODEXNOTES.md is updated if a decision, interface, or pitfall was discovered
-
-
-## GPTContext.md
-- I don't want you to touch GPTContext.md EVER -unless I give explicit instructions to update it.
-- Fill up GPTContext.md with EVERYTHING my ChatGPT project might want/need as context with both the current project and future planning. Be verbose.
-- Use clean format that's easily read by ChatGPT.
-- If explicitly prompted to update, but there's currently content within it, don't be afraid to completely rewrite, as long as it maintains consistently accurate context.
+- VERIFICATION commands in the ticket were run and passed
+- CODEXNOTES.md is updated if a decision, interface, file path convention, performance rule, or pitfall was discovered
