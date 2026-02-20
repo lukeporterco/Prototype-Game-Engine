@@ -760,3 +760,14 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - startup `loop_config` cap logging also renders uncapped as `∞`
 - Hotfix 16.1 naming superseded:
   - previous field name `LoopConfig.max_render_fps` is deprecated by this ticket and removed from runtime config API.
+
+---
+
+## Ticket Notes (2026-02-20, Docs Sync)
+- Documentation drift cleanup completed for current runtime baseline:
+  - `docs/PROTOGE_INFRASTRUCTURE_REFERENCE.md` rewritten to reflect Tickets 0-24 contracts and current runtime ownership/seams.
+  - `README.md` refreshed to match current controls/features and to point deeper details to the infrastructure reference.
+- Key doc corrections:
+  - removed stale `Box::leak` window-lifetime note
+  - updated save/load references from index-based v0 wording to stable save-id v3 wording
+  - updated FPS cap naming to `LoopConfig.fps_cap` and uncapped display/log to `∞`.
