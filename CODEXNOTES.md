@@ -914,3 +914,35 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - `determinism_script_interact_work_despawn_digest_matches_replay`
 - Interactable completion assertion is target-specific:
   - interact determinism test asserts despawn by checking the spawned target’s `target_save_id` is absent from the final digest entity list.
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 30)
+- Save/load v3 robustness polish implemented in `crates/game/src/main.rs` with no schema/version changes.
+- Parse-stage diagnostics now include JSON field paths:
+  - added `GameplayScene::parse_save_game_json(raw)` using `serde_path_to_error` + `serde_json::Deserializer`.
+  - parse errors now report `parse save json at <path>: <reason>` when a path is available.
+- Validation diagnostics standardized with explicit field paths:
+  - helper formatting methods:
+    - `validation_err(path, message)`
+    - `expected_actual(path, expected, actual)`
+  - key validations now report paths such as:
+    - `save_version`, `scene_key`, `camera_position.x`, `camera_zoom`, `next_save_id`
+    - `entities[i].save_id`
+    - `entities[i].interaction_target_save_id`
+    - `entities[i].job_state.target_save_id`
+- Added finite/number-sanity validation before any world mutation:
+  - top-level: `camera_position.{x,y}`, `camera_zoom` must be finite.
+  - per-entity: `position.{x,y}`, optional `rotation_radians`, optional `move_target_world.{x,y}` finite.
+  - working jobs: `remaining_time` finite and `>= 0`.
+  - interactable runtime: `interaction_radius` finite and `>= 0`.
+- Validation-first restore rule remains:
+  - stale save-id references (selected/player/interaction/job target) are rejected in `validate_save_game` before `apply_save_game`.
+  - `apply_save_game` behavior remains unchanged and still assumes validated input.
+- Camera restore behavior unchanged by design:
+  - zoom still restored via `set_zoom_clamped`.
+  - finite camera position now explicitly required during validation.
+- Test coverage added for Ticket 30:
+  - parse diagnostics for missing required field, unknown enum tag, and type mismatch with path assertions.
+  - validation diagnostics for dangling references, non-finite/invalid numbers, and invalid `next_save_id` messages.
+  - no-partial-mutation guard test confirms parse/validation failures do not mutate scene/world runtime state.

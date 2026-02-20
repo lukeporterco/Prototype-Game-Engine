@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 use std::fs;
 use std::path::PathBuf;
 
@@ -270,67 +271,199 @@ impl GameplayScene {
         let path = self.save_file_path()?;
         let raw = fs::read_to_string(&path)
             .map_err(|error| format!("read save '{}': {error}", path.display()))?;
-        let save: SaveGame =
-            serde_json::from_str(&raw).map_err(|error| format!("parse save json: {error}"))?;
+        let save = Self::parse_save_game_json(&raw)?;
         Self::validate_save_game(&save, expected_scene)?;
         Ok(save)
     }
 
+    fn parse_save_game_json(raw: &str) -> SaveLoadResult<SaveGame> {
+        let mut deserializer = serde_json::Deserializer::from_str(raw);
+        match serde_path_to_error::deserialize::<_, SaveGame>(&mut deserializer) {
+            Ok(save) => Ok(save),
+            Err(error) => {
+                let path = error.path().to_string();
+                let source = error.into_inner();
+                if path.is_empty() || path == "." {
+                    Err(format!("parse save json: {source}"))
+                } else {
+                    Err(format!("parse save json at {path}: {source}"))
+                }
+            }
+        }
+    }
+
+    fn validation_err(path: &str, message: impl Into<String>) -> String {
+        format!("validation failed at {path}: {}", message.into())
+    }
+
+    fn expected_actual(path: &str, expected: impl Display, actual: impl Display) -> String {
+        Self::validation_err(path, format!("expected {expected}, got {actual}"))
+    }
+
     fn validate_save_game(save: &SaveGame, expected_scene: SavedSceneKey) -> SaveLoadResult<()> {
         if save.save_version != SAVE_VERSION {
-            return Err(format!(
-                "save version mismatch: expected {}, got {}",
-                SAVE_VERSION, save.save_version
+            return Err(Self::expected_actual(
+                "save_version",
+                SAVE_VERSION,
+                save.save_version,
             ));
         }
         if save.scene_key != expected_scene {
-            return Err(format!(
-                "save scene mismatch: expected {:?}, got {:?}",
-                expected_scene, save.scene_key
+            return Err(Self::expected_actual(
+                "scene_key",
+                format!("{expected_scene:?}"),
+                format!("{:?}", save.scene_key),
+            ));
+        }
+        if !save.camera_position.x.is_finite() {
+            return Err(Self::expected_actual(
+                "camera_position.x",
+                "finite number",
+                save.camera_position.x,
+            ));
+        }
+        if !save.camera_position.y.is_finite() {
+            return Err(Self::expected_actual(
+                "camera_position.y",
+                "finite number",
+                save.camera_position.y,
             ));
         }
         if !save.camera_zoom.is_finite() {
-            return Err("invalid camera zoom: non-finite".to_string());
+            return Err(Self::expected_actual(
+                "camera_zoom",
+                "finite number",
+                save.camera_zoom,
+            ));
         }
 
-        let mut known_save_ids = HashSet::with_capacity(save.entities.len());
-        for entity in &save.entities {
-            if !known_save_ids.insert(entity.save_id) {
-                return Err(format!("duplicate entity save_id {}", entity.save_id));
+        let mut known_save_ids = HashMap::with_capacity(save.entities.len());
+        for (index, entity) in save.entities.iter().enumerate() {
+            let save_id_path = format!("entities[{index}].save_id");
+            if let Some(first_index) = known_save_ids.insert(entity.save_id, index) {
+                return Err(Self::validation_err(
+                    &save_id_path,
+                    format!(
+                        "duplicate save_id {} (first seen at entities[{first_index}].save_id)",
+                        entity.save_id
+                    ),
+                ));
+            }
+
+            let pos_x_path = format!("entities[{index}].position.x");
+            let pos_y_path = format!("entities[{index}].position.y");
+            if !entity.position.x.is_finite() {
+                return Err(Self::expected_actual(
+                    &pos_x_path,
+                    "finite number",
+                    entity.position.x,
+                ));
+            }
+            if !entity.position.y.is_finite() {
+                return Err(Self::expected_actual(
+                    &pos_y_path,
+                    "finite number",
+                    entity.position.y,
+                ));
+            }
+
+            if let Some(rotation_radians) = entity.rotation_radians {
+                let path = format!("entities[{index}].rotation_radians");
+                if !rotation_radians.is_finite() {
+                    return Err(Self::expected_actual(
+                        &path,
+                        "finite number",
+                        rotation_radians,
+                    ));
+                }
+            }
+
+            if let Some(move_target_world) = entity.move_target_world {
+                let move_x_path = format!("entities[{index}].move_target_world.x");
+                let move_y_path = format!("entities[{index}].move_target_world.y");
+                if !move_target_world.x.is_finite() {
+                    return Err(Self::expected_actual(
+                        &move_x_path,
+                        "finite number",
+                        move_target_world.x,
+                    ));
+                }
+                if !move_target_world.y.is_finite() {
+                    return Err(Self::expected_actual(
+                        &move_y_path,
+                        "finite number",
+                        move_target_world.y,
+                    ));
+                }
+            }
+
+            if let Some(interactable) = entity.interactable {
+                let radius_path = format!("entities[{index}].interactable.interaction_radius");
+                if !interactable.interaction_radius.is_finite() {
+                    return Err(Self::expected_actual(
+                        &radius_path,
+                        "finite number",
+                        interactable.interaction_radius,
+                    ));
+                }
+                if interactable.interaction_radius < 0.0 {
+                    return Err(Self::expected_actual(
+                        &radius_path,
+                        ">= 0",
+                        interactable.interaction_radius,
+                    ));
+                }
+            }
+
+            if let SavedJobState::Working { remaining_time, .. } = entity.job_state {
+                let path = format!("entities[{index}].job_state.remaining_time");
+                if !remaining_time.is_finite() {
+                    return Err(Self::expected_actual(
+                        &path,
+                        "finite number",
+                        remaining_time,
+                    ));
+                }
+                if remaining_time < 0.0 {
+                    return Err(Self::expected_actual(&path, ">= 0", remaining_time));
+                }
             }
         }
+        let known_save_ids = known_save_ids.keys().copied().collect::<HashSet<_>>();
 
         if let Some(selected_save_id) = save.selected_entity_save_id {
             if !known_save_ids.contains(&selected_save_id) {
-                return Err(format!(
-                    "invalid selected_entity_save_id {}: no matching entity",
-                    selected_save_id
+                return Err(Self::validation_err(
+                    "selected_entity_save_id",
+                    format!("references unknown save_id {selected_save_id}"),
                 ));
             }
         }
         if let Some(player_save_id) = save.player_entity_save_id {
             if !known_save_ids.contains(&player_save_id) {
-                return Err(format!(
-                    "invalid player_entity_save_id {}: no matching entity",
-                    player_save_id
+                return Err(Self::validation_err(
+                    "player_entity_save_id",
+                    format!("references unknown save_id {player_save_id}"),
                 ));
             }
         }
 
-        for entity in &save.entities {
+        for (index, entity) in save.entities.iter().enumerate() {
             if let Some(target_save_id) = entity.interaction_target_save_id {
                 if !known_save_ids.contains(&target_save_id) {
-                    return Err(format!(
-                        "invalid interaction_target_save_id {} on entity save_id {}",
-                        target_save_id, entity.save_id
+                    let path = format!("entities[{index}].interaction_target_save_id");
+                    return Err(Self::validation_err(
+                        &path,
+                        format!("references unknown save_id {target_save_id}"),
                     ));
                 }
             }
             if let SavedJobState::Working { target_save_id, .. } = entity.job_state {
                 if !known_save_ids.contains(&target_save_id) {
-                    return Err(format!(
-                        "invalid job target_save_id {} on entity save_id {}",
-                        target_save_id, entity.save_id
+                    let path = format!("entities[{index}].job_state.target_save_id");
+                    return Err(Self::validation_err(
+                        &path,
+                        format!("references unknown save_id {target_save_id}"),
                     ));
                 }
             }
@@ -339,18 +472,18 @@ impl GameplayScene {
         match save.entities.iter().map(|entity| entity.save_id).max() {
             Some(max_used_save_id) => {
                 if save.next_save_id <= max_used_save_id {
-                    return Err(format!(
-                        "invalid next_save_id {}: must be greater than max used save_id {}",
-                        save.next_save_id, max_used_save_id
+                    return Err(Self::validation_err(
+                        "next_save_id",
+                        format!(
+                            "expected value greater than max used save_id {max_used_save_id}, got {}",
+                            save.next_save_id
+                        ),
                     ));
                 }
             }
             None => {
                 if save.next_save_id != 0 {
-                    return Err(format!(
-                        "invalid next_save_id {}: expected 0 for empty save",
-                        save.next_save_id
-                    ));
+                    return Err(Self::expected_actual("next_save_id", 0, save.next_save_id));
                 }
             }
         }
@@ -1227,6 +1360,7 @@ fn parse_enabled_mods_from_env() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn snapshot_from_actions(actions: &[InputAction]) -> InputSnapshot {
         let mut snapshot = InputSnapshot::empty();
@@ -2283,6 +2417,58 @@ mod tests {
         assert_eq!(decoded, save);
     }
 
+    fn capture_scene_restore_state(
+        scene: &GameplayScene,
+        world: &SceneWorld,
+    ) -> (usize, Vec2, Option<EntityId>, Option<EntityId>, u32) {
+        (
+            world.entity_count(),
+            world.entities()[0].transform.position,
+            scene.selected_entity,
+            scene.player_id,
+            scene.resource_count,
+        )
+    }
+
+    #[test]
+    fn parse_save_game_json_reports_missing_required_field_path() {
+        let mut value = serde_json::to_value(sample_save_game(SavedSceneKey::A)).expect("to_value");
+        let object = value.as_object_mut().expect("save object");
+        object.remove("save_version");
+        let raw = serde_json::to_string(&value).expect("json");
+
+        let error =
+            GameplayScene::parse_save_game_json(&raw).expect_err("missing field should fail");
+        assert!(error.contains("parse save json"));
+        assert!(error.contains("save_version"));
+        assert!(error.contains("missing field"));
+    }
+
+    #[test]
+    fn parse_save_game_json_reports_unknown_enum_tag_path() {
+        let mut value = serde_json::to_value(sample_save_game(SavedSceneKey::A)).expect("to_value");
+        value["entities"][0]["job_state"] = json!("Broken");
+        let raw = serde_json::to_string(&value).expect("json");
+
+        let error =
+            GameplayScene::parse_save_game_json(&raw).expect_err("unknown enum tag should fail");
+        assert!(error.contains("parse save json"));
+        assert!(error.contains("entities[0].job_state"));
+        assert!(error.contains("unknown variant"));
+    }
+
+    #[test]
+    fn parse_save_game_json_reports_type_mismatch_path() {
+        let mut value = serde_json::to_value(sample_save_game(SavedSceneKey::A)).expect("to_value");
+        value["entities"][0]["save_id"] = json!("oops");
+        let raw = serde_json::to_string(&value).expect("json");
+
+        let error =
+            GameplayScene::parse_save_game_json(&raw).expect_err("type mismatch should fail");
+        assert!(error.contains("parse save json"));
+        assert!(error.contains("entities[0].save_id"));
+    }
+
     #[test]
     fn load_validation_rejects_bad_version_or_scene_without_mutation() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
@@ -2328,6 +2514,109 @@ mod tests {
         let mut save = sample_save_game(SavedSceneKey::A);
         save.camera_zoom = f32::NAN;
         assert!(GameplayScene::validate_save_game(&save, SavedSceneKey::A).is_err());
+    }
+
+    #[test]
+    fn validate_reports_field_path_for_dangling_target_refs() {
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[0].interaction_target_save_id = Some(9999);
+        let error = GameplayScene::validate_save_game(&save, SavedSceneKey::A)
+            .expect_err("dangling target");
+        assert!(error.contains("entities[0].interaction_target_save_id"));
+        assert!(error.contains("references unknown save_id 9999"));
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[0].job_state = SavedJobState::Working {
+            target_save_id: 9999,
+            remaining_time: 1.0,
+        };
+        let error = GameplayScene::validate_save_game(&save, SavedSceneKey::A)
+            .expect_err("dangling job target");
+        assert!(error.contains("entities[0].job_state.target_save_id"));
+        assert!(error.contains("references unknown save_id 9999"));
+    }
+
+    #[test]
+    fn validate_reports_field_paths_for_non_finite_and_invalid_numbers() {
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.camera_position.x = f32::NAN;
+        let error = GameplayScene::validate_save_game(&save, SavedSceneKey::A)
+            .expect_err("non-finite camera x");
+        assert!(error.contains("camera_position.x"));
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[0].position.y = f32::INFINITY;
+        let error = GameplayScene::validate_save_game(&save, SavedSceneKey::A)
+            .expect_err("non-finite position y");
+        assert!(error.contains("entities[0].position.y"));
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[0].move_target_world = Some(SavedVec2 {
+            x: f32::NEG_INFINITY,
+            y: 0.0,
+        });
+        let error = GameplayScene::validate_save_game(&save, SavedSceneKey::A)
+            .expect_err("non-finite move target");
+        assert!(error.contains("entities[0].move_target_world.x"));
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[1]
+            .interactable
+            .as_mut()
+            .expect("interactable")
+            .interaction_radius = -0.1;
+        let error = GameplayScene::validate_save_game(&save, SavedSceneKey::A)
+            .expect_err("negative interaction radius");
+        assert!(error.contains("entities[1].interactable.interaction_radius"));
+        assert!(error.contains("expected >= 0"));
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[0].job_state = SavedJobState::Working {
+            target_save_id: 20,
+            remaining_time: -0.1,
+        };
+        let error = GameplayScene::validate_save_game(&save, SavedSceneKey::A)
+            .expect_err("negative remaining time");
+        assert!(error.contains("entities[0].job_state.remaining_time"));
+        assert!(error.contains("expected >= 0"));
+    }
+
+    #[test]
+    fn validate_reports_next_save_id_path_and_expected_actual() {
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.next_save_id = 20;
+        let error = GameplayScene::validate_save_game(&save, SavedSceneKey::A)
+            .expect_err("invalid next_save_id");
+        assert!(error.contains("next_save_id"));
+        assert!(error.contains("expected value greater than max used save_id"));
+        assert!(error.contains("got 20"));
+    }
+
+    #[test]
+    fn corrupted_json_parse_or_validation_never_mutates_world_or_scene_state() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+        scene.selected_entity = Some(world.entities()[0].id);
+
+        let before = capture_scene_restore_state(&scene, &world);
+
+        let mut value = serde_json::to_value(sample_save_game(SavedSceneKey::A)).expect("to_value");
+        value["entities"][0]["job_state"] = json!("Broken");
+        let raw = serde_json::to_string(&value).expect("json");
+        let parse_error = GameplayScene::parse_save_game_json(&raw).expect_err("parse should fail");
+        assert!(parse_error.contains("entities[0].job_state"));
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.entities[0].interaction_target_save_id = Some(9999);
+        let validation_error = GameplayScene::validate_save_game(&save, SavedSceneKey::A)
+            .expect_err("validation should fail");
+        assert!(validation_error.contains("entities[0].interaction_target_save_id"));
+
+        let after = capture_scene_restore_state(&scene, &world);
+        assert_eq!(after, before);
     }
 
     #[test]
