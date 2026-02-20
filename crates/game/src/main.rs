@@ -1359,6 +1359,256 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum EntityKindTag {
+        Actor,
+        Interactable,
+        Other,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum OrderDigest {
+        Idle,
+        MoveTo {
+            x_bits: u32,
+            y_bits: u32,
+        },
+        Interact {
+            target_save_id: u64,
+        },
+        Working {
+            target_save_id: u64,
+            remaining_time_bits: u32,
+        },
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct EntityDigest {
+        save_id: u64,
+        entity_kind: EntityKindTag,
+        x_bits: u32,
+        y_bits: u32,
+        order: OrderDigest,
+        interactable_remaining_uses: Option<u32>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SimDigest {
+        camera_x_bits: u32,
+        camera_y_bits: u32,
+        camera_zoom_bits: u32,
+        selected_save_id: Option<u64>,
+        resource_count: u32,
+        entities: Vec<EntityDigest>,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum TickAction {
+        Noop,
+        SelectWorld(Vec2),
+        RightClickWorld(Vec2),
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct ScriptCheckpoint {
+        tick: usize,
+        label: &'static str,
+    }
+
+    fn order_digest(order_state: OrderState) -> OrderDigest {
+        match order_state {
+            OrderState::Idle => OrderDigest::Idle,
+            OrderState::MoveTo { point } => OrderDigest::MoveTo {
+                x_bits: point.x.to_bits(),
+                y_bits: point.y.to_bits(),
+            },
+            OrderState::Interact { target_save_id } => OrderDigest::Interact { target_save_id },
+            OrderState::Working {
+                target_save_id,
+                remaining_time,
+            } => OrderDigest::Working {
+                target_save_id,
+                remaining_time_bits: remaining_time.to_bits(),
+            },
+        }
+    }
+
+    fn input_for_action(
+        world: &SceneWorld,
+        action: TickAction,
+        window_size: (u32, u32),
+    ) -> InputSnapshot {
+        match action {
+            TickAction::Noop => InputSnapshot::empty().with_window_size(window_size),
+            TickAction::SelectWorld(position_world) => {
+                let (x, y) =
+                    engine::world_to_screen_px(world.camera(), window_size, position_world);
+                InputSnapshot::empty()
+                    .with_window_size(window_size)
+                    .with_left_click_pressed(true)
+                    .with_cursor_position_px(Some(Vec2 {
+                        x: x as f32,
+                        y: y as f32,
+                    }))
+            }
+            TickAction::RightClickWorld(position_world) => {
+                let (x, y) =
+                    engine::world_to_screen_px(world.camera(), window_size, position_world);
+                InputSnapshot::empty()
+                    .with_window_size(window_size)
+                    .with_right_click_pressed(true)
+                    .with_cursor_position_px(Some(Vec2 {
+                        x: x as f32,
+                        y: y as f32,
+                    }))
+            }
+        }
+    }
+
+    fn capture_sim_digest(scene: &GameplayScene, world: &SceneWorld) -> SimDigest {
+        let mut entities = world
+            .entities()
+            .iter()
+            .map(|entity| {
+                let save_id = scene
+                    .entity_save_ids
+                    .get(&entity.id)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        panic!("missing save_id mapping for entity {}", entity.id.0)
+                    });
+                let entity_kind = if entity.actor {
+                    EntityKindTag::Actor
+                } else if entity.interactable.is_some() {
+                    EntityKindTag::Interactable
+                } else {
+                    EntityKindTag::Other
+                };
+                EntityDigest {
+                    save_id,
+                    entity_kind,
+                    x_bits: entity.transform.position.x.to_bits(),
+                    y_bits: entity.transform.position.y.to_bits(),
+                    order: order_digest(entity.order_state),
+                    interactable_remaining_uses: entity
+                        .interactable
+                        .map(|interactable| interactable.remaining_uses),
+                }
+            })
+            .collect::<Vec<_>>();
+        entities.sort_by_key(|entity| entity.save_id);
+
+        let camera = world.camera();
+        SimDigest {
+            camera_x_bits: camera.position.x.to_bits(),
+            camera_y_bits: camera.position.y.to_bits(),
+            camera_zoom_bits: camera.zoom.to_bits(),
+            selected_save_id: scene
+                .selected_entity
+                .and_then(|id| scene.entity_save_ids.get(&id).copied()),
+            resource_count: scene.resource_count,
+            entities,
+        }
+    }
+
+    fn run_script_and_capture(
+        scene: &mut GameplayScene,
+        world: &mut SceneWorld,
+        fixed_dt: f32,
+        steps: usize,
+        script_actions: &[(usize, TickAction)],
+        checkpoints: &[ScriptCheckpoint],
+        window_size: (u32, u32),
+    ) -> Vec<(&'static str, SimDigest)> {
+        let mut snapshots = Vec::new();
+        for tick in 0..steps {
+            let action = script_actions
+                .iter()
+                .find(|(action_tick, _)| *action_tick == tick)
+                .map(|(_, action)| *action)
+                .unwrap_or(TickAction::Noop);
+            let input = input_for_action(world, action, window_size);
+            scene.update(fixed_dt, &input, world);
+            world.apply_pending();
+
+            for checkpoint in checkpoints {
+                if checkpoint.tick == tick {
+                    snapshots.push((checkpoint.label, capture_sim_digest(scene, world)));
+                }
+            }
+        }
+        snapshots
+    }
+
+    fn make_move_fixture() -> (GameplayScene, SceneWorld, u64) {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        world.camera_mut().position = Vec2 { x: 0.0, y: 0.0 };
+        world.camera_mut().set_zoom_clamped(1.0);
+
+        let actor_id = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "det_actor",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(actor_id).expect("actor").selectable = true;
+        scene.player_id = Some(actor_id);
+        scene.selected_entity = None;
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("sync deterministic move fixture");
+        let actor_save_id = scene
+            .entity_save_ids
+            .get(&actor_id)
+            .copied()
+            .expect("actor save id");
+        (scene, world, actor_save_id)
+    }
+
+    fn make_interact_fixture() -> (GameplayScene, SceneWorld, u64, u64) {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        world.camera_mut().position = Vec2 { x: 0.0, y: 0.0 };
+        world.camera_mut().set_zoom_clamped(1.0);
+
+        let actor_id = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: -2.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "det_actor",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(actor_id).expect("actor").selectable = true;
+        let target_id = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 1);
+        scene.player_id = Some(actor_id);
+        scene.selected_entity = None;
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("sync deterministic interact fixture");
+
+        let actor_save_id = scene
+            .entity_save_ids
+            .get(&actor_id)
+            .copied()
+            .expect("actor save id");
+        let target_save_id = scene
+            .entity_save_ids
+            .get(&target_id)
+            .copied()
+            .expect("target save id");
+        (scene, world, actor_save_id, target_save_id)
+    }
+
     #[test]
     fn movement_magnitude_is_speed_times_dt() {
         let input = snapshot_from_actions(&[InputAction::MoveRight]);
@@ -2436,6 +2686,130 @@ mod tests {
         assert_eq!(
             interactable_entity_count(&resumed_world),
             interactable_entity_count(&baseline_world)
+        );
+    }
+
+    #[test]
+    fn determinism_script_pure_move_digest_matches_replay() {
+        let fixed_dt = 0.1;
+        let steps = 20;
+        let window_size = (1280, 720);
+        let checkpoints = [
+            ScriptCheckpoint {
+                tick: 0,
+                label: "after_select",
+            },
+            ScriptCheckpoint {
+                tick: 1,
+                label: "after_order",
+            },
+            ScriptCheckpoint {
+                tick: 3,
+                label: "mid_move",
+            },
+            ScriptCheckpoint {
+                tick: 10,
+                label: "settled",
+            },
+            ScriptCheckpoint {
+                tick: 19,
+                label: "final",
+            },
+        ];
+        let script_actions = [
+            (0usize, TickAction::SelectWorld(Vec2 { x: 0.0, y: 0.0 })),
+            (1usize, TickAction::RightClickWorld(Vec2 { x: 1.5, y: 0.0 })),
+        ];
+
+        let (mut scene_a, mut world_a, actor_save_id_a) = make_move_fixture();
+        let digest_a = run_script_and_capture(
+            &mut scene_a,
+            &mut world_a,
+            fixed_dt,
+            steps,
+            &script_actions,
+            &checkpoints,
+            window_size,
+        );
+
+        let (mut scene_b, mut world_b, actor_save_id_b) = make_move_fixture();
+        let digest_b = run_script_and_capture(
+            &mut scene_b,
+            &mut world_b,
+            fixed_dt,
+            steps,
+            &script_actions,
+            &checkpoints,
+            window_size,
+        );
+
+        assert_eq!(actor_save_id_a, actor_save_id_b);
+        assert_eq!(digest_a, digest_b);
+    }
+
+    #[test]
+    fn determinism_script_interact_work_despawn_digest_matches_replay() {
+        let fixed_dt = 0.1;
+        let steps = 35;
+        let window_size = (1280, 720);
+        let checkpoints = [
+            ScriptCheckpoint {
+                tick: 1,
+                label: "after_order",
+            },
+            ScriptCheckpoint {
+                tick: 5,
+                label: "working_started",
+            },
+            ScriptCheckpoint {
+                tick: 26,
+                label: "post_completion",
+            },
+            ScriptCheckpoint {
+                tick: 34,
+                label: "final",
+            },
+        ];
+        let script_actions = [
+            (0usize, TickAction::SelectWorld(Vec2 { x: -2.0, y: 0.0 })),
+            (1usize, TickAction::RightClickWorld(Vec2 { x: 0.0, y: 0.0 })),
+        ];
+
+        let (mut scene_a, mut world_a, actor_save_id_a, target_save_id_a) = make_interact_fixture();
+        let digest_a = run_script_and_capture(
+            &mut scene_a,
+            &mut world_a,
+            fixed_dt,
+            steps,
+            &script_actions,
+            &checkpoints,
+            window_size,
+        );
+
+        let (mut scene_b, mut world_b, actor_save_id_b, target_save_id_b) = make_interact_fixture();
+        let digest_b = run_script_and_capture(
+            &mut scene_b,
+            &mut world_b,
+            fixed_dt,
+            steps,
+            &script_actions,
+            &checkpoints,
+            window_size,
+        );
+
+        assert_eq!(actor_save_id_a, actor_save_id_b);
+        assert_eq!(target_save_id_a, target_save_id_b);
+        assert_eq!(digest_a, digest_b);
+
+        let (_, final_digest) = digest_a.last().expect("final checkpoint digest");
+        assert_eq!(final_digest.resource_count, 1);
+        assert!(
+            !final_digest
+                .entities
+                .iter()
+                .any(|entity| entity.save_id == target_save_id_a),
+            "expected spawned target save_id {} to be despawned",
+            target_save_id_a
         );
     }
 

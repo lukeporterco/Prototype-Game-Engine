@@ -885,3 +885,32 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
   - interact workflow save/load mid-work parity test
 - Pitfall recorded:
   - `apply_save_game` requires `DefDatabase` present when saved entities include actor/interactable data; tests that restore saves must seed defs first.
+
+---
+
+## Ticket Notes (2026-02-20, Ticket 29)
+- Added a test-only determinism regression harness in `crates/game/src/main.rs` (inside `#[cfg(test)]`):
+  - scripted fixed-step replay via `TickAction` (`Noop`, `SelectWorld`, `RightClickWorld`)
+  - checkpoint capture via `ScriptCheckpoint`
+  - replay executor `run_script_and_capture(...)` runs `scene.update(...)` + `world.apply_pending()` per tick.
+- SimDigest contract (drift detector) is exact-bit based:
+  - camera position/zoom stored as `f32::to_bits()`
+  - selected entity represented as stable `selected_save_id`
+  - resource count included
+  - entities sorted by `save_id` and include:
+    - `save_id`
+    - `entity_kind` tag (`Actor`, `Interactable`, `Other`) for clearer diffs
+    - position bits
+    - `OrderDigest` (`Idle`, `MoveTo`, `Interact`, `Working`)
+    - interactable remaining uses.
+- Projection coupling policy for harness:
+  - projection is used only in one helper (`input_for_action`) to convert scripted world targets to click cursor positions.
+  - deterministic fixtures explicitly lock camera to fixed state (`position=(0,0)`, `zoom=1.0`) and scripts do not emit camera inputs.
+- Added deterministic fixtures:
+  - `make_move_fixture()` returns `(scene, world, actor_save_id)`
+  - `make_interact_fixture()` returns `(scene, world, actor_save_id, target_save_id)`.
+- Added required regression tests:
+  - `determinism_script_pure_move_digest_matches_replay`
+  - `determinism_script_interact_work_despawn_digest_matches_replay`
+- Interactable completion assertion is target-specific:
+  - interact determinism test asserts despawn by checking the spawned target’s `target_save_id` is absent from the final digest entity list.
