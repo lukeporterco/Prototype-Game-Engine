@@ -81,4 +81,9 @@ A ticket is done when:
 - Any added tests pass
 - CODEXNOTES.md is updated if a decision, interface, or pitfall was discovered
 
-I don't want you to touch GPTContext.md EVER unless I give explicit instructions to update it.
+
+## GPTContext.md
+- I don't want you to touch GPTContext.md EVER -unless I give explicit instructions to update it.
+- Fill up GPTContext.md with EVERYTHING my ChatGPT project might want/need as context with both the current project and future planning. Be verbose.
+- Use clean format that's easily read by ChatGPT.
+- If explicitly prompted to update, but there's currently content within it, don't be afraid to completely rewrite, as long as it maintains consistently accurate context.
