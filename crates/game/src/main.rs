@@ -119,6 +119,7 @@ struct GameplayScene {
     player_move_speed: f32,
     resource_count: u32,
     interactable_cache: Vec<(EntityId, Vec2, f32)>,
+    interactable_lookup_by_save_id: HashMap<u64, (EntityId, Vec2, f32)>,
     completed_target_ids: Vec<EntityId>,
     entity_save_ids: HashMap<EntityId, u64>,
     save_id_to_entity: HashMap<u64, EntityId>,
@@ -136,6 +137,7 @@ impl GameplayScene {
             player_move_speed: 5.0,
             resource_count: 0,
             interactable_cache: Vec::new(),
+            interactable_lookup_by_save_id: HashMap::new(),
             completed_target_ids: Vec::new(),
             entity_save_ids: HashMap::new(),
             save_id_to_entity: HashMap::new(),
@@ -619,6 +621,7 @@ impl GameplayScene {
 
         world.clear();
         self.interactable_cache.clear();
+        self.interactable_lookup_by_save_id.clear();
         self.completed_target_ids.clear();
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
@@ -760,6 +763,7 @@ impl Scene for GameplayScene {
         self.selected_entity = None;
         self.resource_count = 0;
         self.interactable_cache.clear();
+        self.interactable_lookup_by_save_id.clear();
         self.completed_target_ids.clear();
         world.apply_pending();
         for id in [player_id, unit_a, unit_b] {
@@ -834,6 +838,9 @@ impl Scene for GameplayScene {
             .camera_mut()
             .apply_zoom_steps(input.zoom_delta_steps());
         world.tick_debug_markers(fixed_dt_seconds);
+        let hovered_interactable = input.cursor_position_px().and_then(|cursor_px| {
+            world.pick_topmost_interactable_at_cursor(cursor_px, input.window_size())
+        });
 
         if input.left_click_pressed() {
             self.selected_entity = input.cursor_position_px().and_then(|cursor_px| {
@@ -847,15 +854,13 @@ impl Scene for GameplayScene {
             {
                 let window_size = input.window_size();
                 let ground_target = screen_to_world_px(world.camera(), window_size, cursor_px);
-                let interactable_target = world
-                    .pick_topmost_interactable_at_cursor(cursor_px, window_size)
-                    .and_then(|id| {
-                        let target_world = world
-                            .find_entity(id)
-                            .map(|entity| entity.transform.position)?;
-                        let target_save_id = self.save_id_for_entity(id)?;
-                        Some((target_save_id, target_world))
-                    });
+                let interactable_target = hovered_interactable.and_then(|id| {
+                    let target_world = world
+                        .find_entity(id)
+                        .map(|entity| entity.transform.position)?;
+                    let target_save_id = self.save_id_for_entity(id)?;
+                    Some((target_save_id, target_world))
+                });
 
                 let mut marker_position = None::<Vec2>;
                 if let Some(entity) = world.find_entity_mut(selected_id) {
@@ -881,9 +886,6 @@ impl Scene for GameplayScene {
             }
         }
 
-        let hovered_interactable = input.cursor_position_px().and_then(|cursor_px| {
-            world.pick_topmost_interactable_at_cursor(cursor_px, input.window_size())
-        });
         world.set_hovered_interactable_visual(hovered_interactable);
 
         if let Some(current_selected) = world.visual_state().selected_actor {
@@ -912,6 +914,7 @@ impl Scene for GameplayScene {
         }
 
         self.interactable_cache.clear();
+        self.interactable_lookup_by_save_id.clear();
         for entity in world.entities() {
             if let Some(interactable) = entity.interactable {
                 if interactable.remaining_uses > 0 {
@@ -920,6 +923,16 @@ impl Scene for GameplayScene {
                         entity.transform.position,
                         interactable.interaction_radius,
                     ));
+                    if let Some(target_save_id) = self.entity_save_ids.get(&entity.id).copied() {
+                        self.interactable_lookup_by_save_id.insert(
+                            target_save_id,
+                            (
+                                entity.id,
+                                entity.transform.position,
+                                interactable.interaction_radius,
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -947,11 +960,11 @@ impl Scene for GameplayScene {
                     }
                 }
                 OrderState::Interact { target_save_id } => {
-                    if let Some((_, target_world, radius)) = interactable_target_info_by_save_id(
-                        &self.interactable_cache,
-                        &self.save_id_to_entity,
-                        target_save_id,
-                    ) {
+                    if let Some((_, target_world, radius)) = self
+                        .interactable_lookup_by_save_id
+                        .get(&target_save_id)
+                        .copied()
+                    {
                         let dx = target_world.x - entity.transform.position.x;
                         let dy = target_world.y - entity.transform.position.y;
                         if dx * dx + dy * dy <= radius * radius {
@@ -977,11 +990,11 @@ impl Scene for GameplayScene {
                     target_save_id,
                     remaining_time,
                 } => {
-                    if let Some((target_id, _, _)) = interactable_target_info_by_save_id(
-                        &self.interactable_cache,
-                        &self.save_id_to_entity,
-                        target_save_id,
-                    ) {
+                    if let Some((target_id, _, _)) = self
+                        .interactable_lookup_by_save_id
+                        .get(&target_save_id)
+                        .copied()
+                    {
                         let next_remaining = remaining_time - fixed_dt_seconds;
                         if next_remaining <= 0.0 {
                             entity.order_state = OrderState::Idle;
@@ -1037,6 +1050,7 @@ impl Scene for GameplayScene {
         self.selected_entity = None;
         self.resource_count = 0;
         self.interactable_cache.clear();
+        self.interactable_lookup_by_save_id.clear();
         self.completed_target_ids.clear();
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
@@ -1208,18 +1222,6 @@ fn try_resolve_resource_pile_archetype(world: &SceneWorld) -> SaveLoadResult<Ent
         );
     }
     Ok(pile)
-}
-
-fn interactable_target_info_by_save_id(
-    interactables: &[(EntityId, Vec2, f32)],
-    save_id_to_entity: &HashMap<u64, EntityId>,
-    target_save_id: u64,
-) -> Option<(EntityId, Vec2, f32)> {
-    let target_id = save_id_to_entity.get(&target_save_id).copied()?;
-    interactables
-        .iter()
-        .find(|(id, _, _)| *id == target_id)
-        .map(|(id, position, radius)| (*id, *position, *radius))
 }
 
 fn movement_delta(input: &InputSnapshot, fixed_dt_seconds: f32, speed: f32) -> Vec2 {

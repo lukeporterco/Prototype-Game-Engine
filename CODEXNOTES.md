@@ -71,3 +71,26 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 ## Known Issues / TODO
 - Next ticket queue not defined beyond Ticket 30; awaiting prioritization.
 ---
+
+## Ticket Notes (2026-02-20, Ticket 31)
+- Hot-loop perf audit fixes applied with no intended behavior changes.
+- Gameplay update path (`crates/game/src/main.rs`):
+  - cursor interactable pick is now computed once per tick after zoom/marker tick and reused for:
+    - right-click interactable-first order assignment
+    - hovered interactable visual.
+  - picking tie-break behavior is preserved because pick functions are unchanged.
+  - interactable-first command semantics are preserved.
+- Gameplay scratch reuse expanded:
+  - added `GameplayScene.interactable_lookup_by_save_id: HashMap<u64, (EntityId, Vec2, f32)>`
+  - cleared/reused each tick.
+  - populated during existing `interactable_cache` build pass for active interactables.
+  - actor `Interact`/`Working` lookup now uses direct save-id keyed scratch-map access instead of per-actor linear scans.
+- Scene despawn apply optimization (`crates/engine/src/app/scene.rs`):
+  - `pending_despawns` now sorted + deduped before retain.
+  - entity retain uses binary search on sorted pending ids instead of repeated `Vec::contains`.
+  - spawn apply ordering unchanged.
+- Renderer sprite cache hit-path optimization (`crates/engine/src/app/rendering/renderer.rs`):
+  - `resolve_cached_sprite` now uses one `cache.get(key)` fast path on hit with no allocations.
+  - miss path still resolves, inserts, then returns cached ref.
+- Added regression test:
+  - `scene_world_duplicate_pending_despawns_are_safe_and_idempotent` confirms duplicate pending despawns are safe and remove only targeted entity.

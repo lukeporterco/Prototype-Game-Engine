@@ -418,11 +418,15 @@ fn resolve_cached_sprite<'a>(
     asset_root: &Path,
     key: &str,
 ) -> Option<&'a LoadedSprite> {
-    if !cache.contains_key(key) {
-        let sprite =
-            resolve_sprite_image_path(asset_root, key).and_then(|path| load_sprite_rgba(&path));
-        cache.insert(key.to_string(), sprite);
+    if let Some(cached) = cache.get(key) {
+        let sprite_ptr = cached.as_ref().map(|sprite| sprite as *const LoadedSprite);
+        // SAFETY: `sprite_ptr` is derived from an immutable reference into `cache`.
+        // We return immediately on this hit-path, so `cache` is not mutated before use.
+        return sprite_ptr.map(|ptr| unsafe { &*ptr });
     }
+    let sprite =
+        resolve_sprite_image_path(asset_root, key).and_then(|path| load_sprite_rgba(&path));
+    cache.insert(key.to_string(), sprite);
     cache.get(key).and_then(Option::as_ref)
 }
 

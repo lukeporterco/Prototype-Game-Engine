@@ -456,8 +456,14 @@ impl SceneWorld {
 
     pub fn apply_pending(&mut self) {
         if !self.pending_despawns.is_empty() {
+            self.pending_despawns.sort_by_key(|id| id.0);
+            self.pending_despawns.dedup();
             let pending = &self.pending_despawns;
-            self.entities.retain(|entity| !pending.contains(&entity.id));
+            self.entities.retain(|entity| {
+                pending
+                    .binary_search_by_key(&entity.id.0, |id| id.0)
+                    .is_err()
+            });
             self.pending_despawns.clear();
         }
 
@@ -971,6 +977,39 @@ mod tests {
         world.despawn(id);
         world.apply_pending();
         assert_eq!(world.entity_count(), 0);
+    }
+
+    #[test]
+    fn scene_world_duplicate_pending_despawns_are_safe_and_idempotent() {
+        let mut world = SceneWorld::default();
+        let doomed = world.spawn(
+            Transform::default(),
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "doomed",
+            },
+        );
+        let survivor = world.spawn(
+            Transform {
+                position: Vec2 { x: 3.0, y: 1.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "survivor",
+            },
+        );
+        world.apply_pending();
+        assert_eq!(world.entity_count(), 2);
+
+        assert!(world.despawn(doomed));
+        assert!(world.despawn(doomed));
+        assert!(world.despawn(doomed));
+        world.apply_pending();
+
+        assert_eq!(world.entity_count(), 1);
+        assert!(world.find_entity(doomed).is_none());
+        assert!(world.find_entity(survivor).is_some());
     }
 
     #[test]
