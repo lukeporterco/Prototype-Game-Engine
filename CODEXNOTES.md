@@ -119,3 +119,10 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - Systems do not mutate `SceneWorld` directly; world/entity mutations are applied only in `apply_gameplay_tick_at_safe_point`.
 - Debug seam change: `DebugInfoSnapshot.system_order` is now owned `String` and overlay shows `sys: <order>`.
 
+## Ticket 34 Event Bus Seam (2026-02-21)
+- `GameplayEventBus` in `crates/game/src/main.rs` is scene-local and supports same-tick chaining via `emit` + `iter_emitted_so_far`.
+- End-of-tick lifecycle uses rollover (`finish_tick_rollover`) to snapshot `last_tick_counts` and clear current tick events.
+- Event set now includes payload-bearing variants for upcoming phases: `InteractionStarted`, `InteractionCompleted`, `EntityDamaged`, `EntityDied`, `StatusApplied`, `StatusExpired`.
+- `DebugInfoSnapshot` gained generic `extra_debug_lines: Option<Vec<String>>` so game-specific observability can be surfaced without engine event-specific fields.
+- Overlay inspect block renders any `extra_debug_lines`; gameplay uses this for `ev:` and `evk:` per-last-tick event counts.
+

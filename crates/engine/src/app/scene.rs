@@ -371,6 +371,7 @@ pub struct DebugInfoSnapshot {
     pub interactable_count: usize,
     pub resource_count: u32,
     pub system_order: String,
+    pub extra_debug_lines: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -953,6 +954,7 @@ mod tests {
                 interactable_count: 0,
                 resource_count: 0,
                 system_order: "test_order".to_string(),
+                extra_debug_lines: Some(vec!["extra: ok".to_string()]),
             })
         }
     }

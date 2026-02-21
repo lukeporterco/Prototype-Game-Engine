@@ -189,25 +189,119 @@ impl<'a> WorldView<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GameplayEvent {
-    SystemRan(GameplaySystemId),
+    InteractionStarted {
+        actor_id: EntityId,
+        target_id: EntityId,
+    },
+    InteractionCompleted {
+        actor_id: EntityId,
+        target_id: EntityId,
+    },
+    EntityDamaged {
+        entity_id: EntityId,
+        amount: u32,
+    },
+    EntityDied {
+        entity_id: EntityId,
+    },
+    StatusApplied {
+        entity_id: EntityId,
+        status_id: u32,
+    },
+    StatusExpired {
+        entity_id: EntityId,
+        status_id: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GameplayEventKind {
+    InteractionStarted,
+    InteractionCompleted,
+    EntityDamaged,
+    EntityDied,
+    StatusApplied,
+    StatusExpired,
+}
+
+impl GameplayEvent {
+    fn kind(self) -> GameplayEventKind {
+        match self {
+            Self::InteractionStarted { .. } => GameplayEventKind::InteractionStarted,
+            Self::InteractionCompleted { .. } => GameplayEventKind::InteractionCompleted,
+            Self::EntityDamaged { .. } => GameplayEventKind::EntityDamaged,
+            Self::EntityDied { .. } => GameplayEventKind::EntityDied,
+            Self::StatusApplied { .. } => GameplayEventKind::StatusApplied,
+            Self::StatusExpired { .. } => GameplayEventKind::StatusExpired,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct GameplayEventCounts {
+    total: u32,
+    interaction_started: u32,
+    interaction_completed: u32,
+    entity_damaged: u32,
+    entity_died: u32,
+    status_applied: u32,
+    status_expired: u32,
+}
+
+impl GameplayEventCounts {
+    fn record(&mut self, kind: GameplayEventKind) {
+        self.total = self.total.saturating_add(1);
+        match kind {
+            GameplayEventKind::InteractionStarted => {
+                self.interaction_started = self.interaction_started.saturating_add(1)
+            }
+            GameplayEventKind::InteractionCompleted => {
+                self.interaction_completed = self.interaction_completed.saturating_add(1)
+            }
+            GameplayEventKind::EntityDamaged => {
+                self.entity_damaged = self.entity_damaged.saturating_add(1)
+            }
+            GameplayEventKind::EntityDied => self.entity_died = self.entity_died.saturating_add(1),
+            GameplayEventKind::StatusApplied => {
+                self.status_applied = self.status_applied.saturating_add(1)
+            }
+            GameplayEventKind::StatusExpired => {
+                self.status_expired = self.status_expired.saturating_add(1)
+            }
+        }
+    }
 }
 
 #[derive(Default)]
 struct GameplayEventBus {
-    events: Vec<GameplayEvent>,
+    current_tick_events: Vec<GameplayEvent>,
+    last_tick_counts: GameplayEventCounts,
 }
 
 impl GameplayEventBus {
-    fn clear(&mut self) {
-        self.events.clear();
+    fn clear_current_tick(&mut self) {
+        self.current_tick_events.clear();
     }
 
     fn emit(&mut self, event: GameplayEvent) {
-        self.events.push(event);
+        self.current_tick_events.push(event);
     }
 
-    fn take_all(&mut self) -> Vec<GameplayEvent> {
-        std::mem::take(&mut self.events)
+    fn iter_emitted_so_far(&self) -> impl Iterator<Item = &GameplayEvent> {
+        self.current_tick_events.iter()
+    }
+
+    fn finish_tick_rollover(&mut self) {
+        let mut counts = GameplayEventCounts::default();
+        for event in &self.current_tick_events {
+            counts.record(event.kind());
+        }
+        self.last_tick_counts = counts;
+        self.current_tick_events.clear();
+    }
+
+    fn last_tick_counts(&self) -> GameplayEventCounts {
+        self.last_tick_counts
     }
 }
 
@@ -268,7 +362,6 @@ impl GameplaySystemsHost {
                 intents,
             };
             self.run_system(system_id, &mut context);
-            context.events.emit(GameplayEvent::SystemRan(system_id));
         }
     }
 
@@ -296,7 +389,42 @@ impl GameplaySystemsHost {
             | GameplaySystemId::StatusEffects
             | GameplaySystemId::Cleanup => {
                 let _ = context.input.quit_requested();
+                if matches!(
+                    system_id,
+                    GameplaySystemId::StatusEffects | GameplaySystemId::Cleanup
+                ) {
+                    let _ = context.events.iter_emitted_so_far().count();
+                }
             }
+        }
+
+        if cfg!(debug_assertions) {
+            let event = match system_id {
+                GameplaySystemId::InputIntent => GameplayEvent::StatusApplied {
+                    entity_id: EntityId(0),
+                    status_id: 1,
+                },
+                GameplaySystemId::Interaction => GameplayEvent::InteractionStarted {
+                    actor_id: EntityId(0),
+                    target_id: EntityId(1),
+                },
+                GameplaySystemId::AI => GameplayEvent::EntityDamaged {
+                    entity_id: EntityId(1),
+                    amount: 1,
+                },
+                GameplaySystemId::CombatResolution => GameplayEvent::EntityDied {
+                    entity_id: EntityId(2),
+                },
+                GameplaySystemId::StatusEffects => GameplayEvent::StatusExpired {
+                    entity_id: EntityId(0),
+                    status_id: 1,
+                },
+                GameplaySystemId::Cleanup => GameplayEvent::InteractionCompleted {
+                    actor_id: EntityId(0),
+                    target_id: EntityId(1),
+                },
+            };
+            context.events.emit(event);
         }
     }
 }
@@ -907,7 +1035,7 @@ impl GameplayScene {
         input: &InputSnapshot,
         world: &SceneWorld,
     ) {
-        self.system_events.clear();
+        self.system_events.clear_current_tick();
         self.system_intents.clear();
         self.systems_host.run_once_per_tick(
             fixed_dt_seconds,
@@ -931,7 +1059,7 @@ impl GameplayScene {
                 }
             }
         }
-        let _ = self.system_events.take_all();
+        self.system_events.finish_tick_rollover();
     }
 
     fn apply_gameplay_tick_at_safe_point(
@@ -1366,7 +1494,7 @@ impl Scene for GameplayScene {
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
         self.next_save_id = 0;
-        self.system_events.clear();
+        self.system_events = GameplayEventBus::default();
         self.system_intents.clear();
         self.system_order_text.clear();
     }
@@ -1448,6 +1576,20 @@ impl Scene for GameplayScene {
             }
         }
 
+        let event_counts = self.system_events.last_tick_counts();
+        let extra_debug_lines = vec![
+            format!("ev: {}", event_counts.total),
+            format!(
+                "evk: is:{} ic:{} dm:{} dd:{} sa:{} se:{}",
+                event_counts.interaction_started,
+                event_counts.interaction_completed,
+                event_counts.entity_damaged,
+                event_counts.entity_died,
+                event_counts.status_applied,
+                event_counts.status_expired
+            ),
+        ];
+
         Some(DebugInfoSnapshot {
             selected_entity: self.selected_entity,
             selected_position_world,
@@ -1458,6 +1600,7 @@ impl Scene for GameplayScene {
             interactable_count,
             resource_count: self.resource_count,
             system_order: self.system_order_text.clone(),
+            extra_debug_lines: Some(extra_debug_lines),
         })
     }
 }
@@ -2121,6 +2264,75 @@ mod tests {
         {
             assert_eq!(actual, expected);
         }
+    }
+
+    #[test]
+    fn event_bus_emit_and_rollover_counts_are_correct() {
+        let mut bus = GameplayEventBus::default();
+
+        bus.emit(GameplayEvent::InteractionStarted {
+            actor_id: EntityId(1),
+            target_id: EntityId(2),
+        });
+        bus.emit(GameplayEvent::EntityDamaged {
+            entity_id: EntityId(2),
+            amount: 3,
+        });
+        bus.emit(GameplayEvent::StatusApplied {
+            entity_id: EntityId(1),
+            status_id: 7,
+        });
+        bus.emit(GameplayEvent::StatusExpired {
+            entity_id: EntityId(1),
+            status_id: 7,
+        });
+        bus.emit(GameplayEvent::EntityDied {
+            entity_id: EntityId(2),
+        });
+        bus.emit(GameplayEvent::InteractionCompleted {
+            actor_id: EntityId(1),
+            target_id: EntityId(2),
+        });
+
+        assert_eq!(bus.iter_emitted_so_far().count(), 6);
+        bus.finish_tick_rollover();
+
+        let counts = bus.last_tick_counts();
+        assert_eq!(counts.total, 6);
+        assert_eq!(counts.interaction_started, 1);
+        assert_eq!(counts.interaction_completed, 1);
+        assert_eq!(counts.entity_damaged, 1);
+        assert_eq!(counts.entity_died, 1);
+        assert_eq!(counts.status_applied, 1);
+        assert_eq!(counts.status_expired, 1);
+        assert_eq!(bus.iter_emitted_so_far().count(), 0);
+
+        bus.emit(GameplayEvent::StatusApplied {
+            entity_id: EntityId(9),
+            status_id: 2,
+        });
+        bus.finish_tick_rollover();
+        let next_counts = bus.last_tick_counts();
+        assert_eq!(next_counts.total, 1);
+        assert_eq!(next_counts.status_applied, 1);
+        assert_eq!(next_counts.interaction_started, 0);
+        assert_eq!(next_counts.interaction_completed, 0);
+        assert_eq!(next_counts.entity_damaged, 0);
+        assert_eq!(next_counts.entity_died, 0);
+        assert_eq!(next_counts.status_expired, 0);
+    }
+
+    #[test]
+    fn gameplay_systems_dev_probe_emits_nonzero_last_tick_events() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let input = InputSnapshot::empty().with_window_size((1280, 720));
+
+        scene.update(0.1, &input, &mut world);
+        world.apply_pending();
+
+        let counts = scene.system_events.last_tick_counts();
+        assert!(counts.total > 0);
     }
 
     #[test]
@@ -2913,6 +3125,9 @@ mod tests {
         assert_eq!(snapshot.interactable_count, 1);
         assert_eq!(snapshot.resource_count, 7);
         assert_eq!(snapshot.system_order, GAMEPLAY_SYSTEM_ORDER_TEXT);
+        let extra = snapshot.extra_debug_lines.expect("extra debug lines");
+        assert!(extra.iter().any(|line| line.starts_with("ev: ")));
+        assert!(extra.iter().any(|line| line.starts_with("evk: ")));
     }
 
     #[test]
@@ -2931,6 +3146,9 @@ mod tests {
         assert_eq!(snapshot.selected_order_world, None);
         assert_eq!(snapshot.selected_job_state, DebugJobState::None);
         assert_eq!(snapshot.system_order, GAMEPLAY_SYSTEM_ORDER_TEXT);
+        let extra = snapshot.extra_debug_lines.expect("extra debug lines");
+        assert!(extra.iter().any(|line| line.starts_with("ev: ")));
+        assert!(extra.iter().any(|line| line.starts_with("evk: ")));
     }
 
     #[test]

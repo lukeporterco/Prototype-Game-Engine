@@ -96,6 +96,11 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
             debug_info.resource_count
         ));
         lines.push(format!("sys: {}", debug_info.system_order));
+        if let Some(extra_lines) = debug_info.extra_debug_lines.as_ref() {
+            for line in extra_lines {
+                lines.push(line.clone());
+            }
+        }
     }
 
     lines
@@ -629,18 +634,24 @@ mod tests {
                 resource_count: 2,
                 system_order: "InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup"
                     .to_string(),
+                extra_debug_lines: Some(vec![
+                    "ev: 1".to_string(),
+                    "evk: is:0 ic:0 dm:0 dd:0 sa:1 se:0".to_string(),
+                ]),
             }),
         };
         let lines = build_overlay_lines(&data);
-        assert_eq!(lines.len(), 17);
+        assert_eq!(lines.len(), 19);
         assert_eq!(lines[10], "Inspect");
         assert_eq!(
             lines[16],
             "sys: InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup"
         );
+        assert_eq!(lines[17], "ev: 1");
+        assert_eq!(lines[18], "evk: is:0 ic:0 dm:0 dd:0 sa:1 se:0");
         assert_eq!(
             OVERLAY_PADDING + (lines.len() as i32 - 1) * LINE_ADVANCE,
-            354
+            396
         );
     }
 
