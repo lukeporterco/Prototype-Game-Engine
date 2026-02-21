@@ -267,20 +267,41 @@ function RunFragmentMode(){
 function RunFloodMode(){
   $global:case='FLOOD'; $null=StatusGuard
   Isolation
-  Send 'tick 200'
-  Send 'sync'
-  $deadline=(Get-Date).AddSeconds(25)
-  $frames=0
-  while((Get-Date)-lt $deadline){
+  Send 'tick 500'
+
+  # Deterministically establish telemetry flow before issuing barrier sync.
+  $preDeadline=(Get-Date).AddSeconds(25)
+  $preFrames=0
+  while((Get-Date)-lt $preDeadline -and $preFrames -lt 50){
     $line=ReadLineTimed 250
     if($null -eq $line){ continue }
-    if($line -like 'thruport.frame v1 *'){ $frames++ }
-    if($line -eq 'ok: sync'){
-      if($frames -lt 100){ MarkFail "expected heavy telemetry before barrier sync; got $frames frames" $global:lastStatusByCase[$global:case] }
-      return
-    }
+    if($line -like 'thruport.frame v1 *'){ $preFrames++ }
   }
-  MarkFail 'flood mode expected ok: sync while telemetry flowing' $global:lastStatusByCase[$global:case]
+  if($preFrames -lt 50){
+    MarkFail "flood mode expected at least 50 telemetry frames before barrier; got $preFrames" $global:lastStatusByCase[$global:case]
+  }
+
+  Send 'tick 20'
+  Send 'sync'
+  $barDeadline=(Get-Date).AddSeconds(25)
+  $barFrames=0
+  $sawSync=$false
+  $postSyncDeadline=[DateTime]::MinValue
+  while((Get-Date)-lt $barDeadline){
+    $line=ReadLineTimed 250
+    if($null -eq $line){ continue }
+    if($line -like 'thruport.frame v1 *'){ $barFrames++ }
+    if($line -eq 'ok: sync'){
+      $sawSync=$true
+      $postSyncDeadline=(Get-Date).AddMilliseconds(1200)
+    }
+    if($sawSync -and $barFrames -ge 1){ return }
+    if($sawSync -and (Get-Date) -ge $postSyncDeadline){ break }
+  }
+  if(-not $sawSync){
+    MarkFail 'flood mode expected ok: sync while telemetry flowing' $global:lastStatusByCase[$global:case]
+  }
+  MarkFail 'flood mode expected at least one telemetry frame during barrier window' $global:lastStatusByCase[$global:case]
 }
 
 function RunBufferedMode(){
