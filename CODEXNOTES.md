@@ -192,3 +192,17 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - preserves startup error logging (`startup_failed`) and non-zero exit behavior.
 - Gameplay/runtime implementation and tests moved from `crates/game/src/main.rs` into `crates/game/src/app/gameplay.rs` with no behavioral intent changes.
 - Gameplay scene factory seam added for bootstrap usage: `build_scene_pair() -> (Box<dyn Scene>, Box<dyn Scene>)`.
+
+## Ticket 41 Dev Thruport Seam (2026-02-21)
+- Added `crates/game/src/app/dev_thruport.rs` as a compile-only no-op seam for future thruport/remote console work.
+- Defined forward-looking hook contracts only:
+  - `ConsoleInputQueueHook::drain_pending_lines`
+  - `ConsoleOutputTeeHook::tee_output_line`
+  - `InputInjectionHook::inject_input`
+- Added placeholder input payload enum `InjectedInput` (`NoOp`, `KeyDown`, `KeyUp`, `MouseMove`).
+- Added allocation-free no-op wiring types:
+  - `DevThruport`
+  - `DevThruportHooks::no_op()`
+  - `initialize(DevThruportHooks) -> DevThruport`
+- Bootstrap now initializes and carries `AppWiring.dev_thruport`; loop runner explicitly destructures and binds it without affecting runtime behavior.
+- No TCP/network/screenshot/input synthesis behavior added; console semantics are unchanged.

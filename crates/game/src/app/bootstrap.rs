@@ -2,7 +2,7 @@ use engine::{ContentPlanRequest, LoopConfig, Scene};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use super::gameplay;
+use super::{dev_thruport, gameplay};
 
 const ENABLED_MODS_ENV_VAR: &str = "PROTOGE_ENABLED_MODS";
 
@@ -10,6 +10,7 @@ pub(crate) struct AppWiring {
     pub(crate) config: LoopConfig,
     pub(crate) scene_a: Box<dyn Scene>,
     pub(crate) scene_b: Box<dyn Scene>,
+    pub(crate) dev_thruport: dev_thruport::DevThruport,
 }
 
 pub(crate) fn build_app() -> AppWiring {
@@ -17,6 +18,7 @@ pub(crate) fn build_app() -> AppWiring {
     info!("=== Proto GE Startup ===");
 
     let (scene_a, scene_b) = gameplay::build_scene_pair();
+    let dev_thruport = dev_thruport::initialize(dev_thruport::DevThruportHooks::no_op());
     let config = LoopConfig {
         content_plan_request: ContentPlanRequest {
             enabled_mods: parse_enabled_mods_from_env(),
@@ -30,6 +32,7 @@ pub(crate) fn build_app() -> AppWiring {
         config,
         scene_a,
         scene_b,
+        dev_thruport,
     }
 }
 
