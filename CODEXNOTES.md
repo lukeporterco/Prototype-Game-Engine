@@ -146,3 +146,12 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - Legacy direct completion/depletion logic was removed from `apply_gameplay_tick_at_safe_point`; world mutation outcomes now flow through intents only.
 - Overlay debug block now includes interaction runtime line: `ix: ...`, and intent-kind counters include cancellation as `ca` in `ink: ...`.
 
+## Ticket 37 AI Lite Seam (2026-02-21)
+- `GameplaySystemId::AI` now runs real logic in `crates/game/src/main.rs` via scene-owned `ai_agents_by_entity: HashMap<EntityId, AiAgent>`.
+- AI state machine MVP states are `Idle`, `Wander`, `Chase`, and `UseInteraction`; overlay extra lines include aggregate state counts as `ai: id:<n> wa:<n> ch:<n> use:<n>`.
+- New intent `GameplayIntent::SetMoveTarget { actor_id, point }` was added and is applied only at the safe apply point; `ink:` now includes `mt:<n>`.
+- AI interaction attacks use the existing interaction runtime seam by adding `ActiveInteractionKind::{Use,Attack}`. Attack completion/cancel still flows only through `Interaction` system events/intents.
+- Movement precedence rule is enforced in AI: it never enqueues `SetMoveTarget` when actor has an active interaction runtime entry or world `OrderState::{Interact,Working}`.
+- `player_id` is authoritative: `spawn proto.player` creates an AI-controlled actor but never replaces `GameplayScene.player_id`.
+- Scene now auto-restores exactly one authoritative player when missing via `ensure_authoritative_player_exists_if_missing` during tick apply.
+

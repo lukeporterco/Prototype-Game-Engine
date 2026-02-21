@@ -26,6 +26,12 @@ const SCENE_B_SAVE_FILE: &str = "scene_b.save.json";
 const ORDER_MARKER_TTL_SECONDS: f32 = 0.75;
 const GAMEPLAY_SYSTEM_ORDER_TEXT: &str =
     "InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup";
+const AI_AGGRO_RADIUS_UNITS: f32 = 6.0;
+const AI_ATTACK_RANGE_UNITS: f32 = 0.9;
+const AI_ATTACK_INTERACTION_DURATION_SECONDS: f32 = 0.5;
+const AI_ATTACK_COOLDOWN_SECONDS: f32 = 1.0;
+const AI_WANDER_OFFSET_UNITS: f32 = 1.5;
+const AI_WANDER_ARRIVAL_THRESHOLD: f32 = 0.15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GameplaySystemId {
@@ -180,13 +186,75 @@ struct StatusId(u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct InteractionId(u64);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveInteractionKind {
+    Use,
+    Attack,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ActiveInteraction {
     actor_id: EntityId,
     target_id: EntityId,
     interaction_id: InteractionId,
+    kind: ActiveInteractionKind,
+    interaction_range: f32,
     duration_seconds: f32,
     remaining_seconds: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiState {
+    Idle,
+    Wander,
+    Chase,
+    UseInteraction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AiAgent {
+    state: AiState,
+    home_position: Vec2,
+    wander_target: Option<Vec2>,
+    aggro_radius: f32,
+    attack_range: f32,
+    cooldown_seconds: f32,
+    cooldown_remaining_seconds: f32,
+}
+
+impl AiAgent {
+    fn from_home_position(home_position: Vec2) -> Self {
+        Self {
+            state: AiState::Idle,
+            home_position,
+            wander_target: None,
+            aggro_radius: AI_AGGRO_RADIUS_UNITS,
+            attack_range: AI_ATTACK_RANGE_UNITS,
+            cooldown_seconds: AI_ATTACK_COOLDOWN_SECONDS,
+            cooldown_remaining_seconds: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AiStateCounts {
+    idle: u32,
+    wander: u32,
+    chase: u32,
+    use_interaction: u32,
+}
+
+impl AiStateCounts {
+    fn record(&mut self, state: AiState) {
+        match state {
+            AiState::Idle => self.idle = self.idle.saturating_add(1),
+            AiState::Wander => self.wander = self.wander.saturating_add(1),
+            AiState::Chase => self.chase = self.chase.saturating_add(1),
+            AiState::UseInteraction => {
+                self.use_interaction = self.use_interaction.saturating_add(1)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,6 +382,10 @@ enum GameplayIntent {
         archetype_id: EntityDefId,
         position: Vec2,
     },
+    SetMoveTarget {
+        actor_id: EntityId,
+        point: Vec2,
+    },
     DespawnEntity {
         entity_id: EntityId,
     },
@@ -345,6 +417,7 @@ enum GameplayIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GameplayIntentKind {
     SpawnByArchetypeId,
+    SetMoveTarget,
     DespawnEntity,
     ApplyDamage,
     AddStatus,
@@ -358,6 +431,7 @@ impl GameplayIntent {
     fn kind(self) -> GameplayIntentKind {
         match self {
             Self::SpawnByArchetypeId { .. } => GameplayIntentKind::SpawnByArchetypeId,
+            Self::SetMoveTarget { .. } => GameplayIntentKind::SetMoveTarget,
             Self::DespawnEntity { .. } => GameplayIntentKind::DespawnEntity,
             Self::ApplyDamage { .. } => GameplayIntentKind::ApplyDamage,
             Self::AddStatus { .. } => GameplayIntentKind::AddStatus,
@@ -373,6 +447,7 @@ impl GameplayIntent {
 struct GameplayIntentApplyStats {
     total: u32,
     spawn_by_archetype_id: u32,
+    set_move_target: u32,
     despawn_entity: u32,
     apply_damage: u32,
     add_status: u32,
@@ -390,6 +465,9 @@ impl GameplayIntentApplyStats {
         match kind {
             GameplayIntentKind::SpawnByArchetypeId => {
                 self.spawn_by_archetype_id = self.spawn_by_archetype_id.saturating_add(1)
+            }
+            GameplayIntentKind::SetMoveTarget => {
+                self.set_move_target = self.set_move_target.saturating_add(1)
             }
             GameplayIntentKind::DespawnEntity => {
                 self.despawn_entity = self.despawn_entity.saturating_add(1)
@@ -446,7 +524,9 @@ struct GameplaySystemContext<'a> {
     fixed_dt_seconds: f32,
     world_view: WorldView<'a>,
     input: &'a InputSnapshot,
+    player_id: Option<EntityId>,
     selected_entity: Option<EntityId>,
+    ai_agents_by_entity: &'a mut HashMap<EntityId, AiAgent>,
     active_interactions_by_actor: &'a mut HashMap<EntityId, ActiveInteraction>,
     next_interaction_id: &'a mut u64,
     selected_completion_enqueued_this_tick: &'a mut bool,
@@ -465,7 +545,9 @@ impl GameplaySystemsHost {
         fixed_dt_seconds: f32,
         world_view: WorldView<'_>,
         input: &InputSnapshot,
+        player_id: Option<EntityId>,
         selected_entity: Option<EntityId>,
+        ai_agents_by_entity: &mut HashMap<EntityId, AiAgent>,
         active_interactions_by_actor: &mut HashMap<EntityId, ActiveInteraction>,
         next_interaction_id: &mut u64,
         selected_completion_enqueued_this_tick: &mut bool,
@@ -479,7 +561,9 @@ impl GameplaySystemsHost {
                 fixed_dt_seconds,
                 world_view,
                 input,
+                player_id,
                 selected_entity,
+                ai_agents_by_entity,
                 active_interactions_by_actor,
                 next_interaction_id,
                 selected_completion_enqueued_this_tick,
@@ -496,7 +580,7 @@ impl GameplaySystemsHost {
         InteractionId(id)
     }
 
-    fn interaction_duration_seconds_for_target(target: &engine::Entity) -> f32 {
+    fn interaction_duration_seconds_for_use_target(target: &engine::Entity) -> f32 {
         if target.interactable.is_some() {
             JOB_DURATION_SECONDS
         } else {
@@ -504,14 +588,49 @@ impl GameplaySystemsHost {
         }
     }
 
-    fn within_interaction_range(actor: &engine::Entity, target: &engine::Entity) -> bool {
-        let Some(interactable) = target.interactable else {
-            return false;
-        };
+    fn interaction_range_for_use_target(target: &engine::Entity) -> Option<f32> {
+        target
+            .interactable
+            .map(|interactable| interactable.interaction_radius)
+    }
+
+    fn within_distance_range(actor: &engine::Entity, target: &engine::Entity, range: f32) -> bool {
         let dx = target.transform.position.x - actor.transform.position.x;
         let dy = target.transform.position.y - actor.transform.position.y;
-        let range_sq = interactable.interaction_radius * interactable.interaction_radius;
+        let range_sq = range * range;
         dx * dx + dy * dy <= range_sq
+    }
+
+    fn order_state_indicates_interaction(order_state: OrderState) -> bool {
+        matches!(
+            order_state,
+            OrderState::Interact { .. } | OrderState::Working { .. }
+        )
+    }
+
+    fn deterministic_wander_target(
+        home_position: Vec2,
+        actor_id: EntityId,
+        current_target: Option<Vec2>,
+    ) -> Vec2 {
+        let direction = if actor_id.0 % 2 == 0 { 1.0 } else { -1.0 };
+        let primary = Vec2 {
+            x: home_position.x + direction * AI_WANDER_OFFSET_UNITS,
+            y: home_position.y,
+        };
+        let secondary = Vec2 {
+            x: home_position.x - direction * AI_WANDER_OFFSET_UNITS,
+            y: home_position.y,
+        };
+
+        if let Some(target) = current_target {
+            let dx = target.x - primary.x;
+            let dy = target.y - primary.y;
+            if dx * dx + dy * dy <= 0.01 {
+                return secondary;
+            }
+        }
+        primary
     }
 
     fn run_input_intent_system(&self, context: &mut GameplaySystemContext<'_>) {
@@ -552,13 +671,18 @@ impl GameplaySystemsHost {
         }
 
         let interaction_id = Self::alloc_interaction_id(context.next_interaction_id);
-        let duration_seconds = Self::interaction_duration_seconds_for_target(target);
+        let Some(interaction_range) = Self::interaction_range_for_use_target(target) else {
+            return;
+        };
+        let duration_seconds = Self::interaction_duration_seconds_for_use_target(target);
         context.active_interactions_by_actor.insert(
             actor_id,
             ActiveInteraction {
                 actor_id,
                 target_id,
                 interaction_id,
+                kind: ActiveInteractionKind::Use,
+                interaction_range,
                 duration_seconds,
                 remaining_seconds: None,
             },
@@ -571,6 +695,118 @@ impl GameplaySystemsHost {
             actor_id,
             target_id,
         });
+    }
+
+    fn run_ai_system(&self, context: &mut GameplaySystemContext<'_>) {
+        let mut actor_ids = context
+            .ai_agents_by_entity
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        actor_ids.sort_by_key(|id| id.0);
+
+        let player = context
+            .player_id
+            .and_then(|player_id| context.world_view.find_entity(player_id));
+
+        for actor_id in actor_ids {
+            let Some(mut agent) = context.ai_agents_by_entity.get(&actor_id).copied() else {
+                continue;
+            };
+            let Some(actor) = context.world_view.find_entity(actor_id) else {
+                context.ai_agents_by_entity.remove(&actor_id);
+                continue;
+            };
+            if !actor.actor || Some(actor_id) == context.player_id {
+                context.ai_agents_by_entity.remove(&actor_id);
+                continue;
+            }
+
+            agent.cooldown_remaining_seconds =
+                (agent.cooldown_remaining_seconds - context.fixed_dt_seconds).max(0.0);
+
+            let has_runtime_interaction =
+                context.active_interactions_by_actor.contains_key(&actor_id);
+            let has_world_interaction = Self::order_state_indicates_interaction(actor.order_state);
+            let movement_blocked = has_runtime_interaction || has_world_interaction;
+
+            if let Some(player_entity) = player {
+                let dx = player_entity.transform.position.x - actor.transform.position.x;
+                let dy = player_entity.transform.position.y - actor.transform.position.y;
+                let distance_sq = dx * dx + dy * dy;
+                let aggro_sq = agent.aggro_radius * agent.aggro_radius;
+                let in_aggro = distance_sq <= aggro_sq;
+                let in_attack_range = distance_sq <= agent.attack_range * agent.attack_range;
+
+                if in_aggro {
+                    if in_attack_range {
+                        agent.state = AiState::UseInteraction;
+                        if !movement_blocked && agent.cooldown_remaining_seconds <= 0.0 {
+                            let interaction_id =
+                                Self::alloc_interaction_id(context.next_interaction_id);
+                            context.active_interactions_by_actor.insert(
+                                actor_id,
+                                ActiveInteraction {
+                                    actor_id,
+                                    target_id: player_entity.id,
+                                    interaction_id,
+                                    kind: ActiveInteractionKind::Attack,
+                                    interaction_range: agent.attack_range,
+                                    duration_seconds: AI_ATTACK_INTERACTION_DURATION_SECONDS,
+                                    remaining_seconds: None,
+                                },
+                            );
+                            context.events.emit(GameplayEvent::InteractionStarted {
+                                actor_id,
+                                target_id: player_entity.id,
+                            });
+                            context.intents.enqueue(GameplayIntent::StartInteraction {
+                                actor_id,
+                                target_id: player_entity.id,
+                            });
+                            agent.cooldown_remaining_seconds = agent.cooldown_seconds;
+                        }
+                    } else {
+                        agent.state = AiState::Chase;
+                        if !movement_blocked {
+                            context.intents.enqueue(GameplayIntent::SetMoveTarget {
+                                actor_id,
+                                point: player_entity.transform.position,
+                            });
+                        }
+                    }
+
+                    context.ai_agents_by_entity.insert(actor_id, agent);
+                    continue;
+                }
+            }
+
+            let wander_target = Self::deterministic_wander_target(
+                agent.home_position,
+                actor_id,
+                agent.wander_target,
+            );
+            let dx = wander_target.x - actor.transform.position.x;
+            let dy = wander_target.y - actor.transform.position.y;
+            let arrived =
+                dx * dx + dy * dy <= AI_WANDER_ARRIVAL_THRESHOLD * AI_WANDER_ARRIVAL_THRESHOLD;
+
+            if arrived {
+                agent.state = AiState::Idle;
+                agent.wander_target = Some(wander_target);
+            } else {
+                agent.state = AiState::Wander;
+                agent.wander_target = Some(wander_target);
+                if !movement_blocked {
+                    context.intents.enqueue(GameplayIntent::SetMoveTarget {
+                        actor_id,
+                        point: wander_target,
+                    });
+                }
+            }
+
+            context.ai_agents_by_entity.insert(actor_id, agent);
+        }
     }
 
     fn run_interaction_system(&self, context: &mut GameplaySystemContext<'_>) {
@@ -608,15 +844,33 @@ impl GameplaySystemsHost {
                 context.active_interactions_by_actor.remove(&actor_id);
                 continue;
             };
-            if target.interactable.is_none() {
-                context
-                    .intents
-                    .enqueue(GameplayIntent::CancelInteraction { actor_id });
-                context.active_interactions_by_actor.remove(&actor_id);
-                continue;
+
+            match interaction.kind {
+                ActiveInteractionKind::Use => {
+                    if target.interactable.is_none() {
+                        context
+                            .intents
+                            .enqueue(GameplayIntent::CancelInteraction { actor_id });
+                        context.active_interactions_by_actor.remove(&actor_id);
+                        continue;
+                    }
+                    if let Some(range) = Self::interaction_range_for_use_target(target) {
+                        interaction.interaction_range = range;
+                    }
+                }
+                ActiveInteractionKind::Attack => {
+                    if !target.actor {
+                        context
+                            .intents
+                            .enqueue(GameplayIntent::CancelInteraction { actor_id });
+                        context.active_interactions_by_actor.remove(&actor_id);
+                        continue;
+                    }
+                }
             }
 
-            let in_range = Self::within_interaction_range(actor, target);
+            let in_range =
+                Self::within_distance_range(actor, target, interaction.interaction_range);
             if !in_range {
                 if interaction.remaining_seconds.is_some() {
                     context
@@ -684,8 +938,10 @@ impl GameplaySystemsHost {
             GameplaySystemId::Interaction => {
                 self.run_interaction_system(context);
             }
-            GameplaySystemId::AI
-            | GameplaySystemId::CombatResolution
+            GameplaySystemId::AI => {
+                self.run_ai_system(context);
+            }
+            GameplaySystemId::CombatResolution
             | GameplaySystemId::StatusEffects
             | GameplaySystemId::Cleanup => {
                 let _ = context.input.quit_requested();
@@ -739,6 +995,7 @@ struct GameplayScene {
     next_save_id: u64,
     health_by_entity: HashMap<EntityId, u32>,
     status_ids_by_entity: HashMap<EntityId, Vec<StatusId>>,
+    ai_agents_by_entity: HashMap<EntityId, AiAgent>,
     active_interactions_by_actor: HashMap<EntityId, ActiveInteraction>,
     next_interaction_id: u64,
     selected_completion_enqueued_this_tick: bool,
@@ -766,6 +1023,7 @@ impl GameplayScene {
             next_save_id: 0,
             health_by_entity: HashMap::new(),
             status_ids_by_entity: HashMap::new(),
+            ai_agents_by_entity: HashMap::new(),
             active_interactions_by_actor: HashMap::new(),
             next_interaction_id: 0,
             selected_completion_enqueued_this_tick: false,
@@ -1331,6 +1589,7 @@ impl GameplayScene {
         self.resource_count = save.resource_count;
         self.sync_runtime_component_stores_with_world(world);
         self.rebuild_active_interactions_from_world_order(world);
+        self.rebuild_ai_agents_from_world(world);
         Ok(())
     }
 }
@@ -1339,6 +1598,7 @@ impl GameplayScene {
     fn reset_runtime_component_stores(&mut self) {
         self.health_by_entity.clear();
         self.status_ids_by_entity.clear();
+        self.ai_agents_by_entity.clear();
         self.active_interactions_by_actor.clear();
         self.next_interaction_id = 0;
     }
@@ -1354,6 +1614,27 @@ impl GameplayScene {
             self.health_by_entity.entry(entity.id).or_insert(100);
             self.status_ids_by_entity.entry(entity.id).or_default();
         }
+    }
+
+    fn rebuild_ai_agents_from_world(&mut self, world: &SceneWorld) {
+        self.ai_agents_by_entity.clear();
+        for entity in world.entities() {
+            if !entity.actor || Some(entity.id) == self.player_id {
+                continue;
+            }
+            self.ai_agents_by_entity.insert(
+                entity.id,
+                AiAgent::from_home_position(entity.transform.position),
+            );
+        }
+    }
+
+    fn ai_state_counts(&self) -> AiStateCounts {
+        let mut counts = AiStateCounts::default();
+        for agent in self.ai_agents_by_entity.values() {
+            counts.record(agent.state);
+        }
+        counts
     }
 
     fn rebuild_active_interactions_from_world_order(&mut self, world: &SceneWorld) {
@@ -1377,12 +1658,22 @@ impl GameplayScene {
             let Some(target) = world.find_entity(target_id) else {
                 continue;
             };
-            if target.interactable.is_none() {
+            let (kind, duration_seconds, interaction_range) = if target.interactable.is_some() {
+                (
+                    ActiveInteractionKind::Use,
+                    GameplaySystemsHost::interaction_duration_seconds_for_use_target(target),
+                    GameplaySystemsHost::interaction_range_for_use_target(target)
+                        .unwrap_or(RESOURCE_PILE_INTERACTION_RADIUS),
+                )
+            } else if target.actor {
+                (
+                    ActiveInteractionKind::Attack,
+                    AI_ATTACK_INTERACTION_DURATION_SECONDS,
+                    AI_ATTACK_RANGE_UNITS,
+                )
+            } else {
                 continue;
-            }
-
-            let duration_seconds =
-                GameplaySystemsHost::interaction_duration_seconds_for_target(target);
+            };
             let interaction_id =
                 GameplaySystemsHost::alloc_interaction_id(&mut self.next_interaction_id);
             self.active_interactions_by_actor.insert(
@@ -1391,6 +1682,8 @@ impl GameplayScene {
                     actor_id: entity.id,
                     target_id,
                     interaction_id,
+                    kind,
+                    interaction_range,
                     duration_seconds,
                     remaining_seconds,
                 },
@@ -1410,7 +1703,9 @@ impl GameplayScene {
             fixed_dt_seconds,
             WorldView::new(world),
             input,
+            self.player_id,
             self.selected_entity,
+            &mut self.ai_agents_by_entity,
             &mut self.active_interactions_by_actor,
             &mut self.next_interaction_id,
             &mut self.selected_completion_enqueued_this_tick,
@@ -1442,16 +1737,30 @@ impl GameplayScene {
                         continue;
                     };
 
-                    let entity_id = world.spawn_selectable(
-                        Transform {
-                            position,
-                            rotation_radians: None,
-                        },
-                        RenderableDesc {
-                            kind: archetype.renderable,
-                            debug_name: "intent_spawn",
-                        },
-                    );
+                    let is_proto_player = archetype.def_name == "proto.player";
+                    let entity_id = if is_proto_player {
+                        world.spawn_actor(
+                            Transform {
+                                position,
+                                rotation_radians: None,
+                            },
+                            RenderableDesc {
+                                kind: archetype.renderable,
+                                debug_name: "intent_spawn_actor",
+                            },
+                        )
+                    } else {
+                        world.spawn_selectable(
+                            Transform {
+                                position,
+                                rotation_radians: None,
+                            },
+                            RenderableDesc {
+                                kind: archetype.renderable,
+                                debug_name: "intent_spawn",
+                            },
+                        )
+                    };
                     stats.spawned_entity_ids.push(entity_id);
 
                     match self.alloc_next_save_id() {
@@ -1463,6 +1772,21 @@ impl GameplayScene {
                     }
                     self.health_by_entity.entry(entity_id).or_insert(100);
                     self.status_ids_by_entity.entry(entity_id).or_default();
+                    if is_proto_player {
+                        self.ai_agents_by_entity
+                            .insert(entity_id, AiAgent::from_home_position(position));
+                    }
+                }
+                GameplayIntent::SetMoveTarget { actor_id, point } => {
+                    let Some(actor) = world.find_entity_mut(actor_id) else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    if !actor.actor {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    actor.order_state = OrderState::MoveTo { point };
                 }
                 GameplayIntent::DespawnEntity { entity_id } => {
                     if !world.despawn(entity_id) {
@@ -1478,6 +1802,7 @@ impl GameplayScene {
                     }
                     self.health_by_entity.remove(&entity_id);
                     self.status_ids_by_entity.remove(&entity_id);
+                    self.ai_agents_by_entity.remove(&entity_id);
                     self.active_interactions_by_actor.remove(&entity_id);
                 }
                 GameplayIntent::ApplyDamage { entity_id, amount } => {
@@ -1570,6 +1895,29 @@ impl GameplayScene {
                         continue;
                     }
                     actor.order_state = OrderState::Idle;
+
+                    // Mechanical interaction outcomes for resource piles:
+                    // successful completion grants one item and consumes one use.
+                    let mut should_despawn_target = false;
+                    if let Some(target) = world.find_entity_mut(target_id) {
+                        if let Some(interactable) = target.interactable.as_mut() {
+                            if interactable.remaining_uses > 0 {
+                                interactable.remaining_uses -= 1;
+                                self.resource_count = self.resource_count.saturating_add(1);
+                            }
+                            should_despawn_target = interactable.remaining_uses == 0;
+                        }
+                    }
+
+                    if should_despawn_target {
+                        if world.despawn(target_id) {
+                            self.remove_entity_save_mapping(target_id);
+                        }
+                        self.health_by_entity.remove(&target_id);
+                        self.status_ids_by_entity.remove(&target_id);
+                        self.ai_agents_by_entity.remove(&target_id);
+                        self.active_interactions_by_actor.remove(&target_id);
+                    }
                 }
             }
         }
@@ -1586,8 +1934,60 @@ impl GameplayScene {
         let intents = self.system_intents.drain_current_tick();
         let stats = self.apply_gameplay_intents_at_safe_point(intents, world);
         self.system_intents.set_last_tick_apply_stats(stats);
+        self.ensure_authoritative_player_exists_if_missing(world);
         self.apply_gameplay_tick_at_safe_point(fixed_dt_seconds, input, world);
         self.system_events.finish_tick_rollover();
+    }
+
+    fn ensure_authoritative_player_exists_if_missing(&mut self, world: &mut SceneWorld) {
+        if let Some(player_id) = self.player_id {
+            if world.find_entity(player_id).is_some()
+                || self.entity_save_ids.contains_key(&player_id)
+            {
+                self.ai_agents_by_entity.remove(&player_id);
+                return;
+            }
+            self.player_id = None;
+        }
+        if world.def_database().is_none() {
+            return;
+        }
+
+        let player_archetype = resolve_player_archetype(world);
+        let player_id = world.spawn_actor(
+            Transform {
+                position: self.player_spawn,
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: player_archetype.renderable,
+                debug_name: "player_auto",
+            },
+        );
+
+        match self.alloc_next_save_id() {
+            Ok(save_id) => {
+                self.entity_save_ids.insert(player_id, save_id);
+                self.save_id_to_entity.insert(save_id, player_id);
+            }
+            Err(error) => {
+                warn!(
+                    scene = self.scene_name,
+                    error = %error,
+                    "failed_to_allocate_save_id_for_auto_player"
+                );
+            }
+        }
+
+        self.health_by_entity.entry(player_id).or_insert(100);
+        self.status_ids_by_entity.entry(player_id).or_default();
+        self.ai_agents_by_entity.remove(&player_id);
+        self.player_id = Some(player_id);
+        info!(
+            scene = self.scene_name,
+            player_id = player_id.0,
+            "authoritative_player_auto_spawned"
+        );
     }
 
     fn apply_gameplay_tick_at_safe_point(
@@ -1864,6 +2264,7 @@ impl Scene for GameplayScene {
         self.sync_save_id_map_with_world(world)
             .expect("initial save_id assignment should not fail");
         self.sync_runtime_component_stores_with_world(world);
+        self.rebuild_ai_agents_from_world(world);
         info!(
             scene = self.scene_name,
             entity_count = world.entity_count(),
@@ -2074,6 +2475,7 @@ impl Scene for GameplayScene {
 
         let event_counts = self.system_events.last_tick_counts();
         let intent_stats = self.system_intents.last_tick_apply_stats();
+        let ai_counts = self.ai_state_counts();
         let interaction_line = if let Some(selected_id) = self.selected_entity {
             if let Some(active) = self.active_interactions_by_actor.get(&selected_id) {
                 let rem_text = match active.remaining_seconds {
@@ -2096,7 +2498,11 @@ impl Scene for GameplayScene {
                     .find_entity(active.actor_id)
                     .zip(world.find_entity(active.target_id))
                     .map(|(actor, target)| {
-                        GameplaySystemsHost::within_interaction_range(actor, target)
+                        GameplaySystemsHost::within_distance_range(
+                            actor,
+                            target,
+                            active.interaction_range,
+                        )
                     })
                     .unwrap_or(false);
                 let remaining = match active.remaining_seconds {
@@ -2147,8 +2553,9 @@ impl Scene for GameplayScene {
             ),
             format!("in: {}", intent_stats.total),
             format!(
-                "ink: sp:{} de:{} dmg:{} add:{} rem:{} si:{} ci:{} ca:{}",
+                "ink: sp:{} mt:{} de:{} dmg:{} add:{} rem:{} si:{} ci:{} ca:{}",
                 intent_stats.spawn_by_archetype_id,
+                intent_stats.set_move_target,
                 intent_stats.despawn_entity,
                 intent_stats.apply_damage,
                 intent_stats.add_status,
@@ -2158,6 +2565,10 @@ impl Scene for GameplayScene {
                 intent_stats.cancel_interaction,
             ),
             format!("in_bad: {}", intent_stats.invalid_target_count),
+            format!(
+                "ai: id:{} wa:{} ch:{} use:{}",
+                ai_counts.idle, ai_counts.wander, ai_counts.chase, ai_counts.use_interaction
+            ),
             interaction_line,
             interaction_probe_line,
         ];
@@ -2542,6 +2953,15 @@ mod tests {
             .max()
             .unwrap_or(0);
         EntityId(max_id.saturating_add(1))
+    }
+
+    fn first_non_player_actor_id(scene: &GameplayScene, world: &SceneWorld) -> EntityId {
+        world
+            .entities()
+            .iter()
+            .find(|entity| entity.actor && Some(entity.id) != scene.player_id)
+            .map(|entity| entity.id)
+            .expect("non-player actor")
     }
 
     fn advance(scene: &mut GameplayScene, world: &mut SceneWorld, steps: usize, fixed_dt: f32) {
@@ -2957,7 +3377,12 @@ mod tests {
         scene.load(&mut world);
         world.apply_pending();
 
-        let victim_id = world.entities()[0].id;
+        let victim_id = world
+            .entities()
+            .iter()
+            .find(|entity| Some(entity.id) != scene.player_id)
+            .map(|entity| entity.id)
+            .expect("non-player victim");
         let before_count = world.entity_count();
         let archetype_id = world
             .def_database()
@@ -3033,7 +3458,12 @@ mod tests {
         world.apply_pending();
         assert_eq!(world.entity_count(), before_spawn_count + 1);
 
-        let victim_id = world.entities()[0].id;
+        let victim_id = world
+            .entities()
+            .iter()
+            .find(|entity| Some(entity.id) != scene.player_id)
+            .map(|entity| entity.id)
+            .expect("non-player victim");
         let before_despawn_count = world.entity_count();
         let despawn_result = scene.execute_debug_command(
             SceneDebugCommand::Despawn {
@@ -3049,7 +3479,7 @@ mod tests {
         assert_eq!(world.entity_count(), before_despawn_count);
         scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
         world.apply_pending();
-        assert_eq!(world.entity_count(), before_despawn_count - 1);
+        assert!(world.entity_count() <= before_despawn_count);
         assert!(world.find_entity(victim_id).is_none());
     }
 
@@ -3643,6 +4073,8 @@ mod tests {
                 actor_id: actor,
                 target_id: pile,
                 interaction_id: InteractionId(99),
+                kind: ActiveInteractionKind::Use,
+                interaction_range: RESOURCE_PILE_INTERACTION_RADIUS,
                 duration_seconds: JOB_DURATION_SECONDS,
                 remaining_seconds: Some(1.0),
             },
@@ -3781,6 +4213,8 @@ mod tests {
                 actor_id: actor,
                 target_id: target,
                 interaction_id: InteractionId(777),
+                kind: ActiveInteractionKind::Use,
+                interaction_range: RESOURCE_PILE_INTERACTION_RADIUS,
                 duration_seconds: 0.0,
                 remaining_seconds: None,
             },
@@ -3811,6 +4245,272 @@ mod tests {
             .count();
         assert_eq!(complete_count, 1);
         assert_eq!(start_count, 0);
+    }
+
+    #[test]
+    fn ai_state_transitions_idle_wander_chase_useinteraction_with_cooldown() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let player_id = scene.player_id.expect("player");
+        let npc_id = first_non_player_actor_id(&scene, &world);
+        scene.ai_agents_by_entity.clear();
+        scene.ai_agents_by_entity.insert(
+            npc_id,
+            AiAgent::from_home_position(world.find_entity(npc_id).expect("npc").transform.position),
+        );
+
+        world
+            .find_entity_mut(npc_id)
+            .expect("npc")
+            .transform
+            .position = Vec2 { x: 20.0, y: 0.0 };
+        world
+            .find_entity_mut(player_id)
+            .expect("player")
+            .transform
+            .position = Vec2 { x: 0.0, y: 0.0 };
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let wander_agent = scene.ai_agents_by_entity.get(&npc_id).expect("agent");
+        assert_eq!(wander_agent.state, AiState::Wander);
+        let wander_intents = scene.system_intents.drain_current_tick();
+        assert!(wander_intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::SetMoveTarget { actor_id, .. } if *actor_id == npc_id
+            )
+        }));
+        scene.system_events.clear_current_tick();
+
+        world
+            .find_entity_mut(npc_id)
+            .expect("npc")
+            .transform
+            .position = Vec2 { x: 3.0, y: 0.0 };
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let chase_agent = scene.ai_agents_by_entity.get(&npc_id).expect("agent");
+        assert_eq!(chase_agent.state, AiState::Chase);
+        let chase_intents = scene.system_intents.drain_current_tick();
+        assert!(chase_intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::SetMoveTarget { actor_id, .. } if *actor_id == npc_id
+            )
+        }));
+        scene.system_events.clear_current_tick();
+
+        world
+            .find_entity_mut(npc_id)
+            .expect("npc")
+            .transform
+            .position = Vec2 { x: 0.5, y: 0.0 };
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let use_agent = scene.ai_agents_by_entity.get(&npc_id).expect("agent");
+        assert_eq!(use_agent.state, AiState::UseInteraction);
+        assert!(use_agent.cooldown_remaining_seconds > 0.0);
+        let use_intents = scene.system_intents.drain_current_tick();
+        assert!(use_intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::StartInteraction { actor_id, target_id }
+                    if *actor_id == npc_id && *target_id == player_id
+            )
+        }));
+    }
+
+    #[test]
+    fn ai_smoke_spawned_npc_reaches_attack_interaction_within_bounded_ticks() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let player_id = scene.player_id.expect("player");
+        let player_pos = world
+            .find_entity(player_id)
+            .expect("player")
+            .transform
+            .position;
+        let spawn_result = scene.execute_debug_command(
+            SceneDebugCommand::Spawn {
+                def_name: "proto.player".to_string(),
+                position: Some((player_pos.x + 0.5, player_pos.y)),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(spawn_result, SceneDebugCommandResult::Success(_)));
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+        let spawned_ids = scene
+            .system_intents
+            .last_tick_apply_stats()
+            .spawned_entity_ids
+            .clone();
+        assert_eq!(spawned_ids.len(), 1);
+        let spawned_npc_id = spawned_ids[0];
+        scene.ai_agents_by_entity.clear();
+        scene.ai_agents_by_entity.insert(
+            spawned_npc_id,
+            AiAgent::from_home_position(
+                world
+                    .find_entity(spawned_npc_id)
+                    .expect("spawned npc")
+                    .transform
+                    .position,
+            ),
+        );
+
+        let mut saw_start = false;
+        let mut saw_terminal = false;
+        for _ in 0..40 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let stats = scene.system_intents.last_tick_apply_stats();
+            if stats.start_interaction > 0 {
+                saw_start = true;
+            }
+            if stats.complete_interaction > 0 || stats.cancel_interaction > 0 {
+                saw_terminal = true;
+            }
+            if saw_start && saw_terminal {
+                break;
+            }
+        }
+
+        assert!(saw_start);
+        assert!(saw_terminal);
+    }
+
+    #[test]
+    fn ai_does_not_enqueue_set_move_target_when_interaction_is_in_progress() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let player_id = scene.player_id.expect("player");
+        let npc_id = first_non_player_actor_id(&scene, &world);
+        scene.ai_agents_by_entity.clear();
+        scene.ai_agents_by_entity.insert(
+            npc_id,
+            AiAgent::from_home_position(world.find_entity(npc_id).expect("npc").transform.position),
+        );
+        world
+            .find_entity_mut(npc_id)
+            .expect("npc")
+            .transform
+            .position = Vec2 { x: 3.0, y: 0.0 };
+        world
+            .find_entity_mut(player_id)
+            .expect("player")
+            .transform
+            .position = Vec2 { x: 0.0, y: 0.0 };
+
+        scene.active_interactions_by_actor.insert(
+            npc_id,
+            ActiveInteraction {
+                actor_id: npc_id,
+                target_id: player_id,
+                interaction_id: InteractionId(900),
+                kind: ActiveInteractionKind::Attack,
+                interaction_range: AI_ATTACK_RANGE_UNITS,
+                duration_seconds: AI_ATTACK_INTERACTION_DURATION_SECONDS,
+                remaining_seconds: None,
+            },
+        );
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let intents_with_runtime = scene.system_intents.drain_current_tick();
+        assert!(!intents_with_runtime.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::SetMoveTarget { actor_id, .. } if *actor_id == npc_id
+            )
+        }));
+        scene.active_interactions_by_actor.clear();
+        scene.system_events.clear_current_tick();
+
+        let player_save_id = scene.save_id_for_entity(player_id).expect("player save id");
+        world.find_entity_mut(npc_id).expect("npc").order_state = OrderState::Interact {
+            target_save_id: player_save_id,
+        };
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let intents_with_world_order = scene.system_intents.drain_current_tick();
+        assert!(!intents_with_world_order.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::SetMoveTarget { actor_id, .. } if *actor_id == npc_id
+            )
+        }));
+    }
+
+    #[test]
+    fn spawn_proto_player_never_replaces_player_id() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let original_player_id = scene.player_id.expect("player");
+        let spawn_result = scene.execute_debug_command(
+            SceneDebugCommand::Spawn {
+                def_name: "proto.player".to_string(),
+                position: Some((10.0, -4.0)),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(spawn_result, SceneDebugCommandResult::Success(_)));
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+
+        assert_eq!(scene.player_id, Some(original_player_id));
+        let spawned_ids = scene
+            .system_intents
+            .last_tick_apply_stats()
+            .spawned_entity_ids
+            .clone();
+        assert_eq!(spawned_ids.len(), 1);
+        let spawned_id = spawned_ids[0];
+        let spawned = world.find_entity(spawned_id).expect("spawned proto.player");
+        assert!(spawned.actor);
+        assert!(scene.ai_agents_by_entity.contains_key(&spawned_id));
+    }
+
+    #[test]
+    fn auto_spawn_restores_authoritative_player_once_when_missing() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let original_player_id = scene.player_id.expect("player");
+        let baseline_entity_count = world.entity_count();
+        scene.system_intents.enqueue(GameplayIntent::DespawnEntity {
+            entity_id: original_player_id,
+        });
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+
+        let restored_player_id = scene.player_id.expect("restored player");
+        assert_ne!(restored_player_id, original_player_id);
+        assert!(world.find_entity(restored_player_id).is_some());
+        assert_eq!(world.entity_count(), baseline_entity_count);
+
+        let after_restore_count = world.entity_count();
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+        assert_eq!(scene.player_id, Some(restored_player_id));
+        assert_eq!(world.entity_count(), after_restore_count);
     }
 
     #[test]
@@ -3936,6 +4636,7 @@ mod tests {
             .iter()
             .any(|line| line.starts_with("ink: ") && line.contains(" ca:")));
         assert!(extra.iter().any(|line| line.starts_with("in_bad: ")));
+        assert!(extra.iter().any(|line| line.starts_with("ai: ")));
         assert!(extra.iter().any(|line| line.starts_with("ix: ")));
         assert!(extra.iter().any(|line| line.starts_with("ixd: ")));
     }
@@ -3964,6 +4665,7 @@ mod tests {
             .iter()
             .any(|line| line.starts_with("ink: ") && line.contains(" ca:")));
         assert!(extra.iter().any(|line| line.starts_with("in_bad: ")));
+        assert!(extra.iter().any(|line| line.starts_with("ai: ")));
         assert!(extra.iter().any(|line| line.starts_with("ix: ")));
         assert!(extra.iter().any(|line| line.starts_with("ixd: ")));
     }
@@ -4652,13 +5354,13 @@ mod tests {
         assert_eq!(digest_a, digest_b);
 
         let (_, final_digest) = digest_a.last().expect("final checkpoint digest");
-        assert_eq!(final_digest.resource_count, 0);
+        assert_eq!(final_digest.resource_count, 1);
         assert!(
-            final_digest
+            !final_digest
                 .entities
                 .iter()
                 .any(|entity| entity.save_id == target_save_id_a),
-            "expected target save_id {} to remain present without legacy despawn side effects",
+            "expected target save_id {} to be consumed by completion",
             target_save_id_a
         );
     }

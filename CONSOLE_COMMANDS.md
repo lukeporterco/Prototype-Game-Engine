@@ -104,6 +104,8 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `spawn proto.worker 1.5 -2.0`
 - Defaults:
 - If `[x y]` is omitted, spawn position priority is: cursor world position (if available), else player position, else origin.
+- Special case:
+- `spawn proto.player` creates an AI-controlled actor and does not replace the authoritative `player_id`.
 - Result examples:
 - `ok: queued spawn 'proto.worker' at (1.50, -2.00)`
 - `error: unknown entity def 'proto.unknown'`
@@ -113,6 +115,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 
 - Queueable commands are still parsed in tools, then routed for execution in the loop.
 - `spawn`/`despawn` enqueue gameplay intents and world mutation occurs once per tick at the gameplay safe apply point.
+- If the authoritative player is missing, gameplay auto-spawns exactly one authoritative player actor on tick apply.
 - `DebugCommand` stays in tools/engine layer; only `spawn`/`despawn` map one-way into scene-facing `SceneDebugCommand`.
 - Processor prints parse errors with usage hints.
 - Unknown commands print `error: unknown command '<name>'. try: help`.
