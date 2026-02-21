@@ -1,4 +1,4 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 
 use engine::RemoteConsoleLinePump;
@@ -183,6 +183,37 @@ impl TcpRemoteConsoleTransport {
             }
         }
     }
+
+    fn send_output_lines(&mut self, lines: &[String]) {
+        if lines.is_empty() {
+            return;
+        }
+
+        let mut index = 0usize;
+        while index < self.clients.len() {
+            let mut remove_client = false;
+            {
+                let client = &mut self.clients[index];
+                for line in lines {
+                    if let Err(err) = write_line_non_blocking(&mut client.stream, line) {
+                        if err.kind() == io::ErrorKind::WouldBlock {
+                            break;
+                        }
+
+                        warn!(error = %err, "thruport_client_write_failed");
+                        remove_client = true;
+                        break;
+                    }
+                }
+            }
+
+            if remove_client {
+                self.clients.swap_remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
 }
 
 pub(crate) fn initialize(hooks: DevThruportHooks) -> DevThruport {
@@ -234,6 +265,12 @@ impl RemoteConsoleLinePump for DevThruport {
     fn poll_lines(&mut self, out: &mut Vec<String>) {
         self.poll_remote_lines(out);
     }
+
+    fn send_output_lines(&mut self, lines: &[String]) {
+        if let DevThruportMode::Enabled(transport) = &mut self.mode {
+            transport.send_output_lines(lines);
+        }
+    }
 }
 
 fn localhost_bind_addr(port: u16) -> SocketAddr {
@@ -267,9 +304,33 @@ fn drain_complete_lines(buffer: &mut Vec<u8>, out: &mut Vec<String>) {
     }
 }
 
+fn write_line_non_blocking(stream: &mut TcpStream, line: &str) -> io::Result<()> {
+    let mut payload = Vec::with_capacity(line.len() + 1);
+    payload.extend_from_slice(line.as_bytes());
+    payload.push(b'\n');
+
+    let mut written = 0usize;
+    while written < payload.len() {
+        match stream.write(&payload[written..]) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "thruport_write_zero",
+                ));
+            }
+            Ok(bytes_written) => {
+                written += bytes_written;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::{self, Read, Write};
     use std::net::TcpStream;
     use std::thread;
     use std::time::Duration;
@@ -331,5 +392,49 @@ mod tests {
         }
 
         assert_eq!(out, vec!["help".to_string()]);
+    }
+
+    #[test]
+    fn tcp_transport_writes_output_lines_to_connected_client() {
+        let mut transport = TcpRemoteConsoleTransport::bind_localhost(0).expect("bind");
+        let addr = transport.listener.local_addr().expect("local_addr");
+        let mut client = TcpStream::connect(addr).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set_read_timeout");
+        client
+            .set_nonblocking(true)
+            .expect("set_nonblocking_client");
+
+        let mut ignored = Vec::new();
+        for _ in 0..20 {
+            transport.poll_lines(&mut ignored);
+            if transport.clients.len() == 1 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(transport.clients.len(), 1);
+
+        let expected = b"ok: ready\nerror: nope\n";
+        let mut received = Vec::new();
+        for _ in 0..40 {
+            transport.send_output_lines(&["ok: ready".to_string(), "error: nope".to_string()]);
+            let mut chunk = [0u8; 64];
+            match client.read(&mut chunk) {
+                Ok(bytes_read) if bytes_read > 0 => {
+                    received.extend_from_slice(&chunk[..bytes_read]);
+                    if received.ends_with(expected) {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                Err(err) => panic!("unexpected read error: {err}"),
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(received.ends_with(expected));
     }
 }

@@ -15,6 +15,7 @@ const CONSOLE_PROMPT_PREFIX: &str = "> ";
 
 pub(crate) const MAX_HISTORY_LINES: usize = 64;
 pub(crate) const MAX_OUTPUT_LINES: usize = 256;
+pub(crate) const MAX_NEW_OUTPUT_LINES: usize = 256;
 pub(crate) const MAX_PENDING_LINES: usize = 64;
 pub(crate) const MAX_CURRENT_LINE_CHARS: usize = 256;
 
@@ -26,6 +27,7 @@ pub(crate) struct ConsoleState {
     history_cursor: Option<usize>,
     history_draft: Option<String>,
     output_lines: VecDeque<String>,
+    new_output_since_last_poll: VecDeque<String>,
     pending_lines: VecDeque<String>,
 }
 
@@ -71,11 +73,18 @@ impl ConsoleState {
     }
 
     pub(crate) fn append_output_line(&mut self, line: impl Into<String>) {
-        push_bounded(&mut self.output_lines, line.into(), MAX_OUTPUT_LINES);
+        let line = line.into();
+        push_bounded(&mut self.output_lines, line.clone(), MAX_OUTPUT_LINES);
+        push_bounded(
+            &mut self.new_output_since_last_poll,
+            line,
+            MAX_NEW_OUTPUT_LINES,
+        );
     }
 
     pub(crate) fn clear_output_lines(&mut self) {
         self.output_lines.clear();
+        self.new_output_since_last_poll.clear();
     }
 
     #[cfg(test)]
@@ -89,6 +98,10 @@ impl ConsoleState {
 
     pub(crate) fn drain_pending_lines_into(&mut self, out: &mut Vec<String>) {
         out.extend(self.pending_lines.drain(..));
+    }
+
+    pub(crate) fn drain_new_output_lines_into(&mut self, out: &mut Vec<String>) {
+        out.extend(self.new_output_since_last_poll.drain(..));
     }
 
     fn handle_key_code(&mut self, key_code: KeyCode) {
@@ -441,6 +454,53 @@ mod tests {
 
         assert_eq!(drained, vec!["help".to_string()]);
         assert!(console.pending_lines.is_empty());
+    }
+
+    #[test]
+    fn new_output_buffer_tracks_append_and_drain() {
+        let mut console = ConsoleState::default();
+        console.append_output_line("ok: one");
+        console.append_output_line("error: two");
+
+        let mut drained = Vec::new();
+        console.drain_new_output_lines_into(&mut drained);
+        assert_eq!(
+            drained,
+            vec!["ok: one".to_string(), "error: two".to_string()]
+        );
+
+        drained.clear();
+        console.drain_new_output_lines_into(&mut drained);
+        assert!(drained.is_empty());
+    }
+
+    #[test]
+    fn new_output_buffer_is_bounded() {
+        let mut console = ConsoleState::default();
+        for idx in 0..(MAX_NEW_OUTPUT_LINES + 2) {
+            console.append_output_line(format!("line-{idx}"));
+        }
+
+        let mut drained = Vec::new();
+        console.drain_new_output_lines_into(&mut drained);
+        assert_eq!(drained.len(), MAX_NEW_OUTPUT_LINES);
+        assert_eq!(drained.first().map(String::as_str), Some("line-2"));
+        let expected_last = format!("line-{}", MAX_NEW_OUTPUT_LINES + 1);
+        assert_eq!(
+            drained.last().map(String::as_str),
+            Some(expected_last.as_str())
+        );
+    }
+
+    #[test]
+    fn clear_output_lines_clears_new_output_buffer() {
+        let mut console = ConsoleState::default();
+        console.append_output_line("ok: line");
+        console.clear_output_lines();
+
+        let mut drained = Vec::new();
+        console.drain_new_output_lines_into(&mut drained);
+        assert!(drained.is_empty());
     }
 
     #[test]

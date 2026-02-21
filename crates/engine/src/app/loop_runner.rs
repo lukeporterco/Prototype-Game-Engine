@@ -31,6 +31,8 @@ const SOFT_BUDGET_CONSECUTIVE_BREACH_FRAMES: u32 = 3;
 
 pub trait RemoteConsoleLinePump: Send {
     fn poll_lines(&mut self, out: &mut Vec<String>);
+
+    fn send_output_lines(&mut self, _lines: &[String]) {}
 }
 
 #[derive(Default)]
@@ -216,6 +218,7 @@ fn run_app_with_metrics_and_hooks(
     let mut console_command_processor = ConsoleCommandProcessor::new();
     let mut drained_debug_commands = Vec::<DebugCommand>::new();
     let mut remote_console_lines = Vec::<String>::new();
+    let mut remote_console_output_lines = Vec::<String>::new();
     info!(
         perf_stats_enabled_by_default = PerfStats::enabled_by_default(),
         perf_window_frames = PerfStats::window_len(),
@@ -309,6 +312,11 @@ fn run_app_with_metrics_and_hooks(
                             info!(reason = "console_quit_command", "shutdown_requested");
                             window_target.exit();
                         }
+                        forward_console_output_lines_to_remote(
+                            &mut runtime_hooks,
+                            &mut console,
+                            &mut remote_console_output_lines,
+                        );
 
                         if slow_frame_delay > Duration::ZERO {
                             // Explicit debug perturbation only; this is not the FPS cap.
@@ -792,6 +800,22 @@ fn poll_remote_console_lines_into_console(
     }
 }
 
+fn forward_console_output_lines_to_remote(
+    hooks: &mut LoopRuntimeHooks,
+    console: &mut ConsoleState,
+    scratch: &mut Vec<String>,
+) {
+    let Some(pump) = hooks.remote_console_pump.as_mut() else {
+        return;
+    };
+
+    scratch.clear();
+    console.drain_new_output_lines_into(scratch);
+    if !scratch.is_empty() {
+        pump.send_output_lines(scratch);
+    }
+}
+
 fn execute_drained_debug_commands(
     commands: &mut Vec<DebugCommand>,
     scenes: &mut SceneMachine,
@@ -1116,6 +1140,8 @@ fn zoom_steps_from_scroll_delta(delta: MouseScrollDelta) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
 
     struct NoopScene;
@@ -1223,6 +1249,19 @@ mod tests {
         }
     }
 
+    struct OutputCapturePump {
+        captured: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RemoteConsoleLinePump for OutputCapturePump {
+        fn poll_lines(&mut self, _out: &mut Vec<String>) {}
+
+        fn send_output_lines(&mut self, lines: &[String]) {
+            let mut captured = self.captured.lock().expect("lock");
+            captured.extend(lines.iter().cloned());
+        }
+    }
+
     #[test]
     fn remote_pump_lines_are_enqueued_before_processing() {
         let mut hooks = LoopRuntimeHooks {
@@ -1236,6 +1275,28 @@ mod tests {
         processor.process_pending_lines(&mut console);
 
         assert_eq!(console.output_lines().collect::<Vec<_>>(), vec!["remote"]);
+    }
+
+    #[test]
+    fn remote_output_lines_are_forwarded_after_console_append() {
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut hooks = LoopRuntimeHooks {
+            remote_console_pump: Some(Box::new(OutputCapturePump {
+                captured: Arc::clone(&captured),
+            })),
+        };
+        let mut console = ConsoleState::default();
+        let mut scratch = Vec::<String>::new();
+
+        console.append_output_line("ok: one");
+        console.append_output_line("error: two");
+        forward_console_output_lines_to_remote(&mut hooks, &mut console, &mut scratch);
+
+        let received = captured.lock().expect("lock");
+        assert_eq!(
+            *received,
+            vec!["ok: one".to_string(), "error: two".to_string()]
+        );
     }
 
     #[test]

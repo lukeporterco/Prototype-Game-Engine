@@ -221,3 +221,14 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - `run_app_with_hooks(...)`
 - Engine redraw flow now polls remote lines once before `ConsoleCommandProcessor::process_pending_lines`, and enqueues via `ConsoleState::enqueue_pending_line`.
 - When disabled, no socket is opened and behavior remains equivalent to prior path.
+
+## Ticket 43 Console Output Tee + Remote Readback (2026-02-21)
+- Added bounded console output delta buffer in engine console state to expose "new output since last poll".
+- `ConsoleState::append_output_line` now tees each output line into:
+  - existing visible output history
+  - bounded remote-drain buffer (`MAX_NEW_OUTPUT_LINES`).
+- Added `ConsoleState::drain_new_output_lines_into(...)` and ensured `clear_output_lines()` clears both output stores.
+- Extended engine thruport hook trait `RemoteConsoleLinePump` with default no-op `send_output_lines(&[String])`.
+- Engine redraw path now forwards newly appended console output lines to remote hook after command processing/execution.
+- Game thruport transport now writes newline-delimited UTF-8 output lines to connected TCP clients via non-blocking writes.
+- Readback remains localhost-only transport behavior and does not alter console command semantics or output text.
