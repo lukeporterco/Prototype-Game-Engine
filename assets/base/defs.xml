@@ -4,6 +4,9 @@
     <label>Player</label>
     <renderable kind="Sprite" spriteKey="player" />
     <moveSpeed>5.0</moveSpeed>
+    <tags>
+      <li>actor</li>
+    </tags>
   </EntityDef>
   <EntityDef>
     <defName>proto.resource_pile</defName>
@@ -12,6 +15,46 @@
     <tags>
       <li>interactable</li>
       <li>resource_pile</li>
+    </tags>
+  </EntityDef>
+  <EntityDef>
+    <defName>proto.npc_chaser</defName>
+    <label>NpcChaser</label>
+    <renderable kind="Sprite" spriteKey="player" />
+    <moveSpeed>5.0</moveSpeed>
+    <tags>
+      <li>actor</li>
+      <li>npc</li>
+    </tags>
+  </EntityDef>
+  <EntityDef>
+    <defName>proto.npc_dummy</defName>
+    <label>NpcDummy</label>
+    <renderable kind="Sprite" spriteKey="player" />
+    <moveSpeed>5.0</moveSpeed>
+    <tags>
+      <li>actor</li>
+      <li>npc</li>
+    </tags>
+  </EntityDef>
+  <EntityDef>
+    <defName>proto.stockpile_small</defName>
+    <label>StockpileSmall</label>
+    <renderable kind="Placeholder" />
+    <tags>
+      <li>interactable</li>
+      <li>resource_pile</li>
+      <li>stockpile_small</li>
+    </tags>
+  </EntityDef>
+  <EntityDef>
+    <defName>proto.door_dummy</defName>
+    <label>DoorDummy</label>
+    <renderable kind="Placeholder" />
+    <tags>
+      <li>interactable</li>
+      <li>door_dummy</li>
+      <li>immediate_use</li>
     </tags>
   </EntityDef>
 </Defs>

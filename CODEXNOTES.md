@@ -155,3 +155,9 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - `player_id` is authoritative: `spawn proto.player` creates an AI-controlled actor but never replaces `GameplayScene.player_id`.
 - Scene now auto-restores exactly one authoritative player when missing via `ensure_authoritative_player_exists_if_missing` during tick apply.
 
+## Microticket 37.1 Content Expansion (2026-02-21)
+- `assets/base/defs.xml` now includes `proto.npc_chaser`, `proto.npc_dummy`, `proto.stockpile_small`, and `proto.door_dummy` in addition to existing defs.
+- Spawn runtime role wiring in `crates/game/src/main.rs` is now tag-driven for debug/intents: `actor` tag spawns with `spawn_actor`, `interactable` tag initializes runtime `Interactable` data.
+- `proto.player` now includes the `actor` tag to preserve tag-driven spawn behavior compatibility.
+- `proto.door_dummy` currently carries `immediate_use` as metadata only; immediate duration behavior is explicitly deferred (no interaction logic changes in this microticket).
+

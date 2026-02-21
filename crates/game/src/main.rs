@@ -1737,8 +1737,10 @@ impl GameplayScene {
                         continue;
                     };
 
-                    let is_proto_player = archetype.def_name == "proto.player";
-                    let entity_id = if is_proto_player {
+                    let has_actor_tag = archetype.tags.iter().any(|tag| tag == "actor");
+                    let has_interactable_tag =
+                        archetype.tags.iter().any(|tag| tag == "interactable");
+                    let entity_id = if has_actor_tag {
                         world.spawn_actor(
                             Transform {
                                 position,
@@ -1761,6 +1763,7 @@ impl GameplayScene {
                             },
                         )
                     };
+                    world.apply_pending();
                     stats.spawned_entity_ids.push(entity_id);
 
                     match self.alloc_next_save_id() {
@@ -1772,7 +1775,18 @@ impl GameplayScene {
                     }
                     self.health_by_entity.entry(entity_id).or_insert(100);
                     self.status_ids_by_entity.entry(entity_id).or_default();
-                    if is_proto_player {
+
+                    if has_interactable_tag {
+                        if let Some(entity) = world.find_entity_mut(entity_id) {
+                            entity.interactable = Some(Interactable {
+                                kind: InteractableKind::ResourcePile,
+                                interaction_radius: RESOURCE_PILE_INTERACTION_RADIUS,
+                                remaining_uses: RESOURCE_PILE_STARTING_USES,
+                            });
+                        }
+                    }
+
+                    if has_actor_tag && Some(entity_id) != self.player_id {
                         self.ai_agents_by_entity
                             .insert(entity_id, AiAgent::from_home_position(position));
                     }
@@ -3523,6 +3537,110 @@ mod tests {
             &mut world,
         );
         assert!(matches!(failure, SceneDebugCommandResult::Error(_)));
+    }
+
+    #[test]
+    fn default_content_pack_contains_new_microticket_defs() {
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        let def_db = world.def_database().expect("def database");
+        for def_name in [
+            "proto.npc_chaser",
+            "proto.npc_dummy",
+            "proto.stockpile_small",
+            "proto.door_dummy",
+        ] {
+            assert!(
+                def_db.entity_def_id_by_name(def_name).is_some(),
+                "missing def {def_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_by_archetype_tags_drive_actor_and_interactable_runtime_roles() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let def_db = world.def_database().expect("def database");
+        let npc_chaser_id = def_db
+            .entity_def_id_by_name("proto.npc_chaser")
+            .expect("npc chaser def");
+        let npc_dummy_id = def_db
+            .entity_def_id_by_name("proto.npc_dummy")
+            .expect("npc dummy def");
+        let stockpile_small_id = def_db
+            .entity_def_id_by_name("proto.stockpile_small")
+            .expect("stockpile small def");
+        let door_dummy_id = def_db
+            .entity_def_id_by_name("proto.door_dummy")
+            .expect("door dummy def");
+
+        let intents = vec![
+            GameplayIntent::SpawnByArchetypeId {
+                archetype_id: npc_chaser_id,
+                position: Vec2 { x: 10.0, y: 0.0 },
+            },
+            GameplayIntent::SpawnByArchetypeId {
+                archetype_id: npc_dummy_id,
+                position: Vec2 { x: 11.0, y: 0.0 },
+            },
+            GameplayIntent::SpawnByArchetypeId {
+                archetype_id: stockpile_small_id,
+                position: Vec2 { x: 12.0, y: 0.0 },
+            },
+            GameplayIntent::SpawnByArchetypeId {
+                archetype_id: door_dummy_id,
+                position: Vec2 { x: 13.0, y: 0.0 },
+            },
+        ];
+
+        let stats = scene.apply_gameplay_intents_at_safe_point(intents, &mut world);
+        world.apply_pending();
+
+        assert_eq!(stats.invalid_target_count, 0);
+        assert_eq!(stats.spawn_by_archetype_id, 4);
+        assert_eq!(stats.spawned_entity_ids.len(), 4);
+
+        let spawned = stats
+            .spawned_entity_ids
+            .iter()
+            .map(|id| {
+                let entity = world.find_entity(*id).expect("spawned entity");
+                (
+                    entity.transform.position,
+                    entity.actor,
+                    entity.interactable.is_some(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let chaser = spawned
+            .iter()
+            .find(|(pos, _, _)| (pos.x - 10.0).abs() < 0.001)
+            .expect("chaser spawn");
+        assert!(chaser.1);
+        assert!(!chaser.2);
+        let dummy = spawned
+            .iter()
+            .find(|(pos, _, _)| (pos.x - 11.0).abs() < 0.001)
+            .expect("dummy spawn");
+        assert!(dummy.1);
+        assert!(!dummy.2);
+        let stockpile = spawned
+            .iter()
+            .find(|(pos, _, _)| (pos.x - 12.0).abs() < 0.001)
+            .expect("stockpile spawn");
+        assert!(!stockpile.1);
+        assert!(stockpile.2);
+        let door = spawned
+            .iter()
+            .find(|(pos, _, _)| (pos.x - 13.0).abs() < 0.001)
+            .expect("door spawn");
+        assert!(!door.1);
+        assert!(door.2);
     }
 
     #[test]
