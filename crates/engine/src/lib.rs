@@ -151,4 +151,41 @@ mod tests {
         let cwd = env::current_dir().expect("cwd");
         assert!(!is_repo_marker(&cwd.join("definitely_not_a_marker")));
     }
+
+    #[test]
+    fn module_boundaries_headings_are_present() {
+        let codexnotes_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("CODEXNOTES.md");
+        let notes = fs::read_to_string(&codexnotes_path).unwrap_or_else(|error| {
+            panic!(
+                "failed to read CODEXNOTES.md at {}: {error}",
+                codexnotes_path.display()
+            )
+        });
+
+        let required_headings = [
+            "## Module Boundaries and Ownership",
+            "### A. Module map",
+            "#### Core",
+            "#### App/Loop",
+            "#### SceneMachine and Scene",
+            "#### World (SceneWorld and runtime state)",
+            "#### Rendering",
+            "#### Assets and Content Pipeline",
+            "#### Input",
+            "#### Tools (Overlay, Console)",
+            "#### Placeholders (Physics, Audio, Scripting seam)",
+            "### B. Ownership rules",
+            "### C. Seam invariants",
+        ];
+
+        for heading in required_headings {
+            assert!(
+                notes.contains(heading),
+                "missing required module boundaries heading: {heading}"
+            );
+        }
+    }
 }
