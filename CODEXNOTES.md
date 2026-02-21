@@ -181,3 +181,14 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - Movement modifier is derived, not directly mutated: effective speed uses the product of active status multipliers (`status.slow` currently multiplies by `0.5`; unknown statuses are neutral `1.0`).
 - Combat integration now applies `status.slow` on attack-completion-derived damage path (`CombatResolution`), preserving attack-only guard.
 
+
+## Ticket 40 Main Modularization (2026-02-21)
+- `crates/game/src/main.rs` is now a thin composition root (`mod app;`, `build_app`, `run`, `ExitCode`) and is under 300 lines.
+- Startup wiring moved to `crates/game/src/app/bootstrap.rs`:
+  - owns tracing init, `PROTOGE_ENABLED_MODS` parsing, scene pair construction call, and `LoopConfig` assembly.
+  - contract: `build_app() -> AppWiring { config, scene_a, scene_b }`.
+- Engine loop invocation moved to `crates/game/src/app/loop_runner.rs`:
+  - contract: `run(AppWiring) -> ExitCode`.
+  - preserves startup error logging (`startup_failed`) and non-zero exit behavior.
+- Gameplay/runtime implementation and tests moved from `crates/game/src/main.rs` into `crates/game/src/app/gameplay.rs` with no behavioral intent changes.
+- Gameplay scene factory seam added for bootstrap usage: `build_scene_pair() -> (Box<dyn Scene>, Box<dyn Scene>)`.
