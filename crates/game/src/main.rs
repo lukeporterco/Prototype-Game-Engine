@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 use engine::{
     resolve_app_paths, run_app, screen_to_world_px, ContentPlanRequest, DebugInfoSnapshot,
-    DebugJobState, DebugMarker, DebugMarkerKind, EntityArchetype, EntityId, InputAction,
-    InputSnapshot, Interactable, InteractableKind, LoopConfig, OrderState, RenderableDesc,
-    RenderableKind, Scene, SceneCommand, SceneDebugCommand, SceneDebugCommandResult,
-    SceneDebugContext, SceneKey, SceneWorld, Tilemap, Transform, Vec2,
+    DebugJobState, DebugMarker, DebugMarkerKind, EntityArchetype, EntityDefId, EntityId,
+    InputAction, InputSnapshot, Interactable, InteractableKind, LoopConfig, OrderState,
+    RenderableDesc, RenderableKind, Scene, SceneCommand, SceneDebugCommand,
+    SceneDebugCommandResult, SceneDebugContext, SceneKey, SceneWorld, Tilemap, Transform, Vec2,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
@@ -187,6 +187,9 @@ impl<'a> WorldView<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct StatusId(u64);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GameplayEvent {
     InteractionStarted {
@@ -206,11 +209,11 @@ enum GameplayEvent {
     },
     StatusApplied {
         entity_id: EntityId,
-        status_id: u32,
+        status_id: StatusId,
     },
     StatusExpired {
         entity_id: EntityId,
-        status_id: u32,
+        status_id: StatusId,
     },
 }
 
@@ -305,27 +308,129 @@ impl GameplayEventBus {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum GameplayIntent {
-    ApplyGameplayTick,
+    SpawnByArchetypeId {
+        archetype_id: EntityDefId,
+        position: Vec2,
+    },
+    DespawnEntity {
+        entity_id: EntityId,
+    },
+    ApplyDamage {
+        entity_id: EntityId,
+        amount: u32,
+    },
+    AddStatus {
+        entity_id: EntityId,
+        status_id: StatusId,
+    },
+    RemoveStatus {
+        entity_id: EntityId,
+        status_id: StatusId,
+    },
+    StartInteraction {
+        actor_id: EntityId,
+        target_id: EntityId,
+    },
+    CompleteInteraction {
+        actor_id: EntityId,
+        target_id: EntityId,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GameplayIntentKind {
+    SpawnByArchetypeId,
+    DespawnEntity,
+    ApplyDamage,
+    AddStatus,
+    RemoveStatus,
+    StartInteraction,
+    CompleteInteraction,
+}
+
+impl GameplayIntent {
+    fn kind(self) -> GameplayIntentKind {
+        match self {
+            Self::SpawnByArchetypeId { .. } => GameplayIntentKind::SpawnByArchetypeId,
+            Self::DespawnEntity { .. } => GameplayIntentKind::DespawnEntity,
+            Self::ApplyDamage { .. } => GameplayIntentKind::ApplyDamage,
+            Self::AddStatus { .. } => GameplayIntentKind::AddStatus,
+            Self::RemoveStatus { .. } => GameplayIntentKind::RemoveStatus,
+            Self::StartInteraction { .. } => GameplayIntentKind::StartInteraction,
+            Self::CompleteInteraction { .. } => GameplayIntentKind::CompleteInteraction,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct GameplayIntentApplyStats {
+    total: u32,
+    spawn_by_archetype_id: u32,
+    despawn_entity: u32,
+    apply_damage: u32,
+    add_status: u32,
+    remove_status: u32,
+    start_interaction: u32,
+    complete_interaction: u32,
+    invalid_target_count: u32,
+    spawned_entity_ids: Vec<EntityId>,
+}
+
+impl GameplayIntentApplyStats {
+    fn record_intent(&mut self, kind: GameplayIntentKind) {
+        self.total = self.total.saturating_add(1);
+        match kind {
+            GameplayIntentKind::SpawnByArchetypeId => {
+                self.spawn_by_archetype_id = self.spawn_by_archetype_id.saturating_add(1)
+            }
+            GameplayIntentKind::DespawnEntity => {
+                self.despawn_entity = self.despawn_entity.saturating_add(1)
+            }
+            GameplayIntentKind::ApplyDamage => {
+                self.apply_damage = self.apply_damage.saturating_add(1)
+            }
+            GameplayIntentKind::AddStatus => self.add_status = self.add_status.saturating_add(1),
+            GameplayIntentKind::RemoveStatus => {
+                self.remove_status = self.remove_status.saturating_add(1)
+            }
+            GameplayIntentKind::StartInteraction => {
+                self.start_interaction = self.start_interaction.saturating_add(1)
+            }
+            GameplayIntentKind::CompleteInteraction => {
+                self.complete_interaction = self.complete_interaction.saturating_add(1)
+            }
+        }
+    }
+
+    fn record_invalid_target(&mut self) {
+        self.invalid_target_count = self.invalid_target_count.saturating_add(1);
+    }
 }
 
 #[derive(Default)]
 struct GameplayIntentQueue {
     intents: Vec<GameplayIntent>,
+    last_tick_apply_stats: GameplayIntentApplyStats,
 }
 
 impl GameplayIntentQueue {
-    fn clear(&mut self) {
-        self.intents.clear();
-    }
-
-    fn push(&mut self, intent: GameplayIntent) {
+    fn enqueue(&mut self, intent: GameplayIntent) {
         self.intents.push(intent);
     }
 
-    fn take_all(&mut self) -> Vec<GameplayIntent> {
+    fn drain_current_tick(&mut self) -> Vec<GameplayIntent> {
         std::mem::take(&mut self.intents)
+    }
+
+    fn set_last_tick_apply_stats(&mut self, stats: GameplayIntentApplyStats) {
+        self.last_tick_apply_stats = stats;
+    }
+
+    fn last_tick_apply_stats(&self) -> &GameplayIntentApplyStats {
+        &self.last_tick_apply_stats
     }
 }
 
@@ -369,9 +474,16 @@ impl GameplaySystemsHost {
         match system_id {
             GameplaySystemId::InputIntent => {
                 let _ = context.fixed_dt_seconds;
-                let _ = context.world_view.entities().len();
                 let _ = context.world_view.camera().zoom;
                 let _ = context.world_view.find_entity(EntityId(0));
+                if let Some(first_entity) = context.world_view.entities().first() {
+                    if cfg!(debug_assertions) {
+                        context.intents.enqueue(GameplayIntent::AddStatus {
+                            entity_id: first_entity.id,
+                            status_id: StatusId(1),
+                        });
+                    }
+                }
                 if let Some(cursor_px) = context.input.cursor_position_px() {
                     let window_size = context.input.window_size();
                     let _ = context
@@ -381,7 +493,6 @@ impl GameplaySystemsHost {
                         .world_view
                         .pick_topmost_interactable_at_cursor(cursor_px, window_size);
                 }
-                context.intents.push(GameplayIntent::ApplyGameplayTick);
             }
             GameplaySystemId::Interaction
             | GameplaySystemId::AI
@@ -402,7 +513,7 @@ impl GameplaySystemsHost {
             let event = match system_id {
                 GameplaySystemId::InputIntent => GameplayEvent::StatusApplied {
                     entity_id: EntityId(0),
-                    status_id: 1,
+                    status_id: StatusId(1),
                 },
                 GameplaySystemId::Interaction => GameplayEvent::InteractionStarted {
                     actor_id: EntityId(0),
@@ -417,7 +528,7 @@ impl GameplaySystemsHost {
                 },
                 GameplaySystemId::StatusEffects => GameplayEvent::StatusExpired {
                     entity_id: EntityId(0),
-                    status_id: 1,
+                    status_id: StatusId(1),
                 },
                 GameplaySystemId::Cleanup => GameplayEvent::InteractionCompleted {
                     actor_id: EntityId(0),
@@ -443,6 +554,8 @@ struct GameplayScene {
     entity_save_ids: HashMap<EntityId, u64>,
     save_id_to_entity: HashMap<u64, EntityId>,
     next_save_id: u64,
+    health_by_entity: HashMap<EntityId, u32>,
+    status_ids_by_entity: HashMap<EntityId, Vec<StatusId>>,
     systems_host: GameplaySystemsHost,
     system_events: GameplayEventBus,
     system_intents: GameplayIntentQueue,
@@ -465,6 +578,8 @@ impl GameplayScene {
             entity_save_ids: HashMap::new(),
             save_id_to_entity: HashMap::new(),
             next_save_id: 0,
+            health_by_entity: HashMap::new(),
+            status_ids_by_entity: HashMap::new(),
             systems_host: GameplaySystemsHost::default(),
             system_events: GameplayEventBus::default(),
             system_intents: GameplayIntentQueue::default(),
@@ -952,6 +1067,7 @@ impl GameplayScene {
         self.completed_target_ids.clear();
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
+        self.reset_runtime_component_stores();
         world.camera_mut().position = save.camera_position.to_vec2();
         world.camera_mut().set_zoom_clamped(save.camera_zoom);
 
@@ -1024,11 +1140,30 @@ impl GameplayScene {
             .and_then(|save_id| spawned_ids_by_save_id.get(&save_id).copied());
         self.rebuild_save_id_map_from_loaded(world, &spawned_ids_by_save_id, save.next_save_id)?;
         self.resource_count = save.resource_count;
+        self.sync_runtime_component_stores_with_world(world);
         Ok(())
     }
 }
 
 impl GameplayScene {
+    fn reset_runtime_component_stores(&mut self) {
+        self.health_by_entity.clear();
+        self.status_ids_by_entity.clear();
+    }
+
+    fn sync_runtime_component_stores_with_world(&mut self, world: &SceneWorld) {
+        let live_ids: HashSet<EntityId> = world.entities().iter().map(|entity| entity.id).collect();
+        self.health_by_entity
+            .retain(|entity_id, _| live_ids.contains(entity_id));
+        self.status_ids_by_entity
+            .retain(|entity_id, _| live_ids.contains(entity_id));
+
+        for entity in world.entities() {
+            self.health_by_entity.entry(entity.id).or_insert(100);
+            self.status_ids_by_entity.entry(entity.id).or_default();
+        }
+    }
+
     fn run_gameplay_systems_once(
         &mut self,
         fixed_dt_seconds: f32,
@@ -1036,7 +1171,6 @@ impl GameplayScene {
         world: &SceneWorld,
     ) {
         self.system_events.clear_current_tick();
-        self.system_intents.clear();
         self.systems_host.run_once_per_tick(
             fixed_dt_seconds,
             WorldView::new(world),
@@ -1046,19 +1180,162 @@ impl GameplayScene {
         );
     }
 
+    fn apply_gameplay_intents_at_safe_point(
+        &mut self,
+        intents: Vec<GameplayIntent>,
+        world: &mut SceneWorld,
+    ) -> GameplayIntentApplyStats {
+        let mut stats = GameplayIntentApplyStats::default();
+
+        for intent in intents {
+            stats.record_intent(intent.kind());
+            match intent {
+                GameplayIntent::SpawnByArchetypeId {
+                    archetype_id,
+                    position,
+                } => {
+                    let Some(def_db) = world.def_database() else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    let Some(archetype) = def_db.entity_def(archetype_id).cloned() else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+
+                    let entity_id = world.spawn_selectable(
+                        Transform {
+                            position,
+                            rotation_radians: None,
+                        },
+                        RenderableDesc {
+                            kind: archetype.renderable,
+                            debug_name: "intent_spawn",
+                        },
+                    );
+                    stats.spawned_entity_ids.push(entity_id);
+
+                    match self.alloc_next_save_id() {
+                        Ok(save_id) => {
+                            self.entity_save_ids.insert(entity_id, save_id);
+                            self.save_id_to_entity.insert(save_id, entity_id);
+                        }
+                        Err(_) => stats.record_invalid_target(),
+                    }
+                    self.health_by_entity.entry(entity_id).or_insert(100);
+                    self.status_ids_by_entity.entry(entity_id).or_default();
+                }
+                GameplayIntent::DespawnEntity { entity_id } => {
+                    if !world.despawn(entity_id) {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    self.remove_entity_save_mapping(entity_id);
+                    if self.selected_entity == Some(entity_id) {
+                        self.selected_entity = None;
+                    }
+                    if self.player_id == Some(entity_id) {
+                        self.player_id = None;
+                    }
+                    self.health_by_entity.remove(&entity_id);
+                    self.status_ids_by_entity.remove(&entity_id);
+                }
+                GameplayIntent::ApplyDamage { entity_id, amount } => {
+                    if world.find_entity(entity_id).is_none() {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    let Some(health) = self.health_by_entity.get_mut(&entity_id) else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    *health = health.saturating_sub(amount);
+                }
+                GameplayIntent::AddStatus {
+                    entity_id,
+                    status_id,
+                } => {
+                    if world.find_entity(entity_id).is_none() {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    let statuses = self.status_ids_by_entity.entry(entity_id).or_default();
+                    if !statuses.contains(&status_id) {
+                        statuses.push(status_id);
+                    }
+                }
+                GameplayIntent::RemoveStatus {
+                    entity_id,
+                    status_id,
+                } => {
+                    if world.find_entity(entity_id).is_none() {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    if let Some(statuses) = self.status_ids_by_entity.get_mut(&entity_id) {
+                        statuses.retain(|id| *id != status_id);
+                    }
+                }
+                GameplayIntent::StartInteraction {
+                    actor_id,
+                    target_id,
+                } => {
+                    if world.find_entity(actor_id).is_none()
+                        || world.find_entity(target_id).is_none()
+                    {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    let Some(target_save_id) = self.save_id_for_entity(target_id) else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    let Some(actor) = world.find_entity_mut(actor_id) else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    if !actor.actor {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    actor.order_state = OrderState::Interact { target_save_id };
+                }
+                GameplayIntent::CompleteInteraction {
+                    actor_id,
+                    target_id,
+                } => {
+                    if world.find_entity(actor_id).is_none()
+                        || world.find_entity(target_id).is_none()
+                    {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    let Some(actor) = world.find_entity_mut(actor_id) else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    if !actor.actor {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    actor.order_state = OrderState::Idle;
+                }
+            }
+        }
+
+        stats
+    }
+
     fn apply_system_outputs(
         &mut self,
         fixed_dt_seconds: f32,
         input: &InputSnapshot,
         world: &mut SceneWorld,
     ) {
-        for intent in self.system_intents.take_all() {
-            match intent {
-                GameplayIntent::ApplyGameplayTick => {
-                    self.apply_gameplay_tick_at_safe_point(fixed_dt_seconds, input, world);
-                }
-            }
-        }
+        let intents = self.system_intents.drain_current_tick();
+        let stats = self.apply_gameplay_intents_at_safe_point(intents, world);
+        self.system_intents.set_last_tick_apply_stats(stats);
+        self.apply_gameplay_tick_at_safe_point(fixed_dt_seconds, input, world);
         self.system_events.finish_tick_rollover();
     }
 
@@ -1276,6 +1553,7 @@ impl Scene for GameplayScene {
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
         self.next_save_id = 0;
+        self.reset_runtime_component_stores();
         let player_archetype = resolve_player_archetype(world);
         let pile_archetype = resolve_resource_pile_archetype(world);
         world.set_tilemap(build_ground_tilemap(self.scene_key()));
@@ -1351,6 +1629,7 @@ impl Scene for GameplayScene {
         }
         self.sync_save_id_map_with_world(world)
             .expect("initial save_id assignment should not fail");
+        self.sync_runtime_component_stores_with_world(world);
         info!(
             scene = self.scene_name,
             entity_count = world.entity_count(),
@@ -1434,44 +1713,25 @@ impl Scene for GameplayScene {
                             .map(|entity| entity.transform.position)
                     })
                     .unwrap_or(Vec2 { x: 0.0, y: 0.0 });
-
-                let save_id = match self.alloc_next_save_id() {
-                    Ok(save_id) => save_id,
-                    Err(error) => return SceneDebugCommandResult::Error(error),
-                };
-
-                let entity_id = world.spawn_selectable(
-                    Transform {
+                self.system_intents
+                    .enqueue(GameplayIntent::SpawnByArchetypeId {
+                        archetype_id: archetype.id,
                         position: spawn_position,
-                        rotation_radians: None,
-                    },
-                    RenderableDesc {
-                        kind: archetype.renderable.clone(),
-                        debug_name: "debug_spawn",
-                    },
-                );
-
-                self.entity_save_ids.insert(entity_id, save_id);
-                self.save_id_to_entity.insert(save_id, entity_id);
-
+                    });
                 SceneDebugCommandResult::Success(format!(
-                    "spawned '{}' as entity {}",
-                    archetype.def_name, entity_id.0
+                    "queued spawn '{}' at ({:.2}, {:.2})",
+                    archetype.def_name, spawn_position.x, spawn_position.y
                 ))
             }
             SceneDebugCommand::Despawn { entity_id } => {
                 let runtime_id = EntityId(entity_id);
-                if world.despawn(runtime_id) {
-                    self.remove_entity_save_mapping(runtime_id);
-                    if self.selected_entity == Some(runtime_id) {
-                        self.selected_entity = None;
-                    }
-                    if self.player_id == Some(runtime_id) {
-                        self.player_id = None;
-                    }
-                    SceneDebugCommandResult::Success(format!("despawned entity {entity_id}"))
-                } else {
+                if world.find_entity(runtime_id).is_none() {
                     SceneDebugCommandResult::Error(format!("entity {entity_id} not found"))
+                } else {
+                    self.system_intents.enqueue(GameplayIntent::DespawnEntity {
+                        entity_id: runtime_id,
+                    });
+                    SceneDebugCommandResult::Success(format!("queued despawn entity {entity_id}"))
                 }
             }
         }
@@ -1494,8 +1754,9 @@ impl Scene for GameplayScene {
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
         self.next_save_id = 0;
+        self.reset_runtime_component_stores();
         self.system_events = GameplayEventBus::default();
-        self.system_intents.clear();
+        self.system_intents = GameplayIntentQueue::default();
         self.system_order_text.clear();
     }
 
@@ -1577,6 +1838,7 @@ impl Scene for GameplayScene {
         }
 
         let event_counts = self.system_events.last_tick_counts();
+        let intent_stats = self.system_intents.last_tick_apply_stats();
         let extra_debug_lines = vec![
             format!("ev: {}", event_counts.total),
             format!(
@@ -1588,6 +1850,18 @@ impl Scene for GameplayScene {
                 event_counts.status_applied,
                 event_counts.status_expired
             ),
+            format!("in: {}", intent_stats.total),
+            format!(
+                "ink: sp:{} de:{} dmg:{} add:{} rem:{} si:{} ci:{}",
+                intent_stats.spawn_by_archetype_id,
+                intent_stats.despawn_entity,
+                intent_stats.apply_damage,
+                intent_stats.add_status,
+                intent_stats.remove_status,
+                intent_stats.start_interaction,
+                intent_stats.complete_interaction,
+            ),
+            format!("in_bad: {}", intent_stats.invalid_target_count),
         ];
 
         Some(DebugInfoSnapshot {
@@ -1962,6 +2236,16 @@ mod tests {
             .count()
     }
 
+    fn missing_entity_id_from_world(world: &SceneWorld) -> EntityId {
+        let max_id = world
+            .entities()
+            .iter()
+            .map(|entity| entity.id.0)
+            .max()
+            .unwrap_or(0);
+        EntityId(max_id.saturating_add(1))
+    }
+
     fn advance(scene: &mut GameplayScene, world: &mut SceneWorld, steps: usize, fixed_dt: f32) {
         for _ in 0..steps {
             scene.update(fixed_dt, &InputSnapshot::empty(), world);
@@ -2280,11 +2564,11 @@ mod tests {
         });
         bus.emit(GameplayEvent::StatusApplied {
             entity_id: EntityId(1),
-            status_id: 7,
+            status_id: StatusId(7),
         });
         bus.emit(GameplayEvent::StatusExpired {
             entity_id: EntityId(1),
-            status_id: 7,
+            status_id: StatusId(7),
         });
         bus.emit(GameplayEvent::EntityDied {
             entity_id: EntityId(2),
@@ -2309,7 +2593,7 @@ mod tests {
 
         bus.emit(GameplayEvent::StatusApplied {
             entity_id: EntityId(9),
-            status_id: 2,
+            status_id: StatusId(2),
         });
         bus.finish_tick_rollover();
         let next_counts = bus.last_tick_counts();
@@ -2336,33 +2620,139 @@ mod tests {
     }
 
     #[test]
-    fn debug_spawn_success_creates_entity_and_save_mapping() {
+    fn intent_apply_order_is_deterministic() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
         seed_def_database(&mut world);
         scene.load(&mut world);
         world.apply_pending();
 
-        let before_count = world.entity_count();
-        let before_map_len = scene.entity_save_ids.len();
+        let entity_id = world.entities()[0].id;
+        let status_id = StatusId(42);
+        let intents = vec![
+            GameplayIntent::AddStatus {
+                entity_id,
+                status_id,
+            },
+            GameplayIntent::RemoveStatus {
+                entity_id,
+                status_id,
+            },
+        ];
 
-        let result = scene.execute_debug_command(
+        let stats = scene.apply_gameplay_intents_at_safe_point(intents, &mut world);
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.add_status, 1);
+        assert_eq!(stats.remove_status, 1);
+        let statuses = scene
+            .status_ids_by_entity
+            .get(&entity_id)
+            .expect("status store entry");
+        assert!(!statuses.contains(&status_id));
+    }
+
+    #[test]
+    fn intent_apply_spawn_and_despawn_hooks_run_in_order() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let victim_id = world.entities()[0].id;
+        let before_count = world.entity_count();
+        let archetype_id = world
+            .def_database()
+            .expect("def database")
+            .entity_def_id_by_name("proto.player")
+            .expect("player archetype id");
+        let intents = vec![
+            GameplayIntent::SpawnByArchetypeId {
+                archetype_id,
+                position: Vec2 { x: 123.0, y: 456.0 },
+            },
+            GameplayIntent::DespawnEntity {
+                entity_id: victim_id,
+            },
+        ];
+
+        let stats = scene.apply_gameplay_intents_at_safe_point(intents, &mut world);
+        world.apply_pending();
+
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.spawn_by_archetype_id, 1);
+        assert_eq!(stats.despawn_entity, 1);
+        assert_eq!(stats.invalid_target_count, 0);
+        assert_eq!(stats.spawned_entity_ids.len(), 1);
+        let spawned_id = stats.spawned_entity_ids[0];
+        assert!(world.find_entity(victim_id).is_none());
+        assert!(world.find_entity(spawned_id).is_some());
+        assert_eq!(world.entity_count(), before_count);
+        assert!(!scene.entity_save_ids.contains_key(&victim_id));
+        assert!(scene.entity_save_ids.contains_key(&spawned_id));
+    }
+
+    #[test]
+    fn bad_entity_id_intent_does_not_panic() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let missing_id = missing_entity_id_from_world(&world);
+        let intents = vec![GameplayIntent::ApplyDamage {
+            entity_id: missing_id,
+            amount: 5,
+        }];
+        let stats = scene.apply_gameplay_intents_at_safe_point(intents, &mut world);
+
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.apply_damage, 1);
+        assert_eq!(stats.invalid_target_count, 1);
+    }
+
+    #[test]
+    fn debug_spawn_and_despawn_are_queued_intents() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let before_spawn_count = world.entity_count();
+        let spawn_result = scene.execute_debug_command(
             SceneDebugCommand::Spawn {
                 def_name: "proto.player".to_string(),
-                position: Some((123.0, 456.0)),
+                position: Some((50.0, -20.0)),
             },
             SceneDebugContext::default(),
             &mut world,
         );
-        assert!(matches!(result, SceneDebugCommandResult::Success(_)));
-
+        assert!(matches!(spawn_result, SceneDebugCommandResult::Success(_)));
+        assert_eq!(world.entity_count(), before_spawn_count);
+        scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
         world.apply_pending();
-        assert_eq!(world.entity_count(), before_count + 1);
-        assert_eq!(scene.entity_save_ids.len(), before_map_len + 1);
-        assert!(world
-            .entities()
-            .iter()
-            .any(|entity| entity.transform.position == Vec2 { x: 123.0, y: 456.0 }));
+        assert_eq!(world.entity_count(), before_spawn_count + 1);
+
+        let victim_id = world.entities()[0].id;
+        let before_despawn_count = world.entity_count();
+        let despawn_result = scene.execute_debug_command(
+            SceneDebugCommand::Despawn {
+                entity_id: victim_id.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(
+            despawn_result,
+            SceneDebugCommandResult::Success(_)
+        ));
+        assert_eq!(world.entity_count(), before_despawn_count);
+        scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+        assert_eq!(world.entity_count(), before_despawn_count - 1);
+        assert!(world.find_entity(victim_id).is_none());
     }
 
     #[test]
@@ -2390,89 +2780,21 @@ mod tests {
     }
 
     #[test]
-    fn debug_despawn_success_and_failure_paths() {
+    fn debug_despawn_failure_path_returns_error() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
         seed_def_database(&mut world);
         scene.load(&mut world);
         world.apply_pending();
 
-        let victim = world.entities()[0].id;
-        assert!(scene.entity_save_ids.contains_key(&victim));
-
-        let success = scene.execute_debug_command(
-            SceneDebugCommand::Despawn {
-                entity_id: victim.0,
-            },
-            SceneDebugContext::default(),
-            &mut world,
-        );
-        assert!(matches!(success, SceneDebugCommandResult::Success(_)));
-        world.apply_pending();
-        assert!(world.find_entity(victim).is_none());
-        assert!(!scene.entity_save_ids.contains_key(&victim));
-
         let failure = scene.execute_debug_command(
-            SceneDebugCommand::Despawn { entity_id: 999_999 },
+            SceneDebugCommand::Despawn {
+                entity_id: missing_entity_id_from_world(&world).0,
+            },
             SceneDebugContext::default(),
             &mut world,
         );
         assert!(matches!(failure, SceneDebugCommandResult::Error(_)));
-    }
-
-    #[test]
-    fn debug_spawn_and_despawn_keep_save_id_maps_consistent() {
-        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
-        let mut world = SceneWorld::default();
-        seed_def_database(&mut world);
-        scene.load(&mut world);
-        world.apply_pending();
-
-        let before_ids: std::collections::HashSet<EntityId> =
-            world.entities().iter().map(|entity| entity.id).collect();
-
-        let spawn_result = scene.execute_debug_command(
-            SceneDebugCommand::Spawn {
-                def_name: "proto.player".to_string(),
-                position: Some((50.0, -20.0)),
-            },
-            SceneDebugContext::default(),
-            &mut world,
-        );
-        assert!(matches!(spawn_result, SceneDebugCommandResult::Success(_)));
-        world.apply_pending();
-
-        let spawned_id = world
-            .entities()
-            .iter()
-            .map(|entity| entity.id)
-            .find(|entity_id| !before_ids.contains(entity_id))
-            .expect("spawned debug entity id");
-        let save_id = scene
-            .entity_save_ids
-            .get(&spawned_id)
-            .copied()
-            .expect("spawned entity save id");
-        assert_eq!(
-            scene.save_id_to_entity.get(&save_id).copied(),
-            Some(spawned_id)
-        );
-
-        let despawn_result = scene.execute_debug_command(
-            SceneDebugCommand::Despawn {
-                entity_id: spawned_id.0,
-            },
-            SceneDebugContext::default(),
-            &mut world,
-        );
-        assert!(matches!(
-            despawn_result,
-            SceneDebugCommandResult::Success(_)
-        ));
-        world.apply_pending();
-
-        assert!(!scene.entity_save_ids.contains_key(&spawned_id));
-        assert!(!scene.save_id_to_entity.values().any(|id| *id == spawned_id));
     }
 
     #[test]
@@ -3128,6 +3450,9 @@ mod tests {
         let extra = snapshot.extra_debug_lines.expect("extra debug lines");
         assert!(extra.iter().any(|line| line.starts_with("ev: ")));
         assert!(extra.iter().any(|line| line.starts_with("evk: ")));
+        assert!(extra.iter().any(|line| line.starts_with("in: ")));
+        assert!(extra.iter().any(|line| line.starts_with("ink: ")));
+        assert!(extra.iter().any(|line| line.starts_with("in_bad: ")));
     }
 
     #[test]
@@ -3149,6 +3474,9 @@ mod tests {
         let extra = snapshot.extra_debug_lines.expect("extra debug lines");
         assert!(extra.iter().any(|line| line.starts_with("ev: ")));
         assert!(extra.iter().any(|line| line.starts_with("evk: ")));
+        assert!(extra.iter().any(|line| line.starts_with("in: ")));
+        assert!(extra.iter().any(|line| line.starts_with("ink: ")));
+        assert!(extra.iter().any(|line| line.starts_with("in_bad: ")));
     }
 
     #[test]

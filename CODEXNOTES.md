@@ -126,3 +126,14 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - `DebugInfoSnapshot` gained generic `extra_debug_lines: Option<Vec<String>>` so game-specific observability can be surfaced without engine event-specific fields.
 - Overlay inspect block renders any `extra_debug_lines`; gameplay uses this for `ev:` and `evk:` per-last-tick event counts.
 
+## Ticket 35 Intent Apply Seam (2026-02-21)
+- `GameplayIntentQueue` is scene-local and is the only mutation request path used by systems; intents are applied exactly once per tick in `apply_system_outputs` via `apply_gameplay_intents_at_safe_point`.
+- Intent set is explicit and ordered: `SpawnByArchetypeId`, `DespawnEntity`, `ApplyDamage`, `AddStatus`, `RemoveStatus`, `StartInteraction`, `CompleteInteraction`.
+- Runtime game-owned component stores live in `GameplayScene`: `health_by_entity: HashMap<EntityId, u32>` and `status_ids_by_entity: HashMap<EntityId, Vec<StatusId>>`.
+- `StatusId` is a dedicated newtype (`StatusId(u64)`) to reduce churn when statuses become data-driven.
+- Death rule is explicit: `ApplyDamage` only mutates health store; despawn requires explicit `DespawnEntity`.
+- `CompleteInteraction` is mechanical-only for now (actor order state update); no resource grant/depletion logic is baked into this intent.
+- Invalid intent targets are non-panicking: skipped and counted in `invalid_target_count`.
+- Debug observability uses generic overlay extra lines: `in:`, `ink:`, `in_bad:` plus `spawned_entity_ids` in apply stats for deterministic tests/debug only.
+- Same-tick spawned-entity reference handles are intentionally not supported in intent payloads yet.
+

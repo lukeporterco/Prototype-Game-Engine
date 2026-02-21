@@ -86,18 +86,18 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 
 ### despawn
 - Layer: Active scene debug hook
-- Description: Despawns by internal numeric entity ID.
+- Description: Queues a despawn intent for an internal numeric entity ID; apply happens at tick safe point.
 - Syntax: `despawn <entity_id>`
 - Example:
 - `despawn 42`
 - Result examples:
-- `ok: despawned entity 42`
+- `ok: queued despawn entity 42`
 - `error: entity 42 not found`
 - `error: active scene does not support this command`
 
 ### spawn
 - Layer: Active scene debug hook
-- Description: Spawns by `def_name`, with optional world coordinates.
+- Description: Queues a spawn intent by `def_name`, with optional world coordinates; apply happens at tick safe point.
 - Syntax: `spawn <def_name> [x y]`
 - Examples:
 - `spawn proto.worker`
@@ -105,13 +105,14 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - Defaults:
 - If `[x y]` is omitted, spawn position priority is: cursor world position (if available), else player position, else origin.
 - Result examples:
-- `ok: spawned 'proto.worker' as entity 12`
+- `ok: queued spawn 'proto.worker' at (1.50, -2.00)`
 - `error: unknown entity def 'proto.unknown'`
 - `error: active scene does not support this command`
 
 ## Notes and Limitations
 
 - Queueable commands are still parsed in tools, then routed for execution in the loop.
+- `spawn`/`despawn` enqueue gameplay intents and world mutation occurs once per tick at the gameplay safe apply point.
 - `DebugCommand` stays in tools/engine layer; only `spawn`/`despawn` map one-way into scene-facing `SceneDebugCommand`.
 - Processor prints parse errors with usage hints.
 - Unknown commands print `error: unknown command '<name>'. try: help`.
