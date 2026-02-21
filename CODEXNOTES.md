@@ -290,3 +290,16 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - fixed key order checks (`player -> cam -> sel -> tgt -> cnt -> ev -> evk -> in -> ink -> in_bad`)
   - required-key presence checks for populated and empty-world cases
   - fixed two-decimal precision assertions for player/camera coordinates.
+
+## Microticket 46.4 A1/E1 Barrier Audit + Harness Fix (2026-02-21)
+- Added opt-in thruport diagnostics behind `PROTOGE_THRUPORT_DIAG=1` in:
+  - `crates/game/src/app/dev_thruport.rs` (remote line read, control/telemetry enqueue, flush progress/would-block/completion)
+  - `crates/engine/src/app/loop_runner.rs` (remote lines polled, queueable command execution tokens, output lines forwarded to remote)
+- Added engine guard test in `crates/engine/src/app/loop_runner.rs`:
+  - `reset_pause_sync_commands_emit_ordered_ok_lines`
+  - asserts queueable burst order and output: `ok: scene reset`, `ok: sim paused`, `ok: sync`.
+- Root cause found for A1/E1 false negatives was harness-side read logic (DataAvailable-gated transcript capture missing buffered `StreamReader` lines), not command execution/output routing.
+- Recreated canonical harness scripts in `.codex_artifacts/`:
+  - `run_minset_telemetry.ps1` (reader-safe barrier loop; A1/E1 gate)
+  - `run_minset_simple.ps1` (delegates to telemetry script)
+  - `SOME_COMMANDS.md` restored as baseline manual sequence.

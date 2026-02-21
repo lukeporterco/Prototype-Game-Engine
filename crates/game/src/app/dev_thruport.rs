@@ -3,7 +3,7 @@ use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 
 use engine::RemoteConsoleLinePump;
-use tracing::warn;
+use tracing::{info, warn};
 
 pub(crate) trait ConsoleInputQueueHook {
     fn drain_pending_lines(&mut self, out: &mut Vec<String>);
@@ -27,6 +27,7 @@ pub(crate) enum InjectedInput {
 
 const THRUPORT_ENV_VAR: &str = "PROTOGE_THRUPORT";
 const THRUPORT_PORT_ENV_VAR: &str = "PROTOGE_THRUPORT_PORT";
+const THRUPORT_DIAG_ENV_VAR: &str = "PROTOGE_THRUPORT_DIAG";
 const THRUPORT_DEFAULT_PORT: u16 = 46001;
 const MAX_PENDING_TELEMETRY_BYTES_PER_CLIENT: usize = 256 * 1024;
 
@@ -371,6 +372,13 @@ fn parse_enabled_flag(raw: Option<&str>) -> bool {
     matches!(raw, Some("1"))
 }
 
+fn thruport_diag_enabled() -> bool {
+    matches!(
+        std::env::var(THRUPORT_DIAG_ENV_VAR).ok().as_deref(),
+        Some("1")
+    )
+}
+
 #[cfg(test)]
 fn parse_port_or_default(raw: Option<&str>) -> u16 {
     match raw.and_then(|value| value.parse::<u16>().ok()) {
@@ -388,7 +396,12 @@ fn drain_complete_lines(buffer: &mut Vec<u8>, out: &mut Vec<String>) {
         }
 
         match String::from_utf8(line_bytes) {
-            Ok(line) => out.push(line),
+            Ok(line) => {
+                if thruport_diag_enabled() {
+                    info!(line = %line, "thruport_diag_remote_line_read");
+                }
+                out.push(line)
+            }
             Err(err) => warn!(error = %err, "thruport_invalid_utf8_line_dropped"),
         }
     }
@@ -412,6 +425,14 @@ fn enqueue_control_line(client: &mut ClientConn, line: &str) {
         .position(|existing| existing.class == OutboundClass::Telemetry)
         .unwrap_or(client.queued_chunks.len());
     client.queued_chunks.insert(insert_at, chunk);
+    if thruport_diag_enabled() {
+        info!(
+            line = %line,
+            queue_len = client.queued_chunks.len(),
+            telemetry_bytes = client.queued_telemetry_bytes,
+            "thruport_diag_enqueued_control_line"
+        );
+    }
 }
 
 fn enqueue_telemetry_line_with_cap(client: &mut ClientConn, line: &str, telemetry_cap: usize) {
@@ -421,17 +442,41 @@ fn enqueue_telemetry_line_with_cap(client: &mut ClientConn, line: &str, telemetr
     };
     let chunk_bytes = chunk.bytes.len();
     if chunk_bytes > telemetry_cap {
+        if thruport_diag_enabled() {
+            info!(
+                chunk_bytes,
+                telemetry_cap,
+                "thruport_diag_drop_telemetry_chunk_over_cap"
+            );
+        }
         return;
     }
 
     while client.queued_telemetry_bytes.saturating_add(chunk_bytes) > telemetry_cap {
         if !evict_oldest_queued_telemetry(client) {
+            if thruport_diag_enabled() {
+                info!(
+                    chunk_bytes,
+                    telemetry_cap,
+                    queue_len = client.queued_chunks.len(),
+                    telemetry_bytes = client.queued_telemetry_bytes,
+                    "thruport_diag_drop_telemetry_chunk_no_evictable_entry"
+                );
+            }
             return;
         }
     }
 
     client.queued_telemetry_bytes = client.queued_telemetry_bytes.saturating_add(chunk_bytes);
     client.queued_chunks.push_back(chunk);
+    if thruport_diag_enabled() {
+        info!(
+            chunk_bytes,
+            queue_len = client.queued_chunks.len(),
+            telemetry_bytes = client.queued_telemetry_bytes,
+            "thruport_diag_enqueued_telemetry_line"
+        );
+    }
 }
 
 fn evict_oldest_queued_telemetry(client: &mut ClientConn) -> bool {
@@ -446,6 +491,14 @@ fn evict_oldest_queued_telemetry(client: &mut ClientConn) -> bool {
     client.queued_telemetry_bytes = client
         .queued_telemetry_bytes
         .saturating_sub(removed.bytes.len());
+    if thruport_diag_enabled() {
+        info!(
+            removed_bytes = removed.bytes.len(),
+            queue_len = client.queued_chunks.len(),
+            telemetry_bytes = client.queued_telemetry_bytes,
+            "thruport_diag_evicted_oldest_telemetry"
+        );
+    }
     true
 }
 
@@ -480,11 +533,42 @@ where
             }
             Ok(bytes_written) => {
                 state.written = state.written.saturating_add(bytes_written);
+                if thruport_diag_enabled() {
+                    info!(
+                        class = ?state.chunk.class,
+                        wrote = bytes_written,
+                        written = state.written,
+                        total = state.chunk.bytes.len(),
+                        queued_len = queued_chunks.len(),
+                        queued_telemetry_bytes = *queued_telemetry_bytes,
+                        "thruport_diag_flush_write_progress"
+                    );
+                }
                 if state.written >= state.chunk.bytes.len() {
+                    if thruport_diag_enabled() {
+                        info!(
+                            class = ?state.chunk.class,
+                            queued_len = queued_chunks.len(),
+                            queued_telemetry_bytes = *queued_telemetry_bytes,
+                            "thruport_diag_flush_chunk_complete"
+                        );
+                    }
                     *active_chunk = None;
                 }
             }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                if thruport_diag_enabled() {
+                    info!(
+                        class = ?state.chunk.class,
+                        written = state.written,
+                        total = state.chunk.bytes.len(),
+                        queued_len = queued_chunks.len(),
+                        queued_telemetry_bytes = *queued_telemetry_bytes,
+                        "thruport_diag_flush_would_block"
+                    );
+                }
+                return Ok(());
+            }
             Err(err) => return Err(err),
         }
     }

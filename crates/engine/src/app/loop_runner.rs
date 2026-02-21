@@ -30,6 +30,7 @@ use super::{
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
 const THRUPORT_TELEMETRY_ENV_VAR: &str = "PROTOGE_THRUPORT_TELEMETRY";
+const THRUPORT_DIAG_ENV_VAR: &str = "PROTOGE_THRUPORT_DIAG";
 const SOFT_BUDGET_CONSECUTIVE_BREACH_FRAMES: u32 = 3;
 const MAX_PENDING_INJECTED_EVENTS: usize = 256;
 
@@ -996,6 +997,11 @@ fn poll_remote_console_lines_into_console(
 
     scratch.clear();
     pump.poll_lines(scratch);
+    if thruport_diag_enabled() && !scratch.is_empty() {
+        for line in scratch.iter() {
+            info!(line = %line, "thruport_diag_engine_polled_remote_line");
+        }
+    }
     for line in scratch.drain(..) {
         console.enqueue_pending_line(line);
     }
@@ -1012,6 +1018,11 @@ fn forward_console_output_lines_to_remote(
 
     scratch.clear();
     console.drain_new_output_lines_into(scratch);
+    if thruport_diag_enabled() && !scratch.is_empty() {
+        for line in scratch.iter() {
+            info!(line = %line, "thruport_diag_engine_forward_output_line");
+        }
+    }
     if !scratch.is_empty() {
         pump.send_output_lines(scratch);
     }
@@ -1031,6 +1042,12 @@ fn execute_drained_debug_commands(
     let mut should_apply_after_batch = false;
 
     for command in commands.drain(..) {
+        if thruport_diag_enabled() {
+            info!(
+                command = %debug_command_token(&command),
+                "thruport_diag_engine_execute_command"
+            );
+        }
         match command {
             DebugCommand::Quit => {
                 console.append_output_line("ok: quit requested");
@@ -1137,6 +1154,31 @@ fn execute_drained_debug_commands(
     }
 
     quit_requested
+}
+
+fn debug_command_token(command: &DebugCommand) -> &'static str {
+    match command {
+        DebugCommand::Quit => "quit",
+        DebugCommand::ResetScene => "reset_scene",
+        DebugCommand::Sync => "sync",
+        DebugCommand::ThruportStatus => "thruport.status",
+        DebugCommand::PauseSim => "pause_sim",
+        DebugCommand::ResumeSim => "resume_sim",
+        DebugCommand::Tick { .. } => "tick",
+        DebugCommand::DumpState => "dump.state",
+        DebugCommand::DumpAi => "dump.ai",
+        DebugCommand::SwitchScene { .. } => "switch_scene",
+        DebugCommand::Spawn { .. } => "spawn",
+        DebugCommand::Despawn { .. } => "despawn",
+        DebugCommand::InjectInput { .. } => "inject_input",
+    }
+}
+
+fn thruport_diag_enabled() -> bool {
+    matches!(
+        std::env::var(THRUPORT_DIAG_ENV_VAR).ok().as_deref(),
+        Some("1")
+    )
 }
 
 fn mark_injected_reset_if_remote_disconnected(
@@ -2155,6 +2197,43 @@ mod tests {
         assert_eq!(
             console.output_lines().collect::<Vec<_>>(),
             vec!["ok: sim paused", "ok: queued tick 2", "ok: sync"]
+        );
+    }
+
+    #[test]
+    fn reset_pause_sync_commands_emit_ordered_ok_lines() {
+        let mut scenes = SceneMachine::new(Box::new(NoopScene), Box::new(NoopScene), SceneKey::A);
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut console = ConsoleState::default();
+        let mut input_collector = InputCollector::new(1280, 720);
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
+        let mut hooks = LoopRuntimeHooks::default();
+        let mut commands = vec![
+            DebugCommand::ResetScene,
+            DebugCommand::PauseSim,
+            DebugCommand::Sync,
+        ];
+
+        let quit = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
+            &mut hooks,
+            false,
+        );
+
+        assert!(!quit);
+        assert!(sim_paused);
+        assert_eq!(queued_manual_ticks, 0);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec!["ok: scene reset", "ok: sim paused", "ok: sync"]
         );
     }
 
