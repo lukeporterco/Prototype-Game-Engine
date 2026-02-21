@@ -221,6 +221,8 @@ fn run_app_with_metrics_and_hooks(
     let mut perf_stats = PerfStats::new();
     let mut last_applied_title: Option<String> = None;
     let mut overlay_visible = true;
+    let mut sim_paused = false;
+    let mut queued_manual_ticks = 0u32;
     let mut console = ConsoleState::default();
     let mut console_command_processor = ConsoleCommandProcessor::new();
     let mut drained_debug_commands = Vec::<DebugCommand>::new();
@@ -315,6 +317,8 @@ fn run_app_with_metrics_and_hooks(
                             &mut scenes,
                             &mut console,
                             &mut input_collector,
+                            &mut sim_paused,
+                            &mut queued_manual_ticks,
                         ) {
                             info!(reason = "console_quit_command", "shutdown_requested");
                             window_target.exit();
@@ -339,13 +343,20 @@ fn run_app_with_metrics_and_hooks(
                         last_frame_instant = now;
 
                         let clamped_frame_dt = clamp_frame_delta(raw_frame_dt, max_frame_delta);
-                        accumulator = accumulator.saturating_add(clamped_frame_dt);
-
-                        let step_plan = plan_sim_steps(accumulator, fixed_dt, max_ticks_per_frame);
+                        let tick_plan = compute_tick_execution_plan(
+                            sim_paused,
+                            queued_manual_ticks,
+                            accumulator,
+                            clamped_frame_dt,
+                            fixed_dt,
+                            max_ticks_per_frame,
+                        );
+                        queued_manual_ticks = tick_plan.remaining_manual_ticks;
+                        accumulator = tick_plan.remaining_accumulator;
                         // sim_ms boundary start:
                         // starts immediately before the fixed-step tick loop for this frame.
                         let sim_timer_start = Instant::now();
-                        for _ in 0..step_plan.ticks_to_run {
+                        for _ in 0..tick_plan.ticks_to_run {
                             let input_snapshot =
                                 input_collector.snapshot_for_tick(console.is_open());
                             let command = scenes.update_active(fixed_dt_seconds, &input_snapshot);
@@ -368,11 +379,10 @@ fn run_app_with_metrics_and_hooks(
                             }
                             metrics_accumulator.record_tick();
                         }
-                        accumulator = step_plan.remaining_accumulator;
 
-                        if step_plan.dropped_backlog > Duration::ZERO {
+                        if tick_plan.dropped_backlog > Duration::ZERO {
                             warn!(
-                                dropped_backlog_ms = step_plan.dropped_backlog.as_millis() as u64,
+                                dropped_backlog_ms = tick_plan.dropped_backlog.as_millis() as u64,
                                 max_ticks_per_frame, "sim_clamp_triggered"
                             );
                         }
@@ -976,6 +986,8 @@ fn execute_drained_debug_commands(
     scenes: &mut SceneMachine,
     console: &mut ConsoleState,
     input_collector: &mut InputCollector,
+    sim_paused: &mut bool,
+    queued_manual_ticks: &mut u32,
 ) -> bool {
     let mut quit_requested = false;
     let mut should_apply_after_batch = false;
@@ -991,6 +1003,18 @@ fn execute_drained_debug_commands(
                 let _ = scenes.hard_reset_to(active);
                 scenes.apply_pending_active();
                 console.append_output_line("ok: scene reset");
+            }
+            DebugCommand::PauseSim => {
+                *sim_paused = true;
+                console.append_output_line("ok: sim paused");
+            }
+            DebugCommand::ResumeSim => {
+                *sim_paused = false;
+                console.append_output_line("ok: sim resumed");
+            }
+            DebugCommand::Tick { steps } => {
+                *queued_manual_ticks = queued_manual_ticks.saturating_add(steps);
+                console.append_output_line(format!("ok: queued tick {steps}"));
             }
             DebugCommand::SwitchScene { scene } => {
                 if scenes.switch_to(scene) {
@@ -1140,6 +1164,42 @@ struct StepPlan {
     ticks_to_run: u32,
     remaining_accumulator: Duration,
     dropped_backlog: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TickExecutionPlan {
+    ticks_to_run: u32,
+    remaining_accumulator: Duration,
+    dropped_backlog: Duration,
+    remaining_manual_ticks: u32,
+}
+
+fn compute_tick_execution_plan(
+    sim_paused: bool,
+    queued_manual_ticks: u32,
+    accumulator: Duration,
+    clamped_frame_dt: Duration,
+    fixed_dt: Duration,
+    max_ticks_per_frame: u32,
+) -> TickExecutionPlan {
+    if sim_paused {
+        let ticks_to_run = queued_manual_ticks.min(max_ticks_per_frame);
+        TickExecutionPlan {
+            ticks_to_run,
+            remaining_accumulator: accumulator,
+            dropped_backlog: Duration::ZERO,
+            remaining_manual_ticks: queued_manual_ticks.saturating_sub(ticks_to_run),
+        }
+    } else {
+        let next_accumulator = accumulator.saturating_add(clamped_frame_dt);
+        let step_plan = plan_sim_steps(next_accumulator, fixed_dt, max_ticks_per_frame);
+        TickExecutionPlan {
+            ticks_to_run: step_plan.ticks_to_run,
+            remaining_accumulator: step_plan.remaining_accumulator,
+            dropped_backlog: step_plan.dropped_backlog,
+            remaining_manual_ticks: queued_manual_ticks,
+        }
+    }
 }
 
 fn plan_sim_steps(
@@ -1455,6 +1515,29 @@ mod tests {
         }
     }
 
+    struct CountingScene {
+        updates: Arc<Mutex<u32>>,
+    }
+
+    impl Scene for CountingScene {
+        fn load(&mut self, _world: &mut super::super::SceneWorld) {}
+
+        fn update(
+            &mut self,
+            _fixed_dt_seconds: f32,
+            _input: &InputSnapshot,
+            _world: &mut super::super::SceneWorld,
+        ) -> SceneCommand {
+            let mut updates = self.updates.lock().expect("lock");
+            *updates += 1;
+            SceneCommand::None
+        }
+
+        fn render(&mut self, _world: &super::super::SceneWorld) {}
+
+        fn unload(&mut self, _world: &mut super::super::SceneWorld) {}
+    }
+
     struct SingleLinePump {
         emitted: bool,
     }
@@ -1537,12 +1620,16 @@ mod tests {
             },
             DebugCommand::Despawn { entity_id: 999_999 },
         ];
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
 
         let quit = execute_drained_debug_commands(
             &mut commands,
             &mut scenes,
             &mut console,
             &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
         );
 
         assert!(!quit);
@@ -1568,12 +1655,16 @@ mod tests {
         let mut console = ConsoleState::default();
         let mut input_collector = InputCollector::new(1280, 720);
         let mut commands = vec![DebugCommand::SwitchScene { scene: SceneKey::B }];
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
 
         let _ = execute_drained_debug_commands(
             &mut commands,
             &mut scenes,
             &mut console,
             &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
         );
 
         assert_eq!(scenes.active_scene(), SceneKey::B);
@@ -1598,12 +1689,16 @@ mod tests {
         let mut console = ConsoleState::default();
         let mut input_collector = InputCollector::new(1280, 720);
         let mut commands = vec![DebugCommand::ResetScene];
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
 
         let _ = execute_drained_debug_commands(
             &mut commands,
             &mut scenes,
             &mut console,
             &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
         );
 
         assert_eq!(scenes.active_world().entity_count(), 1);
@@ -1642,6 +1737,90 @@ mod tests {
         assert_eq!(result.ticks_to_run, 3);
         assert_eq!(result.remaining_accumulator, Duration::ZERO);
         assert_eq!(result.dropped_backlog, Duration::from_millis(72));
+    }
+
+    #[test]
+    fn sim_step_commands_update_pause_and_tick_state() {
+        let mut scenes = SceneMachine::new(Box::new(NoopScene), Box::new(NoopScene), SceneKey::A);
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut console = ConsoleState::default();
+        let mut input_collector = InputCollector::new(1280, 720);
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
+        let mut commands = vec![
+            DebugCommand::PauseSim,
+            DebugCommand::Tick { steps: 3 },
+            DebugCommand::ResumeSim,
+        ];
+
+        let quit = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
+        );
+
+        assert!(!quit);
+        assert!(!sim_paused);
+        assert_eq!(queued_manual_ticks, 3);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec!["ok: sim paused", "ok: queued tick 3", "ok: sim resumed"]
+        );
+    }
+
+    #[test]
+    fn pause_prevents_sim_advance_without_tick() {
+        let updates = Arc::new(Mutex::new(0u32));
+        let mut scenes = SceneMachine::new(
+            Box::new(CountingScene {
+                updates: Arc::clone(&updates),
+            }),
+            Box::new(NoopScene),
+            SceneKey::A,
+        );
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let fixed_dt = Duration::from_millis(16);
+        let mut accumulator = Duration::ZERO;
+        let mut queued_manual_ticks = 0u32;
+        let fixed_dt_seconds = fixed_dt.as_secs_f32();
+
+        let first_plan = compute_tick_execution_plan(
+            true,
+            queued_manual_ticks,
+            accumulator,
+            Duration::from_millis(32),
+            fixed_dt,
+            5,
+        );
+        let _remaining_after_first = first_plan.remaining_manual_ticks;
+        accumulator = first_plan.remaining_accumulator;
+        for _ in 0..first_plan.ticks_to_run {
+            let _ = scenes.update_active(fixed_dt_seconds, &InputSnapshot::empty());
+            scenes.apply_pending_active();
+        }
+        assert_eq!(*updates.lock().expect("lock"), 0);
+
+        queued_manual_ticks = 3;
+        let second_plan = compute_tick_execution_plan(
+            true,
+            queued_manual_ticks,
+            accumulator,
+            Duration::from_millis(64),
+            fixed_dt,
+            5,
+        );
+        for _ in 0..second_plan.ticks_to_run {
+            let _ = scenes.update_active(fixed_dt_seconds, &InputSnapshot::empty());
+            scenes.apply_pending_active();
+        }
+        assert_eq!(*updates.lock().expect("lock"), 3);
     }
 
     #[test]

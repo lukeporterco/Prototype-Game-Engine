@@ -9,6 +9,11 @@ const MAX_PENDING_DEBUG_COMMANDS: usize = 128;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DebugCommand {
     ResetScene,
+    PauseSim,
+    ResumeSim,
+    Tick {
+        steps: u32,
+    },
     SwitchScene {
         scene: SceneKey,
     },
@@ -119,6 +124,30 @@ impl ConsoleCommandRegistry {
                 "Reset active scene",
                 "",
                 parse_reset_scene_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "pause_sim",
+                "Pause simulation stepping",
+                "",
+                parse_pause_sim_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "resume_sim",
+                "Resume simulation stepping",
+                "",
+                parse_resume_sim_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "tick",
+                "Advance simulation by fixed ticks",
+                "<steps:u32>",
+                parse_tick_command,
             )
             .expect("built-in command registration should not fail");
         registry
@@ -412,6 +441,38 @@ fn parse_reset_scene_command(args: &[String]) -> Result<ParsedCommand, CommandPa
     Ok(ParsedCommand::Queueable(DebugCommand::ResetScene))
 }
 
+fn parse_pause_sim_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    require_no_args(args, "pause_sim")?;
+    Ok(ParsedCommand::Queueable(DebugCommand::PauseSim))
+}
+
+fn parse_resume_sim_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    require_no_args(args, "resume_sim")?;
+    Ok(ParsedCommand::Queueable(DebugCommand::ResumeSim))
+}
+
+fn parse_tick_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    if args.len() != 1 {
+        return Err(CommandParseError {
+            reason: "expected exactly one argument <steps>".to_string(),
+            usage: "tick <steps>".to_string(),
+        });
+    }
+
+    let steps = args[0].parse::<u32>().map_err(|_| CommandParseError {
+        reason: format!("invalid steps '{}' (expected u32 > 0)", args[0]),
+        usage: "tick <steps>".to_string(),
+    })?;
+    if steps == 0 {
+        return Err(CommandParseError {
+            reason: "steps must be > 0".to_string(),
+            usage: "tick <steps>".to_string(),
+        });
+    }
+
+    Ok(ParsedCommand::Queueable(DebugCommand::Tick { steps }))
+}
+
 fn parse_switch_scene_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
     if args.len() != 1 {
         return Err(CommandParseError {
@@ -642,34 +703,40 @@ mod tests {
         assert_eq!(lines[1], "clear - Clear console output");
         assert_eq!(lines[2], "echo <text...> - Print text to console");
         assert_eq!(lines[3], "reset_scene - Reset active scene");
+        assert_eq!(lines[4], "pause_sim - Pause simulation stepping");
+        assert_eq!(lines[5], "resume_sim - Resume simulation stepping");
         assert_eq!(
-            lines[4],
-            "switch_scene <scene_id:a|b> - Switch active scene"
+            lines[6],
+            "tick <steps:u32> - Advance simulation by fixed ticks"
         );
-        assert_eq!(lines[5], "quit - Quit app");
-        assert_eq!(lines[6], "despawn <entity_id:u64> - Despawn entity by id");
         assert_eq!(
             lines[7],
+            "switch_scene <scene_id:a|b> - Switch active scene"
+        );
+        assert_eq!(lines[8], "quit - Quit app");
+        assert_eq!(lines[9], "despawn <entity_id:u64> - Despawn entity by id");
+        assert_eq!(
+            lines[10],
             "spawn <def_name:string> [x:f32 y:f32] - Spawn entity by def name"
         );
         assert_eq!(
-            lines[8],
+            lines[11],
             "input.key_down <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key down"
         );
         assert_eq!(
-            lines[9],
+            lines[12],
             "input.key_up <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key up"
         );
         assert_eq!(
-            lines[10],
+            lines[13],
             "input.mouse_move <x:f32> <y:f32> - Inject mouse move (px)"
         );
         assert_eq!(
-            lines[11],
+            lines[14],
             "input.mouse_down <button:left|right> - Inject mouse down"
         );
         assert_eq!(
-            lines[12],
+            lines[15],
             "input.mouse_up <button:left|right> - Inject mouse up"
         );
     }
@@ -723,6 +790,9 @@ mod tests {
         let mut processor = ConsoleCommandProcessor::new();
         let mut console = ConsoleState::default();
         console.push_pending_line_for_test("reset_scene");
+        console.push_pending_line_for_test("pause_sim");
+        console.push_pending_line_for_test("tick 5");
+        console.push_pending_line_for_test("resume_sim");
         console.push_pending_line_for_test("switch_scene a");
         console.push_pending_line_for_test("quit");
         console.push_pending_line_for_test("despawn 42");
@@ -741,6 +811,9 @@ mod tests {
             queued,
             vec![
                 DebugCommand::ResetScene,
+                DebugCommand::PauseSim,
+                DebugCommand::Tick { steps: 5 },
+                DebugCommand::ResumeSim,
                 DebugCommand::SwitchScene { scene: SceneKey::A },
                 DebugCommand::Quit,
                 DebugCommand::Despawn { entity_id: 42 },
@@ -796,6 +869,30 @@ mod tests {
                 "error: invalid x coordinate 'x' (expected f32). usage: input.mouse_move <x> <y>",
                 "error: invalid button 'middle' (expected left|right). usage: input.mouse_down <button>",
                 "error: expected exactly one argument <button>. usage: input.mouse_up <button>",
+            ]
+        );
+    }
+
+    #[test]
+    fn sim_step_commands_validate_bad_args_with_usage() {
+        let mut processor = ConsoleCommandProcessor::new();
+        let mut console = ConsoleState::default();
+        console.push_pending_line_for_test("pause_sim now");
+        console.push_pending_line_for_test("resume_sim now");
+        console.push_pending_line_for_test("tick");
+        console.push_pending_line_for_test("tick 0");
+        console.push_pending_line_for_test("tick nope");
+
+        processor.process_pending_lines(&mut console);
+
+        assert_eq!(
+            collect_output(&console),
+            vec![
+                "error: unexpected extra arguments. usage: pause_sim",
+                "error: unexpected extra arguments. usage: resume_sim",
+                "error: expected exactly one argument <steps>. usage: tick <steps>",
+                "error: steps must be > 0. usage: tick <steps>",
+                "error: invalid steps 'nope' (expected u32 > 0). usage: tick <steps>",
             ]
         );
     }

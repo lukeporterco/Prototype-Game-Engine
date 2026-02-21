@@ -24,6 +24,9 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `quit`
 - `despawn`
 - `spawn`
+- `pause_sim`
+- `resume_sim`
+- `tick`
 - `input.key_down`
 - `input.key_up`
 - `input.mouse_move`
@@ -116,6 +119,33 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `error: unknown entity def 'proto.unknown'`
 - `error: active scene does not support this command`
 
+### pause_sim
+- Layer: Engine loop simulation control
+- Description: Pauses automatic frame-driven simulation stepping while rendering continues.
+- Syntax: `pause_sim`
+- Example:
+- `pause_sim`
+- Result examples:
+- `ok: sim paused`
+
+### resume_sim
+- Layer: Engine loop simulation control
+- Description: Resumes automatic frame-driven simulation stepping.
+- Syntax: `resume_sim`
+- Example:
+- `resume_sim`
+- Result examples:
+- `ok: sim resumed`
+
+### tick
+- Layer: Engine loop simulation control
+- Description: Queues exact fixed simulation ticks while paused (or while running).
+- Syntax: `tick <steps>`
+- Example:
+- `tick 60`
+- Result examples:
+- `ok: queued tick 60`
+
 ### input.key_down
 - Layer: Engine loop input bridge
 - Description: Enqueues a synthetic key-down event for next tick input snapshot merge.
@@ -169,6 +199,8 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 
 - Queueable commands are still parsed in tools, then routed for execution in the loop.
 - `spawn`/`despawn` enqueue gameplay intents and world mutation occurs once per tick at the gameplay safe apply point.
+- `pause_sim` affects only simulation stepping; rendering/frame pacing continues normally.
+- `tick <steps>` advances the same fixed update path used by normal gameplay; no alternate loop exists.
 - `input.*` commands enqueue synthetic input events that are applied once at `InputCollector::snapshot_for_tick` and merged into the normal input snapshot.
 - If the authoritative player is missing, gameplay auto-spawns exactly one authoritative player actor on tick apply.
 - `DebugCommand` stays in tools/engine layer; only `spawn`/`despawn` map one-way into scene-facing `SceneDebugCommand`.

@@ -245,3 +245,14 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - `RemoteConsoleLinePump::take_disconnect_reset_requested()` default no-op method
   - thruport implementation raises one-shot reset when connected remote clients drop to zero
   - loop marks collector reset and clears held injected keys/buttons on the next snapshot tick.
+
+## Ticket 45 Deterministic Step Control (2026-02-21)
+- Added queueable engine simulation-control commands in `crates/engine/src/app/tools/console_commands.rs`:
+  - `pause_sim`
+  - `resume_sim`
+  - `tick <steps>` (`u32`, `> 0`)
+- Loop runner in `crates/engine/src/app/loop_runner.rs` now owns sim gating state:
+  - `sim_paused: bool`
+  - `queued_manual_ticks: u32`
+- While paused, frame-time accumulation is disabled and only queued manual ticks advance simulation; rendering/frame pacing still run normally.
+- Manual ticks execute through the exact same fixed update path (`snapshot_for_tick` + `scenes.update_active` + apply/switch handling), preserving deterministic behavior and avoiding alternate loops.
