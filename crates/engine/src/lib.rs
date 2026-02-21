@@ -10,10 +10,11 @@ pub mod content;
 mod sprite_keys;
 
 pub use app::{
-    run_app, run_app_with_metrics, screen_to_world_px, world_to_screen_px, AppError, Camera2D,
-    DebugInfoSnapshot, DebugJobState, DebugMarker, DebugMarkerKind, Entity, EntityId, InputAction,
-    InputSnapshot, Interactable, InteractableKind, LoopConfig, LoopMetricsSnapshot, MetricsHandle,
-    OrderState, RenderableDesc, RenderableKind, Renderer, Scene, SceneCommand, SceneDebugCommand,
+    run_app, run_app_with_hooks, run_app_with_metrics, screen_to_world_px, world_to_screen_px,
+    AppError, Camera2D, DebugInfoSnapshot, DebugJobState, DebugMarker, DebugMarkerKind, Entity,
+    EntityId, InputAction, InputSnapshot, Interactable, InteractableKind, LoopConfig,
+    LoopMetricsSnapshot, LoopRuntimeHooks, MetricsHandle, OrderState, RemoteConsoleLinePump,
+    RenderableDesc, RenderableKind, Renderer, Scene, SceneCommand, SceneDebugCommand,
     SceneDebugCommandResult, SceneDebugContext, SceneKey, SceneVisualState, SceneWorld, Tilemap,
     TilemapError, Transform, Vec2, Viewport, CAMERA_ZOOM_DEFAULT, CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN,
     CAMERA_ZOOM_STEP, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX, SLOW_FRAME_ENV_VAR,

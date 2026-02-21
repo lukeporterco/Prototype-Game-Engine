@@ -83,6 +83,10 @@ impl ConsoleState {
         push_bounded(&mut self.pending_lines, line.into(), MAX_PENDING_LINES);
     }
 
+    pub(crate) fn enqueue_pending_line(&mut self, line: impl Into<String>) {
+        push_bounded(&mut self.pending_lines, line.into(), MAX_PENDING_LINES);
+    }
+
     pub(crate) fn drain_pending_lines_into(&mut self, out: &mut Vec<String>) {
         out.extend(self.pending_lines.drain(..));
     }
@@ -424,6 +428,18 @@ mod tests {
         let mut drained = Vec::new();
         console.drain_pending_lines_into(&mut drained);
         assert_eq!(drained, vec!["one".to_string(), "two".to_string()]);
+        assert!(console.pending_lines.is_empty());
+    }
+
+    #[test]
+    fn enqueue_pending_line_adds_to_pending_queue_path() {
+        let mut console = ConsoleState::default();
+        console.enqueue_pending_line("help");
+
+        let mut drained = Vec::new();
+        console.drain_pending_lines_into(&mut drained);
+
+        assert_eq!(drained, vec!["help".to_string()]);
         assert!(console.pending_lines.is_empty());
     }
 

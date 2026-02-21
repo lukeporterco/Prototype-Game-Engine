@@ -1,3 +1,9 @@
+use std::io::{self, Read};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+
+use engine::RemoteConsoleLinePump;
+use tracing::warn;
+
 pub(crate) trait ConsoleInputQueueHook {
     fn drain_pending_lines(&mut self, out: &mut Vec<String>);
 }
@@ -18,21 +24,21 @@ pub(crate) enum InjectedInput {
     MouseMove { x: f32, y: f32 },
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct DevThruport {
-    _private: (),
-}
+const THRUPORT_ENV_VAR: &str = "PROTOGE_THRUPORT";
+const THRUPORT_PORT_ENV_VAR: &str = "PROTOGE_THRUPORT_PORT";
+const THRUPORT_DEFAULT_PORT: u16 = 46001;
 
-#[derive(Debug, Default)]
 pub(crate) struct DevThruportHooks {
-    _private: (),
+    _console_input: Option<Box<dyn ConsoleInputQueueHook + Send>>,
+    _console_output_tee: Option<Box<dyn ConsoleOutputTeeHook + Send>>,
+    _input_injection: Option<Box<dyn InputInjectionHook + Send>>,
 }
 
-struct NoOpConsoleInputQueueHook;
+struct NoOpConsoleInputHook;
 struct NoOpConsoleOutputTeeHook;
 struct NoOpInputInjectionHook;
 
-impl ConsoleInputQueueHook for NoOpConsoleInputQueueHook {
+impl ConsoleInputQueueHook for NoOpConsoleInputHook {
     fn drain_pending_lines(&mut self, _out: &mut Vec<String>) {}
 }
 
@@ -46,37 +52,284 @@ impl InputInjectionHook for NoOpInputInjectionHook {
 
 impl DevThruportHooks {
     pub(crate) fn no_op() -> Self {
-        Self { _private: () }
+        Self {
+            _console_input: None,
+            _console_output_tee: None,
+            _input_injection: None,
+        }
     }
 }
 
-pub(crate) fn initialize(_hooks: DevThruportHooks) -> DevThruport {
-    exercise_hook_contracts_for_no_op_build();
-    DevThruport { _private: () }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DevThruportConfig {
+    enabled: bool,
+    port: u16,
 }
 
-fn exercise_hook_contracts_for_no_op_build() {
-    let mut queue_hook = NoOpConsoleInputQueueHook;
-    let mut out = Vec::new();
-    queue_hook.drain_pending_lines(&mut out);
+impl DevThruportConfig {
+    fn from_env() -> Self {
+        let enabled = parse_enabled_flag(std::env::var(THRUPORT_ENV_VAR).ok().as_deref());
+        let raw_port = std::env::var(THRUPORT_PORT_ENV_VAR).ok();
+        let port = match raw_port.as_deref() {
+            Some(value) => match value.parse::<u16>() {
+                Ok(parsed_port) => parsed_port,
+                Err(_) => {
+                    warn!(
+                        value,
+                        fallback_port = THRUPORT_DEFAULT_PORT,
+                        "thruport_invalid_port_using_default"
+                    );
+                    THRUPORT_DEFAULT_PORT
+                }
+            },
+            None => THRUPORT_DEFAULT_PORT,
+        };
+        Self { enabled, port }
+    }
+}
 
-    let mut tee_hook = NoOpConsoleOutputTeeHook;
-    tee_hook.tee_output_line("");
+#[derive(Debug)]
+enum DevThruportMode {
+    Disabled,
+    Enabled(TcpRemoteConsoleTransport),
+}
 
-    let mut input_hook = NoOpInputInjectionHook;
-    input_hook.inject_input(InjectedInput::NoOp);
-    input_hook.inject_input(InjectedInput::KeyDown);
-    input_hook.inject_input(InjectedInput::KeyUp);
-    input_hook.inject_input(InjectedInput::MouseMove { x: 0.0, y: 0.0 });
+pub(crate) struct DevThruport {
+    mode: DevThruportMode,
+    _hooks: DevThruportHooks,
+}
+
+#[derive(Debug)]
+struct TcpRemoteConsoleTransport {
+    listener: TcpListener,
+    clients: Vec<ClientConn>,
+}
+
+#[derive(Debug)]
+struct ClientConn {
+    stream: TcpStream,
+    read_buf: Vec<u8>,
+}
+
+impl TcpRemoteConsoleTransport {
+    fn bind_localhost(port: u16) -> io::Result<Self> {
+        let addr = localhost_bind_addr(port);
+        let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        Ok(Self {
+            listener,
+            clients: Vec::new(),
+        })
+    }
+
+    fn poll_lines(&mut self, out: &mut Vec<String>) {
+        self.accept_pending_clients();
+        self.poll_client_lines(out);
+    }
+
+    fn accept_pending_clients(&mut self) {
+        loop {
+            match self.listener.accept() {
+                Ok((stream, _addr)) => {
+                    if let Err(err) = stream.set_nonblocking(true) {
+                        warn!(error = %err, "thruport_client_nonblocking_failed");
+                        continue;
+                    }
+                    self.clients.push(ClientConn {
+                        stream,
+                        read_buf: Vec::new(),
+                    });
+                }
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) => {
+                    warn!(error = %err, "thruport_accept_failed");
+                    break;
+                }
+            }
+        }
+    }
+
+    fn poll_client_lines(&mut self, out: &mut Vec<String>) {
+        let mut index = 0usize;
+        while index < self.clients.len() {
+            let mut disconnected = false;
+            {
+                let client = &mut self.clients[index];
+                let mut chunk = [0u8; 1024];
+                loop {
+                    match client.stream.read(&mut chunk) {
+                        Ok(0) => {
+                            disconnected = true;
+                            break;
+                        }
+                        Ok(bytes_read) => {
+                            client.read_buf.extend_from_slice(&chunk[..bytes_read]);
+                            drain_complete_lines(&mut client.read_buf, out);
+                        }
+                        Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(err) => {
+                            warn!(error = %err, "thruport_client_read_failed");
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if disconnected {
+                self.clients.swap_remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+}
+
+pub(crate) fn initialize(hooks: DevThruportHooks) -> DevThruport {
+    exercise_forward_contracts_noop();
+
+    let config = DevThruportConfig::from_env();
+    let mode = if config.enabled {
+        match TcpRemoteConsoleTransport::bind_localhost(config.port) {
+            Ok(transport) => DevThruportMode::Enabled(transport),
+            Err(err) => {
+                warn!(error = %err, port = config.port, "thruport_bind_failed_disabled");
+                DevThruportMode::Disabled
+            }
+        }
+    } else {
+        DevThruportMode::Disabled
+    };
+
+    DevThruport {
+        mode,
+        _hooks: hooks,
+    }
+}
+
+fn exercise_forward_contracts_noop() {
+    let mut input_queue = NoOpConsoleInputHook;
+    let mut drained = Vec::new();
+    input_queue.drain_pending_lines(&mut drained);
+
+    let mut output_tee = NoOpConsoleOutputTeeHook;
+    output_tee.tee_output_line("");
+
+    let mut input_injection = NoOpInputInjectionHook;
+    input_injection.inject_input(InjectedInput::NoOp);
+    input_injection.inject_input(InjectedInput::KeyDown);
+    input_injection.inject_input(InjectedInput::KeyUp);
+    input_injection.inject_input(InjectedInput::MouseMove { x: 0.0, y: 0.0 });
+}
+
+impl DevThruport {
+    fn poll_remote_lines(&mut self, out: &mut Vec<String>) {
+        if let DevThruportMode::Enabled(transport) = &mut self.mode {
+            transport.poll_lines(out);
+        }
+    }
+}
+
+impl RemoteConsoleLinePump for DevThruport {
+    fn poll_lines(&mut self, out: &mut Vec<String>) {
+        self.poll_remote_lines(out);
+    }
+}
+
+fn localhost_bind_addr(port: u16) -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], port))
+}
+
+fn parse_enabled_flag(raw: Option<&str>) -> bool {
+    matches!(raw, Some("1"))
+}
+
+#[cfg(test)]
+fn parse_port_or_default(raw: Option<&str>) -> u16 {
+    match raw.and_then(|value| value.parse::<u16>().ok()) {
+        Some(port) => port,
+        None => THRUPORT_DEFAULT_PORT,
+    }
+}
+
+fn drain_complete_lines(buffer: &mut Vec<u8>, out: &mut Vec<String>) {
+    while let Some(newline_index) = buffer.iter().position(|byte| *byte == b'\n') {
+        let mut line_bytes = buffer.drain(..=newline_index).collect::<Vec<u8>>();
+        line_bytes.pop(); // newline
+        if line_bytes.last().copied() == Some(b'\r') {
+            line_bytes.pop();
+        }
+
+        match String::from_utf8(line_bytes) {
+            Ok(line) => out.push(line),
+            Err(err) => warn!(error = %err, "thruport_invalid_utf8_line_dropped"),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{initialize, DevThruportHooks};
+    use std::io::Write;
+    use std::net::TcpStream;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::{
+        initialize, localhost_bind_addr, parse_enabled_flag, parse_port_or_default,
+        DevThruportConfig, DevThruportHooks, TcpRemoteConsoleTransport, THRUPORT_DEFAULT_PORT,
+    };
 
     #[test]
     fn initialize_no_op_constructs_without_panic() {
         let hooks = DevThruportHooks::no_op();
         let _thruport = initialize(hooks);
+    }
+
+    #[test]
+    fn thruport_enablement_from_env_values() {
+        assert!(!parse_enabled_flag(None));
+        assert!(!parse_enabled_flag(Some("0")));
+        assert!(parse_enabled_flag(Some("1")));
+
+        assert_eq!(parse_port_or_default(None), THRUPORT_DEFAULT_PORT);
+        assert_eq!(parse_port_or_default(Some("46001")), 46001);
+        assert_eq!(
+            parse_port_or_default(Some("not-a-port")),
+            THRUPORT_DEFAULT_PORT
+        );
+
+        let config = DevThruportConfig {
+            enabled: parse_enabled_flag(Some("1")),
+            port: parse_port_or_default(Some("46002")),
+        };
+        assert!(config.enabled);
+        assert_eq!(config.port, 46002);
+    }
+
+    #[test]
+    fn bind_address_is_localhost_only() {
+        let addr = localhost_bind_addr(46001);
+        assert_eq!(addr.ip().to_string(), "127.0.0.1");
+        assert_eq!(addr.port(), 46001);
+    }
+
+    #[test]
+    fn tcp_transport_receives_newline_delimited_line() {
+        let mut transport = TcpRemoteConsoleTransport::bind_localhost(0).expect("bind");
+        let addr = transport.listener.local_addr().expect("local_addr");
+        let mut client = TcpStream::connect(addr).expect("connect");
+        client.write_all(b"help\n").expect("write");
+        client.flush().expect("flush");
+
+        let mut out = Vec::new();
+        for _ in 0..20 {
+            transport.poll_lines(&mut out);
+            if !out.is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(out, vec!["help".to_string()]);
     }
 }

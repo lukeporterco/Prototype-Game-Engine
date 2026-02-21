@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use engine::run_app;
+use engine::{run_app_with_hooks, LoopRuntimeHooks};
 use tracing::error;
 
 use super::bootstrap::AppWiring;
@@ -10,10 +10,14 @@ pub(crate) fn run(app: AppWiring) -> ExitCode {
         config,
         scene_a,
         scene_b,
-        dev_thruport: _dev_thruport,
+        dev_thruport,
     } = app;
 
-    if let Err(err) = run_app(config, scene_a, scene_b) {
+    let hooks = LoopRuntimeHooks {
+        remote_console_pump: Some(Box::new(dev_thruport)),
+    };
+
+    if let Err(err) = run_app_with_hooks(config, scene_a, scene_b, hooks) {
         error!(error = %err, "startup_failed");
         return ExitCode::FAILURE;
     }

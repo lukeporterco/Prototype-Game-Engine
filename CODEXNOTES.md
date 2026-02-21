@@ -206,3 +206,18 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - `initialize(DevThruportHooks) -> DevThruport`
 - Bootstrap now initializes and carries `AppWiring.dev_thruport`; loop runner explicitly destructures and binds it without affecting runtime behavior.
 - No TCP/network/screenshot/input synthesis behavior added; console semantics are unchanged.
+
+## Ticket 42 TCP Thruport Transport (2026-02-21)
+- Added localhost-only TCP remote console transport in `crates/game/src/app/dev_thruport.rs`.
+- Enablement is env-driven:
+  - `PROTOGE_THRUPORT=1` enables listener
+  - `PROTOGE_THRUPORT_PORT=<u16>` sets port (default `46001`)
+- Bind target is hard-locked to `127.0.0.1:<port>`.
+- Transport is non-blocking and line-based (`\n` delimited UTF-8, CRLF tolerated via trailing `\r` strip).
+- Invalid UTF-8 lines are dropped with a warning; client/socket errors are non-fatal and do not block the frame loop.
+- Added minimal engine runtime hook seam to feed remote lines into the existing console pending-lines path:
+  - `RemoteConsoleLinePump`
+  - `LoopRuntimeHooks`
+  - `run_app_with_hooks(...)`
+- Engine redraw flow now polls remote lines once before `ConsoleCommandProcessor::process_pending_lines`, and enqueues via `ConsoleState::enqueue_pending_line`.
+- When disabled, no socket is opened and behavior remains equivalent to prior path.

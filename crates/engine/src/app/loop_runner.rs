@@ -29,6 +29,15 @@ use super::{
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
 const SOFT_BUDGET_CONSECUTIVE_BREACH_FRAMES: u32 = 3;
 
+pub trait RemoteConsoleLinePump: Send {
+    fn poll_lines(&mut self, out: &mut Vec<String>);
+}
+
+#[derive(Default)]
+pub struct LoopRuntimeHooks {
+    pub remote_console_pump: Option<Box<dyn RemoteConsoleLinePump>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct LoopConfig {
     pub window_title: String,
@@ -86,7 +95,23 @@ pub fn run_app(
     scene_b: Box<dyn Scene>,
 ) -> Result<(), AppError> {
     let metrics_handle = MetricsHandle::default();
-    run_app_with_metrics(config, scene_a, scene_b, metrics_handle)
+    run_app_with_metrics_and_hooks(
+        config,
+        scene_a,
+        scene_b,
+        metrics_handle,
+        LoopRuntimeHooks::default(),
+    )
+}
+
+pub fn run_app_with_hooks(
+    config: LoopConfig,
+    scene_a: Box<dyn Scene>,
+    scene_b: Box<dyn Scene>,
+    hooks: LoopRuntimeHooks,
+) -> Result<(), AppError> {
+    let metrics_handle = MetricsHandle::default();
+    run_app_with_metrics_and_hooks(config, scene_a, scene_b, metrics_handle, hooks)
 }
 
 pub fn run_app_with_metrics(
@@ -94,6 +119,22 @@ pub fn run_app_with_metrics(
     scene_a: Box<dyn Scene>,
     scene_b: Box<dyn Scene>,
     metrics_handle: MetricsHandle,
+) -> Result<(), AppError> {
+    run_app_with_metrics_and_hooks(
+        config,
+        scene_a,
+        scene_b,
+        metrics_handle,
+        LoopRuntimeHooks::default(),
+    )
+}
+
+fn run_app_with_metrics_and_hooks(
+    config: LoopConfig,
+    scene_a: Box<dyn Scene>,
+    scene_b: Box<dyn Scene>,
+    metrics_handle: MetricsHandle,
+    mut runtime_hooks: LoopRuntimeHooks,
 ) -> Result<(), AppError> {
     let mut scenes = SceneMachine::new(scene_a, scene_b, SceneKey::A);
     let app_paths = resolve_app_paths()?;
@@ -174,6 +215,7 @@ pub fn run_app_with_metrics(
     let mut console = ConsoleState::default();
     let mut console_command_processor = ConsoleCommandProcessor::new();
     let mut drained_debug_commands = Vec::<DebugCommand>::new();
+    let mut remote_console_lines = Vec::<String>::new();
     info!(
         perf_stats_enabled_by_default = PerfStats::enabled_by_default(),
         perf_window_frames = PerfStats::window_len(),
@@ -249,6 +291,11 @@ pub fn run_app_with_metrics(
                             input_collector.reset_gameplay_inputs();
                             info!(console_open = console.is_open(), "console_toggled");
                         }
+                        poll_remote_console_lines_into_console(
+                            &mut runtime_hooks,
+                            &mut console,
+                            &mut remote_console_lines,
+                        );
                         console_command_processor.process_pending_lines(&mut console);
                         drained_debug_commands.clear();
                         console_command_processor
@@ -729,6 +776,22 @@ impl InputCollector {
     }
 }
 
+fn poll_remote_console_lines_into_console(
+    hooks: &mut LoopRuntimeHooks,
+    console: &mut ConsoleState,
+    scratch: &mut Vec<String>,
+) {
+    let Some(pump) = hooks.remote_console_pump.as_mut() else {
+        return;
+    };
+
+    scratch.clear();
+    pump.poll_lines(scratch);
+    for line in scratch.drain(..) {
+        console.enqueue_pending_line(line);
+    }
+}
+
 fn execute_drained_debug_commands(
     commands: &mut Vec<DebugCommand>,
     scenes: &mut SceneMachine,
@@ -1145,6 +1208,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    struct SingleLinePump {
+        emitted: bool,
+    }
+
+    impl RemoteConsoleLinePump for SingleLinePump {
+        fn poll_lines(&mut self, out: &mut Vec<String>) {
+            if !self.emitted {
+                out.push("echo remote".to_string());
+                self.emitted = true;
+            }
+        }
+    }
+
+    #[test]
+    fn remote_pump_lines_are_enqueued_before_processing() {
+        let mut hooks = LoopRuntimeHooks {
+            remote_console_pump: Some(Box::new(SingleLinePump { emitted: false })),
+        };
+        let mut console = ConsoleState::default();
+        let mut remote_lines = Vec::<String>::new();
+        let mut processor = ConsoleCommandProcessor::new();
+
+        poll_remote_console_lines_into_console(&mut hooks, &mut console, &mut remote_lines);
+        processor.process_pending_lines(&mut console);
+
+        assert_eq!(console.output_lines().collect::<Vec<_>>(), vec!["remote"]);
     }
 
     #[test]
