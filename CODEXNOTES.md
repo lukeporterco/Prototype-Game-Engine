@@ -172,3 +172,12 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - on transition to zero health: emits `EntityDied { entity_id }` and enqueues same-pass `DespawnEntity`
 - Dev probe no longer emits synthetic `EntityDamaged`/`EntityDied`, so `evk dm/dd` now reflects real combat outcomes.
 
+## Ticket 39 Status Effects Seam (2026-02-21)
+- Status ids are now string ids (`StatusId(&'static str)`), with shipping status `status.slow`.
+- Runtime status storage is scene-owned timed sets: `status_sets_by_entity: HashMap<EntityId, StatusSet>`, where each `StatusSet` contains `ActiveStatus { status_id, remaining_seconds }`.
+- `GameplayIntent::AddStatus` now carries `duration_seconds`; reapply uses a single rule: refresh remaining duration.
+- `StatusApplied` is emitted only when a status is newly added or refreshed; `StatusExpired` is emitted only when a present status is actually removed.
+- `GameplaySystemId::StatusEffects` now runs real ticking logic, decrements durations deterministically, and enqueues `RemoveStatus` intents for expirations.
+- Movement modifier is derived, not directly mutated: effective speed uses the product of active status multipliers (`status.slow` currently multiplies by `0.5`; unknown statuses are neutral `1.0`).
+- Combat integration now applies `status.slow` on attack-completion-derived damage path (`CombatResolution`), preserving attack-only guard.
+
