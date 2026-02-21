@@ -5,6 +5,8 @@
 
 # Runtime-generated
 /cache/
+/cache/content_packs/
+/cache/saves/
 /logs/
 *.log
 
@@ -43,4 +45,3 @@ $RECYCLE.BIN/
 #GPT Project Files
 GPTContext.md
 /GPTContext.md
-

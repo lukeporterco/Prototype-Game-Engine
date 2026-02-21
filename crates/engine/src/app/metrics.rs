@@ -1,5 +1,19 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+
+use tracing::warn;
+
+static METRICS_LOCK_POISON_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn warn_metrics_lock_poison_once(operation: &'static str) {
+    if METRICS_LOCK_POISON_WARNED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        warn!(operation, "metrics lock poisoned; recovered inner value");
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LoopMetricsSnapshot {
@@ -23,17 +37,24 @@ impl Default for MetricsHandle {
 
 impl MetricsHandle {
     pub fn snapshot(&self) -> LoopMetricsSnapshot {
-        *self
-            .snapshot
-            .read()
-            .expect("metrics snapshot lock poisoned")
+        match self.snapshot.read() {
+            Ok(guard) => *guard,
+            Err(poisoned) => {
+                warn_metrics_lock_poison_once("read");
+                *poisoned.into_inner()
+            }
+        }
     }
 
     pub(crate) fn publish(&self, snapshot: LoopMetricsSnapshot) {
-        *self
-            .snapshot
-            .write()
-            .expect("metrics snapshot lock poisoned") = snapshot;
+        match self.snapshot.write() {
+            Ok(mut guard) => *guard = snapshot,
+            Err(poisoned) => {
+                warn_metrics_lock_poison_once("write");
+                let mut guard = poisoned.into_inner();
+                *guard = snapshot;
+            }
+        }
     }
 }
 
@@ -96,7 +117,21 @@ impl MetricsAccumulator {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::RwLock;
+    use std::thread;
+
     use super::*;
+
+    fn poison_lock(lock: &RwLock<LoopMetricsSnapshot>) {
+        thread::scope(|scope| {
+            let _ = scope
+                .spawn(|| {
+                    let _guard = lock.write().expect("write guard");
+                    panic!("poison metrics lock");
+                })
+                .join();
+        });
+    }
 
     #[test]
     fn snapshot_computes_expected_values() {
@@ -128,5 +163,34 @@ mod tests {
         assert!(accumulator
             .maybe_snapshot(base + Duration::from_millis(500))
             .is_none());
+    }
+
+    #[test]
+    fn snapshot_recovers_after_poison_without_panic() {
+        let handle = MetricsHandle::default();
+        poison_lock(handle.snapshot.as_ref());
+
+        let snapshot = handle.snapshot();
+        assert_eq!(snapshot.fps, 0.0);
+        assert_eq!(snapshot.tps, 0.0);
+        assert_eq!(snapshot.frame_time_ms, 0.0);
+    }
+
+    #[test]
+    fn publish_recovers_after_poison_without_panic() {
+        let handle = MetricsHandle::default();
+        poison_lock(handle.snapshot.as_ref());
+
+        let expected = LoopMetricsSnapshot {
+            fps: 15.0,
+            tps: 60.0,
+            frame_time_ms: 11.0,
+        };
+        handle.publish(expected);
+
+        let actual = handle.snapshot();
+        assert_eq!(actual.fps, expected.fps);
+        assert_eq!(actual.tps, expected.tps);
+        assert_eq!(actual.frame_time_ms, expected.frame_time_ms);
     }
 }

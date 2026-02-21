@@ -61,7 +61,18 @@ pub fn build_or_load_def_database(
                 request,
                 &compile_plan.enabled_mods_hash_sha256_hex,
             ) {
-                Ok(defs) => defs,
+                Ok(defs) => {
+                    info!(
+                        mod_id = %decision.mod_id,
+                        mod_load_index = decision.mod_load_index,
+                        pack_path = %decision.pack_path.display(),
+                        manifest_path = %decision.manifest_path.display(),
+                        input_hash = %decision.input_hash_sha256_hex,
+                        enabled_mods_hash = %compile_plan.enabled_mods_hash_sha256_hex,
+                        "content_cache_hit"
+                    );
+                    defs
+                }
                 Err(reason) => {
                     warn!(
                         mod_id = %decision.mod_id,

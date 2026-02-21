@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
+use tracing::info;
 
 pub mod app;
 pub mod content;
@@ -80,6 +81,10 @@ pub fn resolve_app_paths() -> Result<AppPaths, StartupError> {
         path: cache_dir.clone(),
         source,
     })?;
+    info!(
+        cache_dir = %cache_dir.display(),
+        "cache directory ready (runtime-generated)"
+    );
 
     Ok(AppPaths {
         root,
