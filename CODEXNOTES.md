@@ -275,3 +275,11 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - Emission point is engine loop fixed-step execution: exactly one telemetry line per executed fixed tick on the normal update path (includes manual `tick <N>` execution path).
 - `tick` is monotonic loop-owned counter; `paused`/`qtick` come from existing sim gating state; `ev`/`in`/`in_bad` are derived from active-scene debug snapshot extra lines (`ev:`, `in:`, `in_bad:`), with zero fallback when unavailable.
 - Existing console `ok:`/`error:` output lines remain unchanged and unprefixed.
+
+## Microticket 46.2 Sync Barrier + Reset Semantics (2026-02-21)
+- Added queueable engine console command `sync` that appends exactly `ok: sync` in queued command order, acting as a command-processing barrier for remote automation transcripts.
+- Tightened thruport disconnect reset semantics in game transport: one-shot reset flag is now set whenever any TCP client is removed (EOF/read error/write error), not only when all clients disconnect.
+- Hardened `dump.state v1` format contract tests in gameplay:
+  - fixed key order checks (`player -> cam -> sel -> tgt -> cnt -> ev -> evk -> in -> ink -> in_bad`)
+  - required-key presence checks for populated and empty-world cases
+  - fixed two-decimal precision assertions for player/camera coordinates.

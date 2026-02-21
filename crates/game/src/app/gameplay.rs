@@ -6139,17 +6139,44 @@ mod tests {
         };
 
         assert!(line.starts_with("dump.state v1 | "));
-        assert!(line.contains("player:"));
-        assert!(line.contains("cam:"));
-        assert!(line.contains("sel:"));
-        assert!(line.contains("tgt:"));
-        assert!(line.contains("cnt:ent:"));
+        assert!(line.contains("player:0@(1.23,-2.35)"));
+        assert!(line.contains("cam:(7.89,-1.23,1.23)"));
+        assert!(line.contains("sel:0"));
+        assert!(line.contains("tgt:none"));
+        assert!(line.contains("cnt:ent:1 act:1 int:0"));
         assert!(line.contains("evk:is:"));
         assert!(line.contains("ink:sp:"));
         assert!(line.contains("in_bad:"));
-        assert!(line.contains("player:"));
-        assert!(line.contains("@(1.23,-2.35)"));
-        assert!(line.contains("cam:(7.89,-1.23,1.23)"));
+
+        let expected_order = [
+            "player:", "cam:", "sel:", "tgt:", "cnt:", "ev:", "evk:", "in:", "ink:", "in_bad:",
+        ];
+        let mut cursor = 0usize;
+        for key in expected_order {
+            let offset = line[cursor..]
+                .find(key)
+                .unwrap_or_else(|| panic!("missing key in dump.state: {key}"));
+            cursor += offset;
+        }
+
+        let none_result = scene.execute_debug_command(
+            SceneDebugCommand::DumpState,
+            SceneDebugContext::default(),
+            &mut SceneWorld::default(),
+        );
+        let none_line = match none_result {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success for empty scene, got {other:?}"),
+        };
+        assert!(none_line.starts_with("dump.state v1 | "));
+        assert!(none_line.contains("player:none"));
+        assert!(none_line.contains("cam:(0.00,0.00,1.00)"));
+        assert!(none_line.contains("sel:0"));
+        assert!(none_line.contains("tgt:none"));
+        assert!(none_line.contains("cnt:ent:0 act:0 int:0"));
+        assert!(none_line.contains("ev:"));
+        assert!(none_line.contains("in:"));
+        assert!(none_line.contains("in_bad:"));
     }
 
     #[test]

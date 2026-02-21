@@ -123,9 +123,9 @@ impl TcpRemoteConsoleTransport {
         })
     }
 
-    fn poll_lines(&mut self, out: &mut Vec<String>) {
+    fn poll_lines(&mut self, out: &mut Vec<String>) -> bool {
         self.accept_pending_clients();
-        self.poll_client_lines(out);
+        self.poll_client_lines(out)
     }
 
     fn accept_pending_clients(&mut self) {
@@ -150,7 +150,8 @@ impl TcpRemoteConsoleTransport {
         }
     }
 
-    fn poll_client_lines(&mut self, out: &mut Vec<String>) {
+    fn poll_client_lines(&mut self, out: &mut Vec<String>) -> bool {
+        let mut removed_any = false;
         let mut index = 0usize;
         while index < self.clients.len() {
             let mut disconnected = false;
@@ -179,17 +180,20 @@ impl TcpRemoteConsoleTransport {
 
             if disconnected {
                 self.clients.swap_remove(index);
+                removed_any = true;
             } else {
                 index += 1;
             }
         }
+        removed_any
     }
 
-    fn send_output_lines(&mut self, lines: &[String]) {
+    fn send_output_lines(&mut self, lines: &[String]) -> bool {
         if lines.is_empty() {
-            return;
+            return false;
         }
 
+        let mut removed_any = false;
         let mut index = 0usize;
         while index < self.clients.len() {
             let mut remove_client = false;
@@ -210,13 +214,16 @@ impl TcpRemoteConsoleTransport {
 
             if remove_client {
                 self.clients.swap_remove(index);
+                removed_any = true;
             } else {
                 index += 1;
             }
         }
+        removed_any
     }
 
-    fn send_frame_line(&mut self, line: &str) {
+    fn send_frame_line(&mut self, line: &str) -> bool {
+        let mut removed_any = false;
         let mut index = 0usize;
         while index < self.clients.len() {
             let mut remove_client = false;
@@ -235,10 +242,12 @@ impl TcpRemoteConsoleTransport {
 
             if remove_client {
                 self.clients.swap_remove(index);
+                removed_any = true;
             } else {
                 index += 1;
             }
         }
+        removed_any
     }
 }
 
@@ -283,9 +292,8 @@ fn exercise_forward_contracts_noop() {
 impl DevThruport {
     fn poll_remote_lines(&mut self, out: &mut Vec<String>) {
         if let DevThruportMode::Enabled(transport) = &mut self.mode {
-            let clients_before = transport.clients.len();
-            transport.poll_lines(out);
-            if clients_before > 0 && transport.clients.is_empty() {
+            let removed_any = transport.poll_lines(out);
+            if removed_any {
                 self.disconnect_reset_requested = true;
             }
         }
@@ -299,9 +307,8 @@ impl RemoteConsoleLinePump for DevThruport {
 
     fn send_output_lines(&mut self, lines: &[String]) {
         if let DevThruportMode::Enabled(transport) = &mut self.mode {
-            let clients_before = transport.clients.len();
-            transport.send_output_lines(lines);
-            if clients_before > 0 && transport.clients.is_empty() {
+            let removed_any = transport.send_output_lines(lines);
+            if removed_any {
                 self.disconnect_reset_requested = true;
             }
         }
@@ -309,9 +316,8 @@ impl RemoteConsoleLinePump for DevThruport {
 
     fn send_thruport_frame(&mut self, line: &str) {
         if let DevThruportMode::Enabled(transport) = &mut self.mode {
-            let clients_before = transport.clients.len();
-            transport.send_frame_line(line);
-            if clients_before > 0 && transport.clients.is_empty() {
+            let removed_any = transport.send_frame_line(line);
+            if removed_any {
                 self.disconnect_reset_requested = true;
             }
         }
@@ -524,6 +530,42 @@ mod tests {
         }
 
         panic!("disconnect reset flag was not set");
+    }
+
+    #[test]
+    fn disconnect_reset_flag_sets_when_any_client_is_removed() {
+        let transport = TcpRemoteConsoleTransport::bind_localhost(0).expect("bind");
+        let addr = transport.listener.local_addr().expect("local_addr");
+        let mut thruport = DevThruport {
+            mode: DevThruportMode::Enabled(transport),
+            _hooks: DevThruportHooks::no_op(),
+            disconnect_reset_requested: false,
+        };
+
+        let client_a = TcpStream::connect(addr).expect("connect a");
+        let _client_b = TcpStream::connect(addr).expect("connect b");
+
+        let mut out = Vec::new();
+        for _ in 0..30 {
+            thruport.poll_lines(&mut out);
+            if matches!(&thruport.mode, DevThruportMode::Enabled(t) if t.clients.len() == 2) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        drop(client_a);
+
+        for _ in 0..30 {
+            thruport.poll_lines(&mut out);
+            if thruport.take_disconnect_reset_requested() {
+                assert!(!thruport.take_disconnect_reset_requested());
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        panic!("disconnect reset flag was not set for single-client removal");
     }
 
     #[test]

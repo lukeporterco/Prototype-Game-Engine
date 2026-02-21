@@ -1030,6 +1030,9 @@ fn execute_drained_debug_commands(
                 scenes.apply_pending_active();
                 console.append_output_line("ok: scene reset");
             }
+            DebugCommand::Sync => {
+                console.append_output_line("ok: sync");
+            }
             DebugCommand::PauseSim => {
                 *sim_paused = true;
                 console.append_output_line("ok: sim paused");
@@ -1811,6 +1814,56 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_frame_lines_for_tick10_have_exact_count_and_qtick_countdown() {
+        let frames = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut pump = FrameCapturePump {
+            frames: Arc::clone(&frames),
+        };
+        let tick_plan = TickExecutionPlan {
+            ticks_to_run: 10,
+            remaining_accumulator: Duration::ZERO,
+            dropped_backlog: Duration::ZERO,
+            remaining_manual_ticks: 0,
+        };
+        let mut tick_counter = 41u64;
+        for tick_index in 0..tick_plan.ticks_to_run {
+            tick_counter = tick_counter.saturating_add(1);
+            let qtick = telemetry_qtick_after_current_tick(true, 0, tick_plan, tick_index);
+            let line = format!(
+                "thruport.frame v1 tick:{} paused:1 qtick:{} ev:0 in:0 in_bad:0",
+                tick_counter, qtick
+            );
+            pump.send_thruport_frame(&line);
+        }
+
+        let captured = frames.lock().expect("lock");
+        assert_eq!(captured.len(), 10);
+        let mut ticks = Vec::new();
+        let mut qticks = Vec::new();
+        for line in captured.iter() {
+            let tick = line
+                .split_whitespace()
+                .find(|token| token.starts_with("tick:"))
+                .and_then(|token| token.strip_prefix("tick:"))
+                .and_then(|value| value.parse::<u64>().ok())
+                .expect("tick field");
+            let qtick = line
+                .split_whitespace()
+                .find(|token| token.starts_with("qtick:"))
+                .and_then(|token| token.strip_prefix("qtick:"))
+                .and_then(|value| value.parse::<u32>().ok())
+                .expect("qtick field");
+            ticks.push(tick);
+            qticks.push(qtick);
+        }
+
+        for i in 1..ticks.len() {
+            assert_eq!(ticks[i], ticks[i - 1] + 1);
+        }
+        assert_eq!(qticks, vec![9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
+    }
+
+    #[test]
     fn queueable_execution_emits_only_ok_or_error_lines() {
         let mut scenes = SceneMachine::new(
             Box::new(SceneWithDebugHook),
@@ -2014,6 +2067,39 @@ mod tests {
         assert_eq!(
             console.output_lines().collect::<Vec<_>>(),
             vec!["ok: sim paused", "ok: queued tick 3", "ok: sim resumed"]
+        );
+    }
+
+    #[test]
+    fn sync_command_appends_ok_sync_after_prior_queueable_commands() {
+        let mut scenes = SceneMachine::new(Box::new(NoopScene), Box::new(NoopScene), SceneKey::A);
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut console = ConsoleState::default();
+        let mut input_collector = InputCollector::new(1280, 720);
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
+        let mut commands = vec![
+            DebugCommand::PauseSim,
+            DebugCommand::Tick { steps: 2 },
+            DebugCommand::Sync,
+        ];
+
+        let quit = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
+        );
+
+        assert!(!quit);
+        assert_eq!(queued_manual_ticks, 2);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec!["ok: sim paused", "ok: queued tick 2", "ok: sync"]
         );
     }
 
