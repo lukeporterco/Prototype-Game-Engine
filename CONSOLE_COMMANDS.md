@@ -24,6 +24,11 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `quit`
 - `despawn`
 - `spawn`
+- `input.key_down`
+- `input.key_up`
+- `input.mouse_move`
+- `input.mouse_down`
+- `input.mouse_up`
 - Queueable command output format:
 - Success: `ok: ...`
 - Failure: `error: ...`
@@ -111,10 +116,60 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `error: unknown entity def 'proto.unknown'`
 - `error: active scene does not support this command`
 
+### input.key_down
+- Layer: Engine loop input bridge
+- Description: Enqueues a synthetic key-down event for next tick input snapshot merge.
+- Syntax: `input.key_down <key>`
+- Supported keys: `w`, `a`, `s`, `d`, `up`, `down`, `left`, `right`, `i`, `j`, `k`, `l`
+- Example:
+- `input.key_down w`
+- Result examples:
+- `ok: injected input.key_down w`
+
+### input.key_up
+- Layer: Engine loop input bridge
+- Description: Enqueues a synthetic key-up event for next tick input snapshot merge.
+- Syntax: `input.key_up <key>`
+- Supported keys: `w`, `a`, `s`, `d`, `up`, `down`, `left`, `right`, `i`, `j`, `k`, `l`
+- Example:
+- `input.key_up w`
+- Result examples:
+- `ok: injected input.key_up w`
+
+### input.mouse_move
+- Layer: Engine loop input bridge
+- Description: Enqueues a synthetic cursor move in window pixel space.
+- Syntax: `input.mouse_move <x> <y>`
+- Example:
+- `input.mouse_move 640 360`
+- Result examples:
+- `ok: injected input.mouse_move 640 360`
+
+### input.mouse_down
+- Layer: Engine loop input bridge
+- Description: Enqueues a synthetic mouse-button down edge.
+- Syntax: `input.mouse_down <button>`
+- Supported buttons: `left`, `right`
+- Example:
+- `input.mouse_down right`
+- Result examples:
+- `ok: injected input.mouse_down right`
+
+### input.mouse_up
+- Layer: Engine loop input bridge
+- Description: Enqueues a synthetic mouse-button up event.
+- Syntax: `input.mouse_up <button>`
+- Supported buttons: `left`, `right`
+- Example:
+- `input.mouse_up right`
+- Result examples:
+- `ok: injected input.mouse_up right`
+
 ## Notes and Limitations
 
 - Queueable commands are still parsed in tools, then routed for execution in the loop.
 - `spawn`/`despawn` enqueue gameplay intents and world mutation occurs once per tick at the gameplay safe apply point.
+- `input.*` commands enqueue synthetic input events that are applied once at `InputCollector::snapshot_for_tick` and merged into the normal input snapshot.
 - If the authoritative player is missing, gameplay auto-spawns exactly one authoritative player actor on tick apply.
 - `DebugCommand` stays in tools/engine layer; only `spawn`/`despawn` map one-way into scene-facing `SceneDebugCommand`.
 - Processor prints parse errors with usage hints.

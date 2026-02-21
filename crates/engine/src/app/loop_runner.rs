@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::env;
 use std::sync::Arc;
 use std::thread;
@@ -20,6 +21,7 @@ use crate::{
 
 use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
+use super::tools::console_commands::{InjectedInputEvent, InjectedKey, InjectedMouseButton};
 use super::{
     ConsoleCommandProcessor, ConsoleState, DebugCommand, InputAction, InputSnapshot, MetricsHandle,
     OverlayData, PerfStats, Renderer, Scene, SceneCommand, SceneDebugCommand,
@@ -28,11 +30,16 @@ use super::{
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
 const SOFT_BUDGET_CONSECUTIVE_BREACH_FRAMES: u32 = 3;
+const MAX_PENDING_INJECTED_EVENTS: usize = 256;
 
 pub trait RemoteConsoleLinePump: Send {
     fn poll_lines(&mut self, out: &mut Vec<String>);
 
     fn send_output_lines(&mut self, _lines: &[String]) {}
+
+    fn take_disconnect_reset_requested(&mut self) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
@@ -307,7 +314,7 @@ fn run_app_with_metrics_and_hooks(
                             &mut drained_debug_commands,
                             &mut scenes,
                             &mut console,
-                            &input_collector,
+                            &mut input_collector,
                         ) {
                             info!(reason = "console_quit_command", "shutdown_requested");
                             window_target.exit();
@@ -316,6 +323,10 @@ fn run_app_with_metrics_and_hooks(
                             &mut runtime_hooks,
                             &mut console,
                             &mut remote_console_output_lines,
+                        );
+                        mark_injected_reset_if_remote_disconnected(
+                            &mut runtime_hooks,
+                            &mut input_collector,
                         );
 
                         if slow_frame_delay > Duration::ZERO {
@@ -482,6 +493,13 @@ struct InputCollector {
     left_click_pressed_edge: bool,
     right_mouse_is_down: bool,
     right_click_pressed_edge: bool,
+    injected_pending_events: VecDeque<InjectedInputEvent>,
+    injected_action_states: super::input::ActionStates,
+    injected_left_mouse_is_down: bool,
+    injected_left_click_pressed_edge: bool,
+    injected_right_mouse_is_down: bool,
+    injected_right_click_pressed_edge: bool,
+    injected_disconnect_reset_pending: bool,
     window_width: u32,
     window_height: u32,
 }
@@ -536,6 +554,12 @@ impl InputCollector {
     }
 
     fn snapshot_for_tick(&mut self, console_open: bool) -> InputSnapshot {
+        self.apply_injected_events_for_tick();
+        let actions = self.merged_action_states();
+        let left_click_pressed =
+            self.left_click_pressed_edge || self.injected_left_click_pressed_edge;
+        let right_click_pressed =
+            self.right_click_pressed_edge || self.injected_right_click_pressed_edge;
         let snapshot = if console_open {
             InputSnapshot::new(
                 false,
@@ -554,10 +578,10 @@ impl InputCollector {
             InputSnapshot::new(
                 self.quit_requested,
                 self.switch_scene_pressed_edge,
-                self.action_states,
+                actions,
                 self.cursor_position_px,
-                self.left_click_pressed_edge,
-                self.right_click_pressed_edge,
+                left_click_pressed,
+                right_click_pressed,
                 self.save_pressed_edge,
                 self.load_pressed_edge,
                 self.pending_zoom_steps,
@@ -567,7 +591,9 @@ impl InputCollector {
         };
         self.switch_scene_pressed_edge = false;
         self.left_click_pressed_edge = false;
+        self.injected_left_click_pressed_edge = false;
         self.right_click_pressed_edge = false;
+        self.injected_right_click_pressed_edge = false;
         self.save_pressed_edge = false;
         self.load_pressed_edge = false;
         self.pending_zoom_steps = 0;
@@ -588,6 +614,7 @@ impl InputCollector {
 
     fn reset_gameplay_inputs(&mut self) {
         self.action_states = super::input::ActionStates::default();
+        self.injected_action_states = super::input::ActionStates::default();
         self.tab_is_down = false;
         self.switch_scene_pressed_edge = false;
         self.save_key_is_down = false;
@@ -599,9 +626,137 @@ impl InputCollector {
         self.pending_zoom_steps = 0;
         self.left_mouse_is_down = false;
         self.left_click_pressed_edge = false;
+        self.injected_left_mouse_is_down = false;
+        self.injected_left_click_pressed_edge = false;
         self.right_mouse_is_down = false;
         self.right_click_pressed_edge = false;
+        self.injected_right_mouse_is_down = false;
+        self.injected_right_click_pressed_edge = false;
+        self.injected_pending_events.clear();
+        self.injected_disconnect_reset_pending = false;
         self.quit_requested = false;
+    }
+
+    fn enqueue_injected_event(&mut self, event: InjectedInputEvent) {
+        if self.injected_pending_events.len() == MAX_PENDING_INJECTED_EVENTS {
+            self.injected_pending_events.pop_front();
+        }
+        self.injected_pending_events.push_back(event);
+    }
+
+    fn mark_injected_disconnect_reset_pending(&mut self) {
+        self.injected_disconnect_reset_pending = true;
+    }
+
+    fn clear_injected_held_inputs(&mut self) {
+        self.injected_action_states = super::input::ActionStates::default();
+        self.injected_left_mouse_is_down = false;
+        self.injected_left_click_pressed_edge = false;
+        self.injected_right_mouse_is_down = false;
+        self.injected_right_click_pressed_edge = false;
+    }
+
+    fn apply_injected_events_for_tick(&mut self) {
+        while let Some(event) = self.injected_pending_events.pop_front() {
+            match event {
+                InjectedInputEvent::KeyDown { key } => self.set_injected_key_state(key, true),
+                InjectedInputEvent::KeyUp { key } => self.set_injected_key_state(key, false),
+                InjectedInputEvent::MouseMove { x, y } => self.set_cursor_position_px(x, y),
+                InjectedInputEvent::MouseDown { button } => {
+                    self.handle_injected_mouse_input(button, ElementState::Pressed);
+                }
+                InjectedInputEvent::MouseUp { button } => {
+                    self.handle_injected_mouse_input(button, ElementState::Released);
+                }
+            }
+        }
+
+        if self.injected_disconnect_reset_pending {
+            self.clear_injected_held_inputs();
+            self.injected_disconnect_reset_pending = false;
+        }
+    }
+
+    fn merged_action_states(&self) -> super::input::ActionStates {
+        let mut merged = self.action_states;
+        const MERGEABLE_ACTIONS: [InputAction; 8] = [
+            InputAction::MoveUp,
+            InputAction::MoveDown,
+            InputAction::MoveLeft,
+            InputAction::MoveRight,
+            InputAction::CameraUp,
+            InputAction::CameraDown,
+            InputAction::CameraLeft,
+            InputAction::CameraRight,
+        ];
+
+        for action in MERGEABLE_ACTIONS {
+            if self.injected_action_states.is_down(action) {
+                merged.set(action, true);
+            }
+        }
+
+        merged
+    }
+
+    fn set_injected_key_state(&mut self, key: InjectedKey, is_pressed: bool) {
+        match key {
+            InjectedKey::W | InjectedKey::Up => {
+                self.injected_action_states
+                    .set(InputAction::MoveUp, is_pressed);
+            }
+            InjectedKey::S | InjectedKey::Down => {
+                self.injected_action_states
+                    .set(InputAction::MoveDown, is_pressed);
+            }
+            InjectedKey::A | InjectedKey::Left => {
+                self.injected_action_states
+                    .set(InputAction::MoveLeft, is_pressed);
+            }
+            InjectedKey::D | InjectedKey::Right => {
+                self.injected_action_states
+                    .set(InputAction::MoveRight, is_pressed);
+            }
+            InjectedKey::I => {
+                self.injected_action_states
+                    .set(InputAction::CameraUp, is_pressed);
+            }
+            InjectedKey::K => {
+                self.injected_action_states
+                    .set(InputAction::CameraDown, is_pressed);
+            }
+            InjectedKey::J => {
+                self.injected_action_states
+                    .set(InputAction::CameraLeft, is_pressed);
+            }
+            InjectedKey::L => {
+                self.injected_action_states
+                    .set(InputAction::CameraRight, is_pressed);
+            }
+        }
+    }
+
+    fn handle_injected_mouse_input(&mut self, button: InjectedMouseButton, state: ElementState) {
+        match button {
+            InjectedMouseButton::Left => match state {
+                ElementState::Pressed => {
+                    if !self.injected_left_mouse_is_down {
+                        self.injected_left_click_pressed_edge = true;
+                    }
+                    self.injected_left_mouse_is_down = true;
+                }
+                ElementState::Released => self.injected_left_mouse_is_down = false,
+            },
+            InjectedMouseButton::Right => match state {
+                ElementState::Pressed => {
+                    if !self.injected_right_mouse_is_down {
+                        self.injected_right_click_pressed_edge = true;
+                    }
+                    self.injected_right_mouse_is_down = true;
+                }
+                ElementState::Released => self.injected_right_mouse_is_down = false,
+            },
+        }
     }
 
     fn update_action_state_from_key_event(&mut self, key_event: &winit::event::KeyEvent) {
@@ -820,7 +975,7 @@ fn execute_drained_debug_commands(
     commands: &mut Vec<DebugCommand>,
     scenes: &mut SceneMachine,
     console: &mut ConsoleState,
-    input_collector: &InputCollector,
+    input_collector: &mut InputCollector,
 ) -> bool {
     let mut quit_requested = false;
     let mut should_apply_after_batch = false;
@@ -873,6 +1028,13 @@ fn execute_drained_debug_commands(
                 append_scene_debug_result(console, result);
                 should_apply_after_batch = true;
             }
+            DebugCommand::InjectInput { event } => {
+                input_collector.enqueue_injected_event(event);
+                console.append_output_line(format!(
+                    "ok: injected {}",
+                    injected_event_debug_text(event)
+                ));
+            }
         }
     }
 
@@ -881,6 +1043,63 @@ fn execute_drained_debug_commands(
     }
 
     quit_requested
+}
+
+fn mark_injected_reset_if_remote_disconnected(
+    hooks: &mut LoopRuntimeHooks,
+    input_collector: &mut InputCollector,
+) {
+    let Some(pump) = hooks.remote_console_pump.as_mut() else {
+        return;
+    };
+
+    if pump.take_disconnect_reset_requested() {
+        input_collector.mark_injected_disconnect_reset_pending();
+    }
+}
+
+fn injected_event_debug_text(event: InjectedInputEvent) -> String {
+    match event {
+        InjectedInputEvent::KeyDown { key } => {
+            format!("input.key_down {}", injected_key_token(key))
+        }
+        InjectedInputEvent::KeyUp { key } => {
+            format!("input.key_up {}", injected_key_token(key))
+        }
+        InjectedInputEvent::MouseMove { x, y } => {
+            format!("input.mouse_move {} {}", x, y)
+        }
+        InjectedInputEvent::MouseDown { button } => {
+            format!("input.mouse_down {}", injected_mouse_button_token(button))
+        }
+        InjectedInputEvent::MouseUp { button } => {
+            format!("input.mouse_up {}", injected_mouse_button_token(button))
+        }
+    }
+}
+
+fn injected_key_token(key: InjectedKey) -> &'static str {
+    match key {
+        InjectedKey::W => "w",
+        InjectedKey::A => "a",
+        InjectedKey::S => "s",
+        InjectedKey::D => "d",
+        InjectedKey::Up => "up",
+        InjectedKey::Down => "down",
+        InjectedKey::Left => "left",
+        InjectedKey::Right => "right",
+        InjectedKey::I => "i",
+        InjectedKey::J => "j",
+        InjectedKey::K => "k",
+        InjectedKey::L => "l",
+    }
+}
+
+fn injected_mouse_button_token(button: InjectedMouseButton) -> &'static str {
+    match button {
+        InjectedMouseButton::Left => "left",
+        InjectedMouseButton::Right => "right",
+    }
 }
 
 fn append_scene_debug_result(console: &mut ConsoleState, result: SceneDebugCommandResult) {
@@ -1310,7 +1529,7 @@ mod tests {
         scenes.apply_pending_active();
 
         let mut console = ConsoleState::default();
-        let input_collector = InputCollector::new(1280, 720);
+        let mut input_collector = InputCollector::new(1280, 720);
         let mut commands = vec![
             DebugCommand::Spawn {
                 def_name: "proto.worker".to_string(),
@@ -1323,7 +1542,7 @@ mod tests {
             &mut commands,
             &mut scenes,
             &mut console,
-            &input_collector,
+            &mut input_collector,
         );
 
         assert!(!quit);
@@ -1347,14 +1566,14 @@ mod tests {
         scenes.apply_pending_active();
 
         let mut console = ConsoleState::default();
-        let input_collector = InputCollector::new(1280, 720);
+        let mut input_collector = InputCollector::new(1280, 720);
         let mut commands = vec![DebugCommand::SwitchScene { scene: SceneKey::B }];
 
         let _ = execute_drained_debug_commands(
             &mut commands,
             &mut scenes,
             &mut console,
-            &input_collector,
+            &mut input_collector,
         );
 
         assert_eq!(scenes.active_scene(), SceneKey::B);
@@ -1377,14 +1596,14 @@ mod tests {
         assert_eq!(scenes.active_world().entity_count(), 1);
 
         let mut console = ConsoleState::default();
-        let input_collector = InputCollector::new(1280, 720);
+        let mut input_collector = InputCollector::new(1280, 720);
         let mut commands = vec![DebugCommand::ResetScene];
 
         let _ = execute_drained_debug_commands(
             &mut commands,
             &mut scenes,
             &mut console,
-            &input_collector,
+            &mut input_collector,
         );
 
         assert_eq!(scenes.active_world().entity_count(), 1);
@@ -1497,6 +1716,55 @@ mod tests {
         let snapshot = input.snapshot_for_tick(false);
         assert!(snapshot.is_down(InputAction::CameraUp));
         assert!(snapshot.is_down(InputAction::CameraRight));
+    }
+
+    #[test]
+    fn injected_event_queue_drains_into_snapshot() {
+        let mut input = InputCollector::new(1280, 720);
+        input.enqueue_injected_event(InjectedInputEvent::KeyDown {
+            key: InjectedKey::W,
+        });
+        input.enqueue_injected_event(InjectedInputEvent::MouseMove { x: 12.0, y: 34.0 });
+        input.enqueue_injected_event(InjectedInputEvent::MouseDown {
+            button: InjectedMouseButton::Left,
+        });
+
+        let first = input.snapshot_for_tick(false);
+        let second = input.snapshot_for_tick(false);
+
+        assert!(first.is_down(InputAction::MoveUp));
+        assert!(first.left_click_pressed());
+        let cursor = first.cursor_position_px().expect("cursor");
+        assert!((cursor.x - 12.0).abs() < 0.0001);
+        assert!((cursor.y - 34.0).abs() < 0.0001);
+        assert!(second.is_down(InputAction::MoveUp));
+        assert!(!second.left_click_pressed());
+
+        input.enqueue_injected_event(InjectedInputEvent::KeyUp {
+            key: InjectedKey::W,
+        });
+        let third = input.snapshot_for_tick(false);
+        assert!(!third.is_down(InputAction::MoveUp));
+    }
+
+    #[test]
+    fn injected_disconnect_reset_clears_held_inputs() {
+        let mut input = InputCollector::new(1280, 720);
+        input.enqueue_injected_event(InjectedInputEvent::KeyDown {
+            key: InjectedKey::D,
+        });
+        input.enqueue_injected_event(InjectedInputEvent::MouseDown {
+            button: InjectedMouseButton::Right,
+        });
+
+        let first = input.snapshot_for_tick(false);
+        assert!(first.is_down(InputAction::MoveRight));
+        assert!(first.right_click_pressed());
+
+        input.mark_injected_disconnect_reset_pending();
+        let second = input.snapshot_for_tick(false);
+        assert!(!second.is_down(InputAction::MoveRight));
+        assert!(!second.right_click_pressed());
     }
 
     #[test]

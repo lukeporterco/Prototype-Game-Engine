@@ -20,6 +20,40 @@ pub(crate) enum DebugCommand {
         def_name: String,
         position: Option<(f32, f32)>,
     },
+    InjectInput {
+        event: InjectedInputEvent,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum InjectedInputEvent {
+    KeyDown { key: InjectedKey },
+    KeyUp { key: InjectedKey },
+    MouseMove { x: f32, y: f32 },
+    MouseDown { button: InjectedMouseButton },
+    MouseUp { button: InjectedMouseButton },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InjectedKey {
+    W,
+    A,
+    S,
+    D,
+    Up,
+    Down,
+    Left,
+    Right,
+    I,
+    J,
+    K,
+    L,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InjectedMouseButton {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +146,46 @@ impl ConsoleCommandRegistry {
                 "Spawn entity by def name",
                 "<def_name:string> [x:f32 y:f32]",
                 parse_spawn_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "input.key_down",
+                "Inject key down",
+                "<key:w|a|s|d|up|down|left|right|i|j|k|l>",
+                parse_input_key_down_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "input.key_up",
+                "Inject key up",
+                "<key:w|a|s|d|up|down|left|right|i|j|k|l>",
+                parse_input_key_up_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "input.mouse_move",
+                "Inject mouse move (px)",
+                "<x:f32> <y:f32>",
+                parse_input_mouse_move_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "input.mouse_down",
+                "Inject mouse down",
+                "<button:left|right>",
+                parse_input_mouse_down_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "input.mouse_up",
+                "Inject mouse up",
+                "<button:left|right>",
+                parse_input_mouse_up_command,
             )
             .expect("built-in command registration should not fail");
         registry
@@ -414,6 +488,128 @@ fn parse_spawn_command(args: &[String]) -> Result<ParsedCommand, CommandParseErr
     }))
 }
 
+fn parse_input_key_down_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    let key = parse_single_injected_key_arg(args, "input.key_down <key>")?;
+    Ok(ParsedCommand::Queueable(DebugCommand::InjectInput {
+        event: InjectedInputEvent::KeyDown { key },
+    }))
+}
+
+fn parse_input_key_up_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    let key = parse_single_injected_key_arg(args, "input.key_up <key>")?;
+    Ok(ParsedCommand::Queueable(DebugCommand::InjectInput {
+        event: InjectedInputEvent::KeyUp { key },
+    }))
+}
+
+fn parse_input_mouse_move_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    if args.len() != 2 {
+        return Err(CommandParseError {
+            reason: "expected exactly two arguments <x> <y>".to_string(),
+            usage: "input.mouse_move <x> <y>".to_string(),
+        });
+    }
+
+    let x = args[0].parse::<f32>().map_err(|_| CommandParseError {
+        reason: format!("invalid x coordinate '{}' (expected f32)", args[0]),
+        usage: "input.mouse_move <x> <y>".to_string(),
+    })?;
+    let y = args[1].parse::<f32>().map_err(|_| CommandParseError {
+        reason: format!("invalid y coordinate '{}' (expected f32)", args[1]),
+        usage: "input.mouse_move <x> <y>".to_string(),
+    })?;
+
+    Ok(ParsedCommand::Queueable(DebugCommand::InjectInput {
+        event: InjectedInputEvent::MouseMove { x, y },
+    }))
+}
+
+fn parse_input_mouse_down_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    let button = parse_single_injected_button_arg(args, "input.mouse_down <button>")?;
+    Ok(ParsedCommand::Queueable(DebugCommand::InjectInput {
+        event: InjectedInputEvent::MouseDown { button },
+    }))
+}
+
+fn parse_input_mouse_up_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    let button = parse_single_injected_button_arg(args, "input.mouse_up <button>")?;
+    Ok(ParsedCommand::Queueable(DebugCommand::InjectInput {
+        event: InjectedInputEvent::MouseUp { button },
+    }))
+}
+
+fn parse_single_injected_key_arg(
+    args: &[String],
+    usage: &str,
+) -> Result<InjectedKey, CommandParseError> {
+    if args.len() != 1 {
+        return Err(CommandParseError {
+            reason: "expected exactly one argument <key>".to_string(),
+            usage: usage.to_string(),
+        });
+    }
+    parse_injected_key(&args[0], usage)
+}
+
+fn parse_single_injected_button_arg(
+    args: &[String],
+    usage: &str,
+) -> Result<InjectedMouseButton, CommandParseError> {
+    if args.len() != 1 {
+        return Err(CommandParseError {
+            reason: "expected exactly one argument <button>".to_string(),
+            usage: usage.to_string(),
+        });
+    }
+    parse_injected_mouse_button(&args[0], usage)
+}
+
+fn parse_injected_key(raw: &str, usage: &str) -> Result<InjectedKey, CommandParseError> {
+    let lower = raw.to_ascii_lowercase();
+    let key = match lower.as_str() {
+        "w" => InjectedKey::W,
+        "a" => InjectedKey::A,
+        "s" => InjectedKey::S,
+        "d" => InjectedKey::D,
+        "up" => InjectedKey::Up,
+        "down" => InjectedKey::Down,
+        "left" => InjectedKey::Left,
+        "right" => InjectedKey::Right,
+        "i" => InjectedKey::I,
+        "j" => InjectedKey::J,
+        "k" => InjectedKey::K,
+        "l" => InjectedKey::L,
+        _ => {
+            return Err(CommandParseError {
+                reason: format!(
+                    "invalid key '{}' (expected w|a|s|d|up|down|left|right|i|j|k|l)",
+                    raw
+                ),
+                usage: usage.to_string(),
+            });
+        }
+    };
+    Ok(key)
+}
+
+fn parse_injected_mouse_button(
+    raw: &str,
+    usage: &str,
+) -> Result<InjectedMouseButton, CommandParseError> {
+    let lower = raw.to_ascii_lowercase();
+    let button = match lower.as_str() {
+        "left" => InjectedMouseButton::Left,
+        "right" => InjectedMouseButton::Right,
+        _ => {
+            return Err(CommandParseError {
+                reason: format!("invalid button '{}' (expected left|right)", raw),
+                usage: usage.to_string(),
+            });
+        }
+    };
+    Ok(button)
+}
+
 fn require_no_args(args: &[String], usage: &str) -> Result<(), CommandParseError> {
     if args.is_empty() {
         Ok(())
@@ -455,6 +651,26 @@ mod tests {
         assert_eq!(
             lines[7],
             "spawn <def_name:string> [x:f32 y:f32] - Spawn entity by def name"
+        );
+        assert_eq!(
+            lines[8],
+            "input.key_down <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key down"
+        );
+        assert_eq!(
+            lines[9],
+            "input.key_up <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key up"
+        );
+        assert_eq!(
+            lines[10],
+            "input.mouse_move <x:f32> <y:f32> - Inject mouse move (px)"
+        );
+        assert_eq!(
+            lines[11],
+            "input.mouse_down <button:left|right> - Inject mouse down"
+        );
+        assert_eq!(
+            lines[12],
+            "input.mouse_up <button:left|right> - Inject mouse up"
         );
     }
 
@@ -511,6 +727,11 @@ mod tests {
         console.push_pending_line_for_test("quit");
         console.push_pending_line_for_test("despawn 42");
         console.push_pending_line_for_test("spawn proto.worker 1.5 -2.0");
+        console.push_pending_line_for_test("input.key_down w");
+        console.push_pending_line_for_test("input.key_up right");
+        console.push_pending_line_for_test("input.mouse_move 10.0 -4.0");
+        console.push_pending_line_for_test("input.mouse_down left");
+        console.push_pending_line_for_test("input.mouse_up right");
 
         processor.process_pending_lines(&mut console);
 
@@ -527,9 +748,56 @@ mod tests {
                     def_name: "proto.worker".to_string(),
                     position: Some((1.5, -2.0)),
                 },
+                DebugCommand::InjectInput {
+                    event: InjectedInputEvent::KeyDown {
+                        key: InjectedKey::W,
+                    },
+                },
+                DebugCommand::InjectInput {
+                    event: InjectedInputEvent::KeyUp {
+                        key: InjectedKey::Right,
+                    },
+                },
+                DebugCommand::InjectInput {
+                    event: InjectedInputEvent::MouseMove { x: 10.0, y: -4.0 },
+                },
+                DebugCommand::InjectInput {
+                    event: InjectedInputEvent::MouseDown {
+                        button: InjectedMouseButton::Left,
+                    },
+                },
+                DebugCommand::InjectInput {
+                    event: InjectedInputEvent::MouseUp {
+                        button: InjectedMouseButton::Right,
+                    },
+                },
             ]
         );
         assert!(collect_output(&console).is_empty());
+    }
+
+    #[test]
+    fn input_commands_validate_bad_args_with_usage() {
+        let mut processor = ConsoleCommandProcessor::new();
+        let mut console = ConsoleState::default();
+        console.push_pending_line_for_test("input.key_down");
+        console.push_pending_line_for_test("input.key_up nope");
+        console.push_pending_line_for_test("input.mouse_move x 1");
+        console.push_pending_line_for_test("input.mouse_down middle");
+        console.push_pending_line_for_test("input.mouse_up");
+
+        processor.process_pending_lines(&mut console);
+
+        assert_eq!(
+            collect_output(&console),
+            vec![
+                "error: expected exactly one argument <key>. usage: input.key_down <key>",
+                "error: invalid key 'nope' (expected w|a|s|d|up|down|left|right|i|j|k|l). usage: input.key_up <key>",
+                "error: invalid x coordinate 'x' (expected f32). usage: input.mouse_move <x> <y>",
+                "error: invalid button 'middle' (expected left|right). usage: input.mouse_down <button>",
+                "error: expected exactly one argument <button>. usage: input.mouse_up <button>",
+            ]
+        );
     }
 
     #[test]

@@ -97,6 +97,7 @@ enum DevThruportMode {
 pub(crate) struct DevThruport {
     mode: DevThruportMode,
     _hooks: DevThruportHooks,
+    disconnect_reset_requested: bool,
 }
 
 #[derive(Debug)]
@@ -235,6 +236,7 @@ pub(crate) fn initialize(hooks: DevThruportHooks) -> DevThruport {
     DevThruport {
         mode,
         _hooks: hooks,
+        disconnect_reset_requested: false,
     }
 }
 
@@ -256,7 +258,11 @@ fn exercise_forward_contracts_noop() {
 impl DevThruport {
     fn poll_remote_lines(&mut self, out: &mut Vec<String>) {
         if let DevThruportMode::Enabled(transport) = &mut self.mode {
+            let clients_before = transport.clients.len();
             transport.poll_lines(out);
+            if clients_before > 0 && transport.clients.is_empty() {
+                self.disconnect_reset_requested = true;
+            }
         }
     }
 }
@@ -268,8 +274,18 @@ impl RemoteConsoleLinePump for DevThruport {
 
     fn send_output_lines(&mut self, lines: &[String]) {
         if let DevThruportMode::Enabled(transport) = &mut self.mode {
+            let clients_before = transport.clients.len();
             transport.send_output_lines(lines);
+            if clients_before > 0 && transport.clients.is_empty() {
+                self.disconnect_reset_requested = true;
+            }
         }
+    }
+
+    fn take_disconnect_reset_requested(&mut self) -> bool {
+        let was_requested = self.disconnect_reset_requested;
+        self.disconnect_reset_requested = false;
+        was_requested
     }
 }
 
@@ -330,14 +346,16 @@ fn write_line_non_blocking(stream: &mut TcpStream, line: &str) -> io::Result<()>
 
 #[cfg(test)]
 mod tests {
+    use engine::RemoteConsoleLinePump;
     use std::io::{self, Read, Write};
     use std::net::TcpStream;
     use std::thread;
     use std::time::Duration;
 
     use super::{
-        initialize, localhost_bind_addr, parse_enabled_flag, parse_port_or_default,
-        DevThruportConfig, DevThruportHooks, TcpRemoteConsoleTransport, THRUPORT_DEFAULT_PORT,
+        initialize, localhost_bind_addr, parse_enabled_flag, parse_port_or_default, DevThruport,
+        DevThruportConfig, DevThruportHooks, DevThruportMode, TcpRemoteConsoleTransport,
+        THRUPORT_DEFAULT_PORT,
     };
 
     #[test]
@@ -436,5 +454,40 @@ mod tests {
         }
 
         assert!(received.ends_with(expected));
+    }
+
+    #[test]
+    fn disconnect_reset_flag_drains_once_after_client_disconnect() {
+        let transport = TcpRemoteConsoleTransport::bind_localhost(0).expect("bind");
+        let addr = transport.listener.local_addr().expect("local_addr");
+        let mut thruport = DevThruport {
+            mode: DevThruportMode::Enabled(transport),
+            _hooks: DevThruportHooks::no_op(),
+            disconnect_reset_requested: false,
+        };
+
+        let client = TcpStream::connect(addr).expect("connect");
+
+        let mut out = Vec::new();
+        for _ in 0..20 {
+            thruport.poll_lines(&mut out);
+            if matches!(&thruport.mode, DevThruportMode::Enabled(t) if t.clients.len() == 1) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        drop(client);
+
+        for _ in 0..20 {
+            thruport.poll_lines(&mut out);
+            if thruport.take_disconnect_reset_requested() {
+                assert!(!thruport.take_disconnect_reset_requested());
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        panic!("disconnect reset flag was not set");
     }
 }

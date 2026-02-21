@@ -232,3 +232,16 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - Engine redraw path now forwards newly appended console output lines to remote hook after command processing/execution.
 - Game thruport transport now writes newline-delimited UTF-8 output lines to connected TCP clients via non-blocking writes.
 - Readback remains localhost-only transport behavior and does not alter console command semantics or output text.
+
+## Ticket 44 Input Injection Bridge (2026-02-21)
+- Added engine queueable debug command family `input.*` (`input.key_down`, `input.key_up`, `input.mouse_move`, `input.mouse_down`, `input.mouse_up`) in `crates/engine/src/app/tools/console_commands.rs`.
+- `DebugCommand` now carries `InjectInput { event }` with explicit injected payload types (`InjectedInputEvent`, `InjectedKey`, `InjectedMouseButton`) and strict parse validation/usage errors.
+- Input injection apply seam is in `crates/engine/src/app/loop_runner.rs`:
+  - commands enqueue injected events into `InputCollector`
+  - injected event queue drains only at `InputCollector::snapshot_for_tick` (single stable point per tick)
+  - injected action/button states are merged into normal `InputSnapshot` for gameplay reads.
+- Console-open suppression remains intact: when console is open, gameplay-facing snapshot is still cleared even if injected events are queued.
+- Added disconnect safety reset seam:
+  - `RemoteConsoleLinePump::take_disconnect_reset_requested()` default no-op method
+  - thruport implementation raises one-shot reset when connected remote clients drop to zero
+  - loop marks collector reset and clears held injected keys/buttons on the next snapshot tick.
