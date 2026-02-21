@@ -2770,6 +2770,119 @@ impl Scene for GameplayScene {
                     SceneDebugCommandResult::Success(format!("queued despawn entity {entity_id}"))
                 }
             }
+            SceneDebugCommand::Select { entity_id } => {
+                let runtime_id = EntityId(entity_id);
+                let Some(entity) = world.find_entity(runtime_id) else {
+                    return SceneDebugCommandResult::Error(format!("entity {entity_id} not found"));
+                };
+                if !entity.selectable {
+                    return SceneDebugCommandResult::Error(format!(
+                        "entity {entity_id} is not selectable"
+                    ));
+                }
+                self.selected_entity = Some(runtime_id);
+                SceneDebugCommandResult::Success(format!("selected entity {entity_id}"))
+            }
+            SceneDebugCommand::OrderMove { x, y } => {
+                let Some(actor_id) = self.selected_entity else {
+                    return SceneDebugCommandResult::Error("no selected entity".to_string());
+                };
+                let Some(actor) = world.find_entity(actor_id) else {
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} not found",
+                        actor_id.0
+                    ));
+                };
+                if !actor.actor {
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} is not an actor",
+                        actor_id.0
+                    ));
+                }
+                let point = Vec2 { x, y };
+                self.system_intents
+                    .enqueue(GameplayIntent::SetMoveTarget { actor_id, point });
+                world.push_debug_marker(DebugMarker {
+                    kind: DebugMarkerKind::Order,
+                    position_world: point,
+                    ttl_seconds: ORDER_MARKER_TTL_SECONDS,
+                });
+                SceneDebugCommandResult::Success(format!(
+                    "queued move for entity {} to ({:.2}, {:.2})",
+                    actor_id.0, x, y
+                ))
+            }
+            SceneDebugCommand::OrderInteract { target_entity_id } => {
+                let Some(actor_id) = self.selected_entity else {
+                    return SceneDebugCommandResult::Error("no selected entity".to_string());
+                };
+                let Some(actor) = world.find_entity(actor_id) else {
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} not found",
+                        actor_id.0
+                    ));
+                };
+                if !actor.actor {
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} is not an actor",
+                        actor_id.0
+                    ));
+                }
+                let target_id = EntityId(target_entity_id);
+                if target_id == actor_id {
+                    return SceneDebugCommandResult::Error("cannot interact with self".to_string());
+                }
+                let Some(target) = world.find_entity(target_id) else {
+                    return SceneDebugCommandResult::Error(format!(
+                        "target entity {target_entity_id} not found"
+                    ));
+                };
+                if target.interactable.is_none() {
+                    return SceneDebugCommandResult::Error(format!(
+                        "target entity {target_entity_id} is not interactable"
+                    ));
+                }
+                if self.active_interactions_by_actor.contains_key(&actor_id) {
+                    self.system_intents
+                        .enqueue(GameplayIntent::CancelInteraction { actor_id });
+                }
+                let interaction_id =
+                    GameplaySystemsHost::alloc_interaction_id(&mut self.next_interaction_id);
+                let Some(interaction_range) =
+                    GameplaySystemsHost::interaction_range_for_use_target(target)
+                else {
+                    return SceneDebugCommandResult::Error(format!(
+                        "target entity {target_entity_id} is not interactable"
+                    ));
+                };
+                let duration_seconds =
+                    GameplaySystemsHost::interaction_duration_seconds_for_use_target(target);
+                self.active_interactions_by_actor.insert(
+                    actor_id,
+                    ActiveInteraction {
+                        actor_id,
+                        target_id,
+                        interaction_id,
+                        kind: ActiveInteractionKind::Use,
+                        interaction_range,
+                        duration_seconds,
+                        remaining_seconds: None,
+                    },
+                );
+                self.system_events.emit(GameplayEvent::InteractionStarted {
+                    actor_id,
+                    target_id,
+                });
+                self.system_intents
+                    .enqueue(GameplayIntent::StartInteraction {
+                        actor_id,
+                        target_id,
+                    });
+                SceneDebugCommandResult::Success(format!(
+                    "queued interact actor {} target {}",
+                    actor_id.0, target_entity_id
+                ))
+            }
             SceneDebugCommand::DumpState => {
                 SceneDebugCommandResult::Success(self.format_dump_state(world))
             }
@@ -4778,6 +4891,251 @@ mod tests {
             &mut world,
         );
         assert!(matches!(failure, SceneDebugCommandResult::Error(_)));
+    }
+
+    #[test]
+    fn debug_select_success_sets_selected_entity() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let selectable = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "selectable",
+            },
+        );
+        world.apply_pending();
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::Select {
+                entity_id: selectable.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(result, SceneDebugCommandResult::Success(_)));
+        assert_eq!(scene.selected_entity, Some(selectable));
+    }
+
+    #[test]
+    fn debug_select_missing_or_non_selectable_returns_error() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let non_selectable = world.spawn(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "non_selectable",
+            },
+        );
+        world.apply_pending();
+
+        let missing = scene.execute_debug_command(
+            SceneDebugCommand::Select { entity_id: 999_999 },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let not_selectable = scene.execute_debug_command(
+            SceneDebugCommand::Select {
+                entity_id: non_selectable.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(missing, SceneDebugCommandResult::Error(_)));
+        assert!(matches!(not_selectable, SceneDebugCommandResult::Error(_)));
+    }
+
+    #[test]
+    fn debug_order_move_queues_intent_and_applies_after_update() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.selected_entity = Some(actor);
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::OrderMove { x: 3.0, y: -2.5 },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(result, SceneDebugCommandResult::Success(_)));
+
+        scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+
+        let actor = world.find_entity(actor).expect("actor");
+        assert_eq!(
+            actor.order_state,
+            OrderState::MoveTo {
+                point: Vec2 { x: 3.0, y: -2.5 }
+            }
+        );
+    }
+
+    #[test]
+    fn debug_order_move_errors_without_valid_selected_actor() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let no_selection = scene.execute_debug_command(
+            SceneDebugCommand::OrderMove { x: 1.0, y: 1.0 },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(no_selection, SceneDebugCommandResult::Error(_)));
+
+        let non_actor = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "non_actor",
+            },
+        );
+        world.apply_pending();
+        scene.selected_entity = Some(non_actor);
+
+        let non_actor_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderMove { x: 1.0, y: 1.0 },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(
+            non_actor_result,
+            SceneDebugCommandResult::Error(_)
+        ));
+    }
+
+    #[test]
+    fn debug_order_interact_queues_and_applies_for_selected_actor() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: -1.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.selected_entity = Some(actor);
+        scene.sync_save_id_map_with_world(&world).expect("sync");
+
+        let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 2);
+        scene.sync_save_id_map_with_world(&world).expect("sync");
+        let target_save_id = scene.save_id_for_entity(pile).expect("save id");
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: pile.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(result, SceneDebugCommandResult::Success(_)));
+
+        scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+
+        let actor = world.find_entity(actor).expect("actor");
+        assert_eq!(actor.order_state, OrderState::Interact { target_save_id });
+    }
+
+    #[test]
+    fn debug_order_interact_errors_for_invalid_target() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: -1.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.selected_entity = Some(actor);
+
+        let missing = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: 999_999,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(missing, SceneDebugCommandResult::Error(_)));
+
+        let non_interactable = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "non_interactable",
+            },
+        );
+        world.apply_pending();
+        let non_interactable_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: non_interactable.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(
+            non_interactable_result,
+            SceneDebugCommandResult::Error(_)
+        ));
     }
 
     #[test]

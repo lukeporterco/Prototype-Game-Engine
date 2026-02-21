@@ -303,3 +303,14 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - `run_minset_telemetry.ps1` (reader-safe barrier loop; A1/E1 gate)
   - `run_minset_simple.ps1` (delegates to telemetry script)
   - `SOME_COMMANDS.md` restored as baseline manual sequence.
+
+## Ticket 47 Deterministic Select + Order Commands (2026-02-21)
+- Added queueable engine commands for deterministic automation without pixel input: `select <entity_id>`, `order.move <x> <y>`, `order.interact <target_entity_id>`.
+- Extended engine/game seam enums:
+  - `DebugCommand::{Select, OrderMove, OrderInteract}` in `crates/engine/src/app/tools/console_commands.rs`.
+  - `SceneDebugCommand::{Select, OrderMove, OrderInteract}` in `crates/engine/src/app/scene.rs`.
+- `GameplayScene::execute_debug_command` in `crates/game/src/app/gameplay.rs` now supports:
+  - direct selectable-entity selection (`select`)
+  - move intent enqueue via `GameplayIntent::SetMoveTarget` (`order.move`)
+  - interaction intent/event enqueue via existing interaction runtime seam (`order.interact`)
+- Failure contract is explicit and non-panicking: no selection, missing/stale selected entity, non-actor selected entity, missing/non-interactable target.

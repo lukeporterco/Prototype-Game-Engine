@@ -24,6 +24,9 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `quit`
 - `despawn`
 - `spawn`
+- `select`
+- `order.move`
+- `order.interact`
 - `dump.state`
 - `dump.ai`
 - `pause_sim`
@@ -121,6 +124,40 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `ok: queued spawn 'proto.worker' at (1.50, -2.00)`
 - `error: unknown entity def 'proto.unknown'`
 - `error: active scene does not support this command`
+
+### select
+- Layer: Active scene debug hook
+- Description: Selects a selectable entity by runtime entity ID.
+- Syntax: `select <entity_id>`
+- Example:
+- `select 42`
+- Result examples:
+- `ok: selected entity 42`
+- `error: entity 42 not found`
+- `error: entity 42 is not selectable`
+
+### order.move
+- Layer: Active scene debug hook
+- Description: Queues a move order for the currently selected actor to world coordinates.
+- Syntax: `order.move <x> <y>`
+- Example:
+- `order.move 3.5 -1.25`
+- Result examples:
+- `ok: queued move for entity 42 to (3.50, -1.25)`
+- `error: no selected entity`
+- `error: selected entity 42 is not an actor`
+
+### order.interact
+- Layer: Active scene debug hook
+- Description: Queues an interaction order from selected actor to a target entity ID.
+- Syntax: `order.interact <target_entity_id>`
+- Example:
+- `order.interact 77`
+- Result examples:
+- `ok: queued interact actor 42 target 77`
+- `error: no selected entity`
+- `error: target entity 77 not found`
+- `error: target entity 77 is not interactable`
 
 ### pause_sim
 - Layer: Engine loop simulation control
@@ -229,6 +266,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 
 - Queueable commands are still parsed in tools, then routed for execution in the loop.
 - `spawn`/`despawn` enqueue gameplay intents and world mutation occurs once per tick at the gameplay safe apply point.
+- `select` updates scene selection immediately; `order.move` and `order.interact` enqueue gameplay intents and apply at gameplay safe points.
 - `pause_sim` affects only simulation stepping; rendering/frame pacing continues normally.
 - `tick <steps>` advances the same fixed update path used by normal gameplay; no alternate loop exists.
 - `thruport.status` prints exactly one status line with schema `thruport.status v1 enabled:<0|1> telemetry:<0|1> clients:<u32>`.
@@ -236,6 +274,10 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `input.*` commands enqueue synthetic input events that are applied once at `InputCollector::snapshot_for_tick` and merged into the normal input snapshot.
 - If the authoritative player is missing, gameplay auto-spawns exactly one authoritative player actor on tick apply.
 - `DebugCommand` stays in tools/engine layer; only `spawn`/`despawn` map one-way into scene-facing `SceneDebugCommand`.
+- Selection/order automation commands are deterministic and avoid pixel/camera dependency:
+- `select <entity_id>`
+- `order.move <x> <y>`
+- `order.interact <target_entity_id>`
 - Processor prints parse errors with usage hints.
 - Unknown commands print `error: unknown command '<name>'. try: help`.
 

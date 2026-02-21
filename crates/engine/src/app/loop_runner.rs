@@ -1139,6 +1139,35 @@ fn execute_drained_debug_commands(
                 append_scene_debug_result(console, result);
                 should_apply_after_batch = true;
             }
+            DebugCommand::Select { entity_id } => {
+                let context = SceneDebugContext {
+                    cursor_world: cursor_world_from_input(scenes, input_collector),
+                };
+                let result = scenes
+                    .execute_debug_command_active(SceneDebugCommand::Select { entity_id }, context);
+                append_scene_debug_result(console, result);
+                should_apply_after_batch = true;
+            }
+            DebugCommand::OrderMove { x, y } => {
+                let context = SceneDebugContext {
+                    cursor_world: cursor_world_from_input(scenes, input_collector),
+                };
+                let result = scenes
+                    .execute_debug_command_active(SceneDebugCommand::OrderMove { x, y }, context);
+                append_scene_debug_result(console, result);
+                should_apply_after_batch = true;
+            }
+            DebugCommand::OrderInteract { target_entity_id } => {
+                let context = SceneDebugContext {
+                    cursor_world: cursor_world_from_input(scenes, input_collector),
+                };
+                let result = scenes.execute_debug_command_active(
+                    SceneDebugCommand::OrderInteract { target_entity_id },
+                    context,
+                );
+                append_scene_debug_result(console, result);
+                should_apply_after_batch = true;
+            }
             DebugCommand::InjectInput { event } => {
                 input_collector.enqueue_injected_event(event);
                 console.append_output_line(format!(
@@ -1170,6 +1199,9 @@ fn debug_command_token(command: &DebugCommand) -> &'static str {
         DebugCommand::SwitchScene { .. } => "switch_scene",
         DebugCommand::Spawn { .. } => "spawn",
         DebugCommand::Despawn { .. } => "despawn",
+        DebugCommand::Select { .. } => "select",
+        DebugCommand::OrderMove { .. } => "order.move",
+        DebugCommand::OrderInteract { .. } => "order.interact",
         DebugCommand::InjectInput { .. } => "inject_input",
     }
 }
@@ -1675,9 +1707,11 @@ mod tests {
                         SceneDebugCommandResult::Error("entity not found".to_string())
                     }
                 }
-                SceneDebugCommand::DumpState | SceneDebugCommand::DumpAi => {
-                    SceneDebugCommandResult::Unsupported
-                }
+                SceneDebugCommand::Select { .. }
+                | SceneDebugCommand::OrderMove { .. }
+                | SceneDebugCommand::OrderInteract { .. }
+                | SceneDebugCommand::DumpState
+                | SceneDebugCommand::DumpAi => SceneDebugCommandResult::Unsupported,
             }
         }
     }
@@ -2020,6 +2054,51 @@ mod tests {
             vec![
                 "error: active scene does not support this command",
                 "error: active scene does not support this command"
+            ]
+        );
+    }
+
+    #[test]
+    fn select_and_order_commands_route_through_scene_debug_result_append() {
+        let mut scenes = SceneMachine::new(
+            Box::new(SceneWithDebugHook),
+            Box::new(NoopScene),
+            SceneKey::A,
+        );
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut console = ConsoleState::default();
+        let mut input_collector = InputCollector::new(1280, 720);
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
+        let mut commands = vec![
+            DebugCommand::Select { entity_id: 1 },
+            DebugCommand::OrderMove { x: 1.0, y: -2.0 },
+            DebugCommand::OrderInteract {
+                target_entity_id: 2,
+            },
+        ];
+        let mut hooks = LoopRuntimeHooks::default();
+
+        let quit = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
+            &mut hooks,
+            false,
+        );
+
+        assert!(!quit);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec![
+                "error: active scene does not support this command",
+                "error: active scene does not support this command",
+                "error: active scene does not support this command",
             ]
         );
     }
