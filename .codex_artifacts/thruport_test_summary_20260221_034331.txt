@@ -1,0 +1,15 @@
+overall=FAIL
+minimum_pass=False
+failures=9
+failure_list:
+- A4 missing tick 5 response
+- A4 missing dump.state response
+- B2/D2 expected 10 telemetry frames, got 0
+- C5 stuck movement after disconnect
+- G1 malformed dump.state
+- G1 ev not > 0
+- G1 in not > 0
+- G1 in_bad not 0
+- I1 run outputs count mismatch
+transcript=c:\Users\lukep\source\repos\Prototype Game Engine\.codex_artifacts\thruport_test_transcript_20260221_034331.log
+info_count=3
