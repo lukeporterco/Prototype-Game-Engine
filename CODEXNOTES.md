@@ -256,3 +256,14 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - `queued_manual_ticks: u32`
 - While paused, frame-time accumulation is disabled and only queued manual ticks advance simulation; rendering/frame pacing still run normally.
 - Manual ticks execute through the exact same fixed update path (`snapshot_for_tick` + `scenes.update_active` + apply/switch handling), preserving deterministic behavior and avoiding alternate loops.
+
+## Ticket 46 State Probe Commands (2026-02-21)
+- Added queueable console commands `dump.state` and `dump.ai` in `crates/engine/src/app/tools/console_commands.rs`.
+- Extended scene debug command routing (`SceneDebugCommand::{DumpState, DumpAi}`) so probe output is scene-owned and goes through existing `execute_debug_command` seam.
+- `GameplayScene` now emits versioned, single-line deterministic probe payloads:
+  - `dump.state v1 | ...` with player/camera/selection/target/entity/event/intent counters.
+  - `dump.ai v1 | ...` with AI state counts and optional deterministic top-5 nearest agent list.
+- Probe formatting rules:
+  - fixed field order
+  - fixed float precision (`{:.2}`)
+  - no pointer/internal unstable data beyond existing entity IDs.

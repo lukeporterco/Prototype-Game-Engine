@@ -24,6 +24,8 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `quit`
 - `despawn`
 - `spawn`
+- `dump.state`
+- `dump.ai`
 - `pause_sim`
 - `resume_sim`
 - `tick`
@@ -146,6 +148,24 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - Result examples:
 - `ok: queued tick 60`
 
+### dump.state
+- Layer: Engine queueable -> active scene debug hook
+- Description: Prints deterministic state probe line for automation assertions.
+- Syntax: `dump.state`
+- Example:
+- `dump.state`
+- Result example:
+- `ok: dump.state v1 | player:1@(0.00,0.00) | cam:(0.00,0.00,1.00) | sel:1 | tgt:none | cnt:ent:3 act:2 int:1 | ev:1 | evk:is:0 ic:0 dm:0 dd:0 sa:1 se:0 | in:2 | ink:sp:0 mt:1 de:0 dmg:0 add:0 rem:0 si:1 ci:0 ca:0 | in_bad:0`
+
+### dump.ai
+- Layer: Engine queueable -> active scene debug hook
+- Description: Prints deterministic AI probe line with state counts and nearest-agent preview.
+- Syntax: `dump.ai`
+- Example:
+- `dump.ai`
+- Result example:
+- `ok: dump.ai v1 | cnt:id:0 wa:1 ch:2 use:0 | near:4@1.00,7@2.50`
+
 ### input.key_down
 - Layer: Engine loop input bridge
 - Description: Enqueues a synthetic key-down event for next tick input snapshot merge.
@@ -201,6 +221,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `spawn`/`despawn` enqueue gameplay intents and world mutation occurs once per tick at the gameplay safe apply point.
 - `pause_sim` affects only simulation stepping; rendering/frame pacing continues normally.
 - `tick <steps>` advances the same fixed update path used by normal gameplay; no alternate loop exists.
+- `dump.state` / `dump.ai` are versioned text probes intended for remote automation checks without reading pixels.
 - `input.*` commands enqueue synthetic input events that are applied once at `InputCollector::snapshot_for_tick` and merged into the normal input snapshot.
 - If the authoritative player is missing, gameplay auto-spawns exactly one authoritative player actor on tick apply.
 - `DebugCommand` stays in tools/engine layer; only `spawn`/`despawn` map one-way into scene-facing `SceneDebugCommand`.

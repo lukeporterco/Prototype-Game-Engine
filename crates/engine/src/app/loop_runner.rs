@@ -1016,6 +1016,22 @@ fn execute_drained_debug_commands(
                 *queued_manual_ticks = queued_manual_ticks.saturating_add(steps);
                 console.append_output_line(format!("ok: queued tick {steps}"));
             }
+            DebugCommand::DumpState => {
+                let context = SceneDebugContext {
+                    cursor_world: cursor_world_from_input(scenes, input_collector),
+                };
+                let result =
+                    scenes.execute_debug_command_active(SceneDebugCommand::DumpState, context);
+                append_scene_debug_result(console, result);
+            }
+            DebugCommand::DumpAi => {
+                let context = SceneDebugContext {
+                    cursor_world: cursor_world_from_input(scenes, input_collector),
+                };
+                let result =
+                    scenes.execute_debug_command_active(SceneDebugCommand::DumpAi, context);
+                append_scene_debug_result(console, result);
+            }
             DebugCommand::SwitchScene { scene } => {
                 if scenes.switch_to(scene) {
                     scenes.apply_pending_active();
@@ -1511,6 +1527,9 @@ mod tests {
                         SceneDebugCommandResult::Error("entity not found".to_string())
                     }
                 }
+                SceneDebugCommand::DumpState | SceneDebugCommand::DumpAi => {
+                    SceneDebugCommandResult::Unsupported
+                }
             }
         }
     }
@@ -1640,6 +1659,41 @@ mod tests {
             .all(|line| line.starts_with("ok:") || line.starts_with("error:")));
         assert!(lines.iter().all(|line| !line.starts_with("queued:")));
         assert_eq!(scenes.active_world().entity_count(), 1);
+    }
+
+    #[test]
+    fn dump_commands_route_through_scene_debug_result_append() {
+        let mut scenes = SceneMachine::new(
+            Box::new(SceneWithDebugHook),
+            Box::new(NoopScene),
+            SceneKey::A,
+        );
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut console = ConsoleState::default();
+        let mut input_collector = InputCollector::new(1280, 720);
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
+        let mut commands = vec![DebugCommand::DumpState, DebugCommand::DumpAi];
+
+        let quit = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
+        );
+
+        assert!(!quit);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec![
+                "error: active scene does not support this command",
+                "error: active scene does not support this command"
+            ]
+        );
     }
 
     #[test]

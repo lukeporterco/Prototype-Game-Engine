@@ -14,6 +14,8 @@ pub(crate) enum DebugCommand {
     Tick {
         steps: u32,
     },
+    DumpState,
+    DumpAi,
     SwitchScene {
         scene: SceneKey,
     },
@@ -148,6 +150,22 @@ impl ConsoleCommandRegistry {
                 "Advance simulation by fixed ticks",
                 "<steps:u32>",
                 parse_tick_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "dump.state",
+                "Dump deterministic state probe",
+                "",
+                parse_dump_state_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "dump.ai",
+                "Dump deterministic AI probe",
+                "",
+                parse_dump_ai_command,
             )
             .expect("built-in command registration should not fail");
         registry
@@ -473,6 +491,16 @@ fn parse_tick_command(args: &[String]) -> Result<ParsedCommand, CommandParseErro
     Ok(ParsedCommand::Queueable(DebugCommand::Tick { steps }))
 }
 
+fn parse_dump_state_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    require_no_args(args, "dump.state")?;
+    Ok(ParsedCommand::Queueable(DebugCommand::DumpState))
+}
+
+fn parse_dump_ai_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    require_no_args(args, "dump.ai")?;
+    Ok(ParsedCommand::Queueable(DebugCommand::DumpAi))
+}
+
 fn parse_switch_scene_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
     if args.len() != 1 {
         return Err(CommandParseError {
@@ -709,34 +737,36 @@ mod tests {
             lines[6],
             "tick <steps:u32> - Advance simulation by fixed ticks"
         );
+        assert_eq!(lines[7], "dump.state - Dump deterministic state probe");
+        assert_eq!(lines[8], "dump.ai - Dump deterministic AI probe");
         assert_eq!(
-            lines[7],
+            lines[9],
             "switch_scene <scene_id:a|b> - Switch active scene"
         );
-        assert_eq!(lines[8], "quit - Quit app");
-        assert_eq!(lines[9], "despawn <entity_id:u64> - Despawn entity by id");
+        assert_eq!(lines[10], "quit - Quit app");
+        assert_eq!(lines[11], "despawn <entity_id:u64> - Despawn entity by id");
         assert_eq!(
-            lines[10],
+            lines[12],
             "spawn <def_name:string> [x:f32 y:f32] - Spawn entity by def name"
         );
         assert_eq!(
-            lines[11],
+            lines[13],
             "input.key_down <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key down"
         );
         assert_eq!(
-            lines[12],
+            lines[14],
             "input.key_up <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key up"
         );
         assert_eq!(
-            lines[13],
+            lines[15],
             "input.mouse_move <x:f32> <y:f32> - Inject mouse move (px)"
         );
         assert_eq!(
-            lines[14],
+            lines[16],
             "input.mouse_down <button:left|right> - Inject mouse down"
         );
         assert_eq!(
-            lines[15],
+            lines[17],
             "input.mouse_up <button:left|right> - Inject mouse up"
         );
     }
@@ -793,6 +823,8 @@ mod tests {
         console.push_pending_line_for_test("pause_sim");
         console.push_pending_line_for_test("tick 5");
         console.push_pending_line_for_test("resume_sim");
+        console.push_pending_line_for_test("dump.state");
+        console.push_pending_line_for_test("dump.ai");
         console.push_pending_line_for_test("switch_scene a");
         console.push_pending_line_for_test("quit");
         console.push_pending_line_for_test("despawn 42");
@@ -814,6 +846,8 @@ mod tests {
                 DebugCommand::PauseSim,
                 DebugCommand::Tick { steps: 5 },
                 DebugCommand::ResumeSim,
+                DebugCommand::DumpState,
+                DebugCommand::DumpAi,
                 DebugCommand::SwitchScene { scene: SceneKey::A },
                 DebugCommand::Quit,
                 DebugCommand::Despawn { entity_id: 42 },
@@ -893,6 +927,24 @@ mod tests {
                 "error: expected exactly one argument <steps>. usage: tick <steps>",
                 "error: steps must be > 0. usage: tick <steps>",
                 "error: invalid steps 'nope' (expected u32 > 0). usage: tick <steps>",
+            ]
+        );
+    }
+
+    #[test]
+    fn dump_commands_validate_bad_args_with_usage() {
+        let mut processor = ConsoleCommandProcessor::new();
+        let mut console = ConsoleState::default();
+        console.push_pending_line_for_test("dump.state now");
+        console.push_pending_line_for_test("dump.ai now");
+
+        processor.process_pending_lines(&mut console);
+
+        assert_eq!(
+            collect_output(&console),
+            vec![
+                "error: unexpected extra arguments. usage: dump.state",
+                "error: unexpected extra arguments. usage: dump.ai",
             ]
         );
     }

@@ -25,6 +25,8 @@ pub enum SceneDebugCommand {
     Despawn {
         entity_id: u64,
     },
+    DumpState,
+    DumpAi,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -1000,6 +1002,9 @@ mod tests {
                     } else {
                         SceneDebugCommandResult::Error("missing entity".to_string())
                     }
+                }
+                SceneDebugCommand::DumpState | SceneDebugCommand::DumpAi => {
+                    SceneDebugCommandResult::Unsupported
                 }
             }
         }

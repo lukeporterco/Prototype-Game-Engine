@@ -1783,6 +1783,114 @@ impl GameplayScene {
         counts
     }
 
+    fn format_dump_state(&self, world: &SceneWorld) -> String {
+        let player_text = self
+            .player_id
+            .and_then(|player_id| {
+                world
+                    .find_entity(player_id)
+                    .map(|entity| (player_id, entity))
+            })
+            .map(|(player_id, entity)| {
+                format!(
+                    "{}@({:.2},{:.2})",
+                    player_id.0, entity.transform.position.x, entity.transform.position.y
+                )
+            })
+            .unwrap_or_else(|| "none".to_string());
+        let camera = world.camera();
+        let selected_text = self
+            .selected_entity
+            .map(|id| id.0.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let target_text = self
+            .debug_selected_target(world)
+            .map(|target| format!("({:.2},{:.2})", target.x, target.y))
+            .unwrap_or_else(|| "none".to_string());
+        let entity_count = world.entity_count();
+        let actor_count = world
+            .entities()
+            .iter()
+            .filter(|entity| entity.actor)
+            .count();
+        let interactable_count = world
+            .entities()
+            .iter()
+            .filter(|entity| entity.interactable.is_some())
+            .count();
+        let event_counts = self.system_events.last_tick_counts();
+        let intent_stats = self.system_intents.last_tick_apply_stats();
+
+        format!(
+            "dump.state v1 | player:{} | cam:({:.2},{:.2},{:.2}) | sel:{} | tgt:{} | cnt:ent:{} act:{} int:{} | ev:{} | evk:is:{} ic:{} dm:{} dd:{} sa:{} se:{} | in:{} | ink:sp:{} mt:{} de:{} dmg:{} add:{} rem:{} si:{} ci:{} ca:{} | in_bad:{}",
+            player_text,
+            camera.position.x,
+            camera.position.y,
+            camera.zoom,
+            selected_text,
+            target_text,
+            entity_count,
+            actor_count,
+            interactable_count,
+            event_counts.total,
+            event_counts.interaction_started,
+            event_counts.interaction_completed,
+            event_counts.entity_damaged,
+            event_counts.entity_died,
+            event_counts.status_applied,
+            event_counts.status_expired,
+            intent_stats.total,
+            intent_stats.spawn_by_archetype_id,
+            intent_stats.set_move_target,
+            intent_stats.despawn_entity,
+            intent_stats.apply_damage,
+            intent_stats.add_status,
+            intent_stats.remove_status,
+            intent_stats.start_interaction,
+            intent_stats.complete_interaction,
+            intent_stats.cancel_interaction,
+            intent_stats.invalid_target_count
+        )
+    }
+
+    fn format_dump_ai(&self, world: &SceneWorld) -> String {
+        let counts = self.ai_state_counts();
+        let near_text = if let Some(player) = self.player_id.and_then(|id| world.find_entity(id)) {
+            let mut nearest = self
+                .ai_agents_by_entity
+                .keys()
+                .filter_map(|entity_id| {
+                    world.find_entity(*entity_id).map(|entity| {
+                        let dx = entity.transform.position.x - player.transform.position.x;
+                        let dy = entity.transform.position.y - player.transform.position.y;
+                        let distance = (dx * dx + dy * dy).sqrt();
+                        (*entity_id, distance)
+                    })
+                })
+                .collect::<Vec<_>>();
+            nearest.sort_by(|(a_id, a_dist), (b_id, b_dist)| {
+                a_dist.total_cmp(b_dist).then_with(|| a_id.0.cmp(&b_id.0))
+            });
+            if nearest.is_empty() {
+                "none".to_string()
+            } else {
+                nearest
+                    .into_iter()
+                    .take(5)
+                    .map(|(entity_id, distance)| format!("{}@{distance:.2}", entity_id.0))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            }
+        } else {
+            "none".to_string()
+        };
+
+        format!(
+            "dump.ai v1 | cnt:id:{} wa:{} ch:{} use:{} | near:{}",
+            counts.idle, counts.wander, counts.chase, counts.use_interaction, near_text
+        )
+    }
+
     fn status_multiplier(status_id: StatusId) -> f32 {
         match status_id {
             STATUS_SLOW => STATUS_SLOW_MULTIPLIER,
@@ -2661,6 +2769,12 @@ impl Scene for GameplayScene {
                     });
                     SceneDebugCommandResult::Success(format!("queued despawn entity {entity_id}"))
                 }
+            }
+            SceneDebugCommand::DumpState => {
+                SceneDebugCommandResult::Success(self.format_dump_state(world))
+            }
+            SceneDebugCommand::DumpAi => {
+                SceneDebugCommandResult::Success(self.format_dump_ai(world))
             }
         }
     }
@@ -5989,6 +6103,109 @@ mod tests {
         assert!(extra.iter().any(|line| line.starts_with("ai: ")));
         assert!(extra.iter().any(|line| line.starts_with("ix: ")));
         assert!(extra.iter().any(|line| line.starts_with("ixd: ")));
+    }
+
+    #[test]
+    fn dump_state_format_includes_required_fields_and_v1_header() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let player_id = world.spawn_actor(
+            Transform {
+                position: Vec2 {
+                    x: 1.2345,
+                    y: -2.3456,
+                },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "player",
+            },
+        );
+        world.apply_pending();
+        world.camera_mut().position = Vec2 { x: 7.89, y: -1.23 };
+        world.camera_mut().zoom = 1.234;
+        scene.player_id = Some(player_id);
+        scene.selected_entity = Some(player_id);
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::DumpState,
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let line = match result {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert!(line.starts_with("dump.state v1 | "));
+        assert!(line.contains("player:"));
+        assert!(line.contains("cam:"));
+        assert!(line.contains("sel:"));
+        assert!(line.contains("tgt:"));
+        assert!(line.contains("cnt:ent:"));
+        assert!(line.contains("evk:is:"));
+        assert!(line.contains("ink:sp:"));
+        assert!(line.contains("in_bad:"));
+        assert!(line.contains("player:"));
+        assert!(line.contains("@(1.23,-2.35)"));
+        assert!(line.contains("cam:(7.89,-1.23,1.23)"));
+    }
+
+    #[test]
+    fn dump_ai_format_includes_required_fields_and_v1_header() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let player_id = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "player",
+            },
+        );
+        world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 2.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "npc1",
+            },
+        );
+        world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 1.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "npc2",
+            },
+        );
+        world.apply_pending();
+        scene.player_id = Some(player_id);
+        scene.rebuild_ai_agents_from_world(&world);
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::DumpAi,
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let line = match result {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert!(line.starts_with("dump.ai v1 | "));
+        assert!(line.contains("cnt:id:"));
+        assert!(line.contains(" wa:"));
+        assert!(line.contains(" ch:"));
+        assert!(line.contains(" use:"));
+        assert!(line.contains(" | near:"));
     }
 
     #[test]
