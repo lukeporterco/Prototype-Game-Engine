@@ -29,6 +29,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `pause_sim`
 - `resume_sim`
 - `tick`
+- `thruport.status`
 - `input.key_down`
 - `input.key_up`
 - `input.mouse_move`
@@ -148,6 +149,15 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - Result examples:
 - `ok: queued tick 60`
 
+### thruport.status
+- Layer: Engine loop runtime hooks / game thruport pump
+- Description: Prints current thruport transport status snapshot for automation.
+- Syntax: `thruport.status`
+- Example:
+- `thruport.status`
+- Result example:
+- `thruport.status v1 enabled:1 telemetry:1 clients:1`
+
 ### dump.state
 - Layer: Engine queueable -> active scene debug hook
 - Description: Prints deterministic state probe line for automation assertions.
@@ -221,6 +231,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `spawn`/`despawn` enqueue gameplay intents and world mutation occurs once per tick at the gameplay safe apply point.
 - `pause_sim` affects only simulation stepping; rendering/frame pacing continues normally.
 - `tick <steps>` advances the same fixed update path used by normal gameplay; no alternate loop exists.
+- `thruport.status` prints exactly one status line with schema `thruport.status v1 enabled:<0|1> telemetry:<0|1> clients:<u32>`.
 - `dump.state` / `dump.ai` are versioned text probes intended for remote automation checks without reading pixels.
 - `input.*` commands enqueue synthetic input events that are applied once at `InputCollector::snapshot_for_tick` and merged into the normal input snapshot.
 - If the authoritative player is missing, gameplay auto-spawns exactly one authoritative player actor on tick apply.

@@ -10,6 +10,7 @@ const MAX_PENDING_DEBUG_COMMANDS: usize = 128;
 pub(crate) enum DebugCommand {
     ResetScene,
     Sync,
+    ThruportStatus,
     PauseSim,
     ResumeSim,
     Tick {
@@ -135,6 +136,14 @@ impl ConsoleCommandRegistry {
                 "Flush queued command processing barrier",
                 "",
                 parse_sync_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "thruport.status",
+                "Dump thruport transport status",
+                "",
+                parse_thruport_status_command,
             )
             .expect("built-in command registration should not fail");
         registry
@@ -473,6 +482,11 @@ fn parse_sync_command(args: &[String]) -> Result<ParsedCommand, CommandParseErro
     Ok(ParsedCommand::Queueable(DebugCommand::Sync))
 }
 
+fn parse_thruport_status_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    require_no_args(args, "thruport.status")?;
+    Ok(ParsedCommand::Queueable(DebugCommand::ThruportStatus))
+}
+
 fn parse_pause_sim_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
     require_no_args(args, "pause_sim")?;
     Ok(ParsedCommand::Queueable(DebugCommand::PauseSim))
@@ -746,42 +760,43 @@ mod tests {
         assert_eq!(lines[2], "echo <text...> - Print text to console");
         assert_eq!(lines[3], "reset_scene - Reset active scene");
         assert_eq!(lines[4], "sync - Flush queued command processing barrier");
-        assert_eq!(lines[5], "pause_sim - Pause simulation stepping");
-        assert_eq!(lines[6], "resume_sim - Resume simulation stepping");
+        assert_eq!(lines[5], "thruport.status - Dump thruport transport status");
+        assert_eq!(lines[6], "pause_sim - Pause simulation stepping");
+        assert_eq!(lines[7], "resume_sim - Resume simulation stepping");
         assert_eq!(
-            lines[7],
+            lines[8],
             "tick <steps:u32> - Advance simulation by fixed ticks"
         );
-        assert_eq!(lines[8], "dump.state - Dump deterministic state probe");
-        assert_eq!(lines[9], "dump.ai - Dump deterministic AI probe");
+        assert_eq!(lines[9], "dump.state - Dump deterministic state probe");
+        assert_eq!(lines[10], "dump.ai - Dump deterministic AI probe");
         assert_eq!(
-            lines[10],
+            lines[11],
             "switch_scene <scene_id:a|b> - Switch active scene"
         );
-        assert_eq!(lines[11], "quit - Quit app");
-        assert_eq!(lines[12], "despawn <entity_id:u64> - Despawn entity by id");
+        assert_eq!(lines[12], "quit - Quit app");
+        assert_eq!(lines[13], "despawn <entity_id:u64> - Despawn entity by id");
         assert_eq!(
-            lines[13],
+            lines[14],
             "spawn <def_name:string> [x:f32 y:f32] - Spawn entity by def name"
         );
         assert_eq!(
-            lines[14],
+            lines[15],
             "input.key_down <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key down"
         );
         assert_eq!(
-            lines[15],
+            lines[16],
             "input.key_up <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key up"
         );
         assert_eq!(
-            lines[16],
+            lines[17],
             "input.mouse_move <x:f32> <y:f32> - Inject mouse move (px)"
         );
         assert_eq!(
-            lines[17],
+            lines[18],
             "input.mouse_down <button:left|right> - Inject mouse down"
         );
         assert_eq!(
-            lines[18],
+            lines[19],
             "input.mouse_up <button:left|right> - Inject mouse up"
         );
     }
@@ -836,6 +851,7 @@ mod tests {
         let mut console = ConsoleState::default();
         console.push_pending_line_for_test("reset_scene");
         console.push_pending_line_for_test("sync");
+        console.push_pending_line_for_test("thruport.status");
         console.push_pending_line_for_test("pause_sim");
         console.push_pending_line_for_test("tick 5");
         console.push_pending_line_for_test("resume_sim");
@@ -860,6 +876,7 @@ mod tests {
             vec![
                 DebugCommand::ResetScene,
                 DebugCommand::Sync,
+                DebugCommand::ThruportStatus,
                 DebugCommand::PauseSim,
                 DebugCommand::Tick { steps: 5 },
                 DebugCommand::ResumeSim,
@@ -971,12 +988,16 @@ mod tests {
         let mut processor = ConsoleCommandProcessor::new();
         let mut console = ConsoleState::default();
         console.push_pending_line_for_test("sync now");
+        console.push_pending_line_for_test("thruport.status now");
 
         processor.process_pending_lines(&mut console);
 
         assert_eq!(
             collect_output(&console),
-            vec!["error: unexpected extra arguments. usage: sync"]
+            vec![
+                "error: unexpected extra arguments. usage: sync",
+                "error: unexpected extra arguments. usage: thruport.status"
+            ]
         );
     }
 

@@ -158,6 +158,13 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 ## Microticket 37.1 Content Expansion (2026-02-21)
 - `assets/base/defs.xml` now includes `proto.npc_chaser`, `proto.npc_dummy`, `proto.stockpile_small`, and `proto.door_dummy` in addition to existing defs.
 - Spawn runtime role wiring in `crates/game/src/main.rs` is now tag-driven for debug/intents: `actor` tag spawns with `spawn_actor`, `interactable` tag initializes runtime `Interactable` data.
+
+## Microticket 46.3 Thruport Delivery + Status (2026-02-21)
+- Added queueable console command `thruport.status` in engine command registry.
+- `thruport.status` output contract is exact and unprefixed: `thruport.status v1 enabled:<0|1> telemetry:<0|1> clients:<u32>`.
+- `RemoteConsoleLinePump` now exposes `status_line(telemetry_enabled)`; engine uses this to append status through the same console output path used for remote readback.
+- Game-side thruport (`crates/game/src/app/dev_thruport.rs`) now sets accepted client sockets to `TCP_NODELAY` to reduce telemetry line coalescing latency.
+- Input injection command acknowledgements remain deterministic (`ok: injected input.<...>`) and are verified through the same remote output forwarding seam.
 - `proto.player` now includes the `actor` tag to preserve tag-driven spawn behavior compatibility.
 - `proto.door_dummy` currently carries `immediate_use` as metadata only; immediate duration behavior is explicitly deferred (no interaction logic changes in this microticket).
 

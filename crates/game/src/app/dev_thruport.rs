@@ -136,6 +136,9 @@ impl TcpRemoteConsoleTransport {
                         warn!(error = %err, "thruport_client_nonblocking_failed");
                         continue;
                     }
+                    if let Err(err) = stream.set_nodelay(true) {
+                        warn!(error = %err, "thruport_client_nodelay_failed");
+                    }
                     self.clients.push(ClientConn {
                         stream,
                         read_buf: Vec::new(),
@@ -298,6 +301,20 @@ impl DevThruport {
             }
         }
     }
+
+    fn enabled_flag(&self) -> u32 {
+        match self.mode {
+            DevThruportMode::Enabled(_) => 1,
+            DevThruportMode::Disabled => 0,
+        }
+    }
+
+    fn connected_clients_count(&self) -> u32 {
+        match &self.mode {
+            DevThruportMode::Enabled(transport) => transport.clients.len() as u32,
+            DevThruportMode::Disabled => 0,
+        }
+    }
 }
 
 impl RemoteConsoleLinePump for DevThruport {
@@ -321,6 +338,16 @@ impl RemoteConsoleLinePump for DevThruport {
                 self.disconnect_reset_requested = true;
             }
         }
+    }
+
+    fn status_line(&mut self, telemetry_enabled: bool) -> String {
+        let telemetry_value = if telemetry_enabled { 1 } else { 0 };
+        format!(
+            "thruport.status v1 enabled:{} telemetry:{} clients:{}",
+            self.enabled_flag(),
+            telemetry_value,
+            self.connected_clients_count()
+        )
     }
 
     fn take_disconnect_reset_requested(&mut self) -> bool {
@@ -616,5 +643,31 @@ mod tests {
         }
 
         assert!(received.ends_with(expected));
+    }
+
+    #[test]
+    fn status_line_reports_enabled_telemetry_and_client_count() {
+        let transport = TcpRemoteConsoleTransport::bind_localhost(0).expect("bind");
+        let addr = transport.listener.local_addr().expect("local_addr");
+        let mut thruport = DevThruport {
+            mode: DevThruportMode::Enabled(transport),
+            _hooks: DevThruportHooks::no_op(),
+            disconnect_reset_requested: false,
+        };
+        let _client = TcpStream::connect(addr).expect("connect");
+
+        let mut out = Vec::new();
+        for _ in 0..20 {
+            thruport.poll_lines(&mut out);
+            if matches!(&thruport.mode, DevThruportMode::Enabled(t) if t.clients.len() == 1) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(
+            thruport.status_line(true),
+            "thruport.status v1 enabled:1 telemetry:1 clients:1"
+        );
     }
 }
