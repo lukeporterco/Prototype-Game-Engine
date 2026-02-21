@@ -314,3 +314,9 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - move intent enqueue via `GameplayIntent::SetMoveTarget` (`order.move`)
   - interaction intent/event enqueue via existing interaction runtime seam (`order.interact`)
 - Failure contract is explicit and non-panicking: no selection, missing/stale selected entity, non-actor selected entity, missing/non-interactable target.
+
+## Microticket 46.5 Injected Cursor Reliability Fix (2026-02-21)
+- Root cause for remote right-click no-op in hidden-window thruport runs: native `CursorLeft` events could clear `cursor_position_px` between injected mouse commands and tick snapshot.
+- `InputCollector` in `crates/engine/src/app/loop_runner.rs` now tracks `injected_cursor_position_px` separately from native cursor state.
+- Tick snapshots now use merged cursor priority `injected_cursor_position_px` then native `cursor_position_px`, so injected `input.mouse_move` remains deterministic for automation clicks.
+- Disconnect/input reset paths clear injected cursor state to avoid stale coordinates across sessions.

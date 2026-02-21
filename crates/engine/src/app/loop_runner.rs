@@ -536,6 +536,7 @@ struct InputCollector {
     pending_zoom_steps: i32,
     action_states: super::input::ActionStates,
     cursor_position_px: Option<super::Vec2>,
+    injected_cursor_position_px: Option<super::Vec2>,
     left_mouse_is_down: bool,
     left_click_pressed_edge: bool,
     right_mouse_is_down: bool,
@@ -602,6 +603,8 @@ impl InputCollector {
 
     fn snapshot_for_tick(&mut self, console_open: bool) -> InputSnapshot {
         self.apply_injected_events_for_tick();
+        let merged_cursor_position_px =
+            self.injected_cursor_position_px.or(self.cursor_position_px);
         let actions = self.merged_action_states();
         let left_click_pressed =
             self.left_click_pressed_edge || self.injected_left_click_pressed_edge;
@@ -612,7 +615,7 @@ impl InputCollector {
                 false,
                 false,
                 super::input::ActionStates::default(),
-                self.cursor_position_px,
+                merged_cursor_position_px,
                 false,
                 false,
                 false,
@@ -626,7 +629,7 @@ impl InputCollector {
                 self.quit_requested,
                 self.switch_scene_pressed_edge,
                 actions,
-                self.cursor_position_px,
+                merged_cursor_position_px,
                 left_click_pressed,
                 right_click_pressed,
                 self.save_pressed_edge,
@@ -671,6 +674,7 @@ impl InputCollector {
         self.zoom_in_key_is_down = false;
         self.zoom_out_key_is_down = false;
         self.pending_zoom_steps = 0;
+        self.injected_cursor_position_px = None;
         self.left_mouse_is_down = false;
         self.left_click_pressed_edge = false;
         self.injected_left_mouse_is_down = false;
@@ -697,6 +701,7 @@ impl InputCollector {
 
     fn clear_injected_held_inputs(&mut self) {
         self.injected_action_states = super::input::ActionStates::default();
+        self.injected_cursor_position_px = None;
         self.injected_left_mouse_is_down = false;
         self.injected_left_click_pressed_edge = false;
         self.injected_right_mouse_is_down = false;
@@ -708,7 +713,9 @@ impl InputCollector {
             match event {
                 InjectedInputEvent::KeyDown { key } => self.set_injected_key_state(key, true),
                 InjectedInputEvent::KeyUp { key } => self.set_injected_key_state(key, false),
-                InjectedInputEvent::MouseMove { x, y } => self.set_cursor_position_px(x, y),
+                InjectedInputEvent::MouseMove { x, y } => {
+                    self.injected_cursor_position_px = Some(super::Vec2 { x, y });
+                }
                 InjectedInputEvent::MouseDown { button } => {
                     self.handle_injected_mouse_input(button, ElementState::Pressed);
                 }
@@ -2663,6 +2670,18 @@ mod tests {
         let cursor = snapshot.cursor_position_px().expect("cursor");
         assert!((cursor.x - 100.0).abs() < 0.0001);
         assert!((cursor.y - 200.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn injected_cursor_position_survives_native_cursor_clear() {
+        let mut input = InputCollector::new(1280, 720);
+        input.enqueue_injected_event(InjectedInputEvent::MouseMove { x: 700.0, y: 350.0 });
+        input.clear_cursor_position();
+
+        let snapshot = input.snapshot_for_tick(false);
+        let cursor = snapshot.cursor_position_px().expect("cursor");
+        assert!((cursor.x - 700.0).abs() < 0.0001);
+        assert!((cursor.y - 350.0).abs() < 0.0001);
     }
 
     #[test]
