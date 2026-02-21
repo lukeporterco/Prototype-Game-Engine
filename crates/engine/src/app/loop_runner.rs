@@ -29,6 +29,7 @@ use super::{
 };
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
+const THRUPORT_TELEMETRY_ENV_VAR: &str = "PROTOGE_THRUPORT_TELEMETRY";
 const SOFT_BUDGET_CONSECUTIVE_BREACH_FRAMES: u32 = 3;
 const MAX_PENDING_INJECTED_EVENTS: usize = 256;
 
@@ -36,6 +37,8 @@ pub trait RemoteConsoleLinePump: Send {
     fn poll_lines(&mut self, out: &mut Vec<String>);
 
     fn send_output_lines(&mut self, _lines: &[String]) {}
+
+    fn send_thruport_frame(&mut self, _line: &str) {}
 
     fn take_disconnect_reset_requested(&mut self) -> bool {
         false
@@ -223,11 +226,13 @@ fn run_app_with_metrics_and_hooks(
     let mut overlay_visible = true;
     let mut sim_paused = false;
     let mut queued_manual_ticks = 0u32;
+    let mut tick_counter = 0u64;
     let mut console = ConsoleState::default();
     let mut console_command_processor = ConsoleCommandProcessor::new();
     let mut drained_debug_commands = Vec::<DebugCommand>::new();
     let mut remote_console_lines = Vec::<String>::new();
     let mut remote_console_output_lines = Vec::<String>::new();
+    let thruport_telemetry_enabled = parse_enabled_flag_from_env(THRUPORT_TELEMETRY_ENV_VAR);
     info!(
         perf_stats_enabled_by_default = PerfStats::enabled_by_default(),
         perf_window_frames = PerfStats::window_len(),
@@ -356,7 +361,7 @@ fn run_app_with_metrics_and_hooks(
                         // sim_ms boundary start:
                         // starts immediately before the fixed-step tick loop for this frame.
                         let sim_timer_start = Instant::now();
-                        for _ in 0..tick_plan.ticks_to_run {
+                        for tick_index in 0..tick_plan.ticks_to_run {
                             let input_snapshot =
                                 input_collector.snapshot_for_tick(console.is_open());
                             let command = scenes.update_active(fixed_dt_seconds, &input_snapshot);
@@ -378,6 +383,27 @@ fn run_app_with_metrics_and_hooks(
                                 );
                             }
                             metrics_accumulator.record_tick();
+
+                            if thruport_telemetry_enabled {
+                                let (ev, intents, in_bad) = telemetry_counters_from_debug_snapshot(
+                                    scenes.debug_info_snapshot_active(),
+                                );
+                                tick_counter = tick_counter.saturating_add(1);
+                                let paused_value = if sim_paused { 1 } else { 0 };
+                                let qtick_value = telemetry_qtick_after_current_tick(
+                                    sim_paused,
+                                    queued_manual_ticks,
+                                    tick_plan,
+                                    tick_index,
+                                );
+                                let line = format!(
+                                    "thruport.frame v1 tick:{} paused:{} qtick:{} ev:{} in:{} in_bad:{}",
+                                    tick_counter, paused_value, qtick_value, ev, intents, in_bad
+                                );
+                                if let Some(pump) = runtime_hooks.remote_console_pump.as_mut() {
+                                    pump.send_thruport_frame(&line);
+                                }
+                            }
                         }
 
                         if tick_plan.dropped_backlog > Duration::ZERO {
@@ -1356,6 +1382,58 @@ fn maybe_warn_budget_breach(
     );
 }
 
+fn telemetry_qtick_after_current_tick(
+    sim_paused: bool,
+    queued_manual_ticks: u32,
+    tick_plan: TickExecutionPlan,
+    tick_index: u32,
+) -> u32 {
+    if sim_paused {
+        let ticks_left_after_current = tick_plan
+            .ticks_to_run
+            .saturating_sub(tick_index.saturating_add(1));
+        tick_plan
+            .remaining_manual_ticks
+            .saturating_add(ticks_left_after_current)
+    } else {
+        queued_manual_ticks
+    }
+}
+
+fn telemetry_counters_from_debug_snapshot(
+    snapshot: Option<super::DebugInfoSnapshot>,
+) -> (u32, u32, u32) {
+    let Some(snapshot) = snapshot else {
+        return (0, 0, 0);
+    };
+    let Some(lines) = snapshot.extra_debug_lines else {
+        return (0, 0, 0);
+    };
+
+    let mut ev = 0u32;
+    let mut intents = 0u32;
+    let mut in_bad = 0u32;
+    for line in lines {
+        if let Some(value) = parse_prefixed_u32(&line, "ev: ") {
+            ev = value;
+        } else if let Some(value) = parse_prefixed_u32(&line, "in: ") {
+            intents = value;
+        } else if let Some(value) = parse_prefixed_u32(&line, "in_bad: ") {
+            in_bad = value;
+        }
+    }
+    (ev, intents, in_bad)
+}
+
+fn parse_prefixed_u32(line: &str, prefix: &str) -> Option<u32> {
+    let value = line.strip_prefix(prefix)?;
+    value.trim().parse::<u32>().ok()
+}
+
+fn parse_enabled_flag_from_env(var_name: &str) -> bool {
+    matches!(env::var(var_name).ok().as_deref(), Some("1"))
+}
+
 fn resolve_slow_frame_delay(config_slow_frame_ms: u64) -> Duration {
     match env::var(SLOW_FRAME_ENV_VAR) {
         Ok(value) => match value.parse::<u64>() {
@@ -1583,6 +1661,19 @@ mod tests {
         }
     }
 
+    struct FrameCapturePump {
+        frames: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RemoteConsoleLinePump for FrameCapturePump {
+        fn poll_lines(&mut self, _out: &mut Vec<String>) {}
+
+        fn send_thruport_frame(&mut self, line: &str) {
+            let mut frames = self.frames.lock().expect("lock");
+            frames.push(line.to_string());
+        }
+    }
+
     #[test]
     fn remote_pump_lines_are_enqueued_before_processing() {
         let mut hooks = LoopRuntimeHooks {
@@ -1618,6 +1709,105 @@ mod tests {
             *received,
             vec!["ok: one".to_string(), "error: two".to_string()]
         );
+    }
+
+    #[test]
+    fn telemetry_counters_parse_from_debug_snapshot_extra_lines() {
+        let snapshot = super::super::DebugInfoSnapshot {
+            selected_entity: None,
+            selected_position_world: None,
+            selected_order_world: None,
+            selected_job_state: super::super::DebugJobState::None,
+            entity_count: 0,
+            actor_count: 0,
+            interactable_count: 0,
+            resource_count: 0,
+            system_order: "InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup"
+                .to_string(),
+            extra_debug_lines: Some(vec![
+                "ev: 12".to_string(),
+                "in: 34".to_string(),
+                "in_bad: 5".to_string(),
+            ]),
+        };
+
+        assert_eq!(
+            telemetry_counters_from_debug_snapshot(Some(snapshot)),
+            (12, 34, 5)
+        );
+    }
+
+    #[test]
+    fn telemetry_counters_fallback_to_zero_when_missing_or_malformed() {
+        let malformed = super::super::DebugInfoSnapshot {
+            selected_entity: None,
+            selected_position_world: None,
+            selected_order_world: None,
+            selected_job_state: super::super::DebugJobState::None,
+            entity_count: 0,
+            actor_count: 0,
+            interactable_count: 0,
+            resource_count: 0,
+            system_order: "InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup"
+                .to_string(),
+            extra_debug_lines: Some(vec![
+                "ev: nope".to_string(),
+                "in: also_bad".to_string(),
+                "in_bad: ???".to_string(),
+            ]),
+        };
+
+        assert_eq!(telemetry_counters_from_debug_snapshot(None), (0, 0, 0));
+        assert_eq!(
+            telemetry_counters_from_debug_snapshot(Some(malformed)),
+            (0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn telemetry_qtick_counts_down_to_zero_while_paused() {
+        let tick_plan = TickExecutionPlan {
+            ticks_to_run: 3,
+            remaining_accumulator: Duration::ZERO,
+            dropped_backlog: Duration::ZERO,
+            remaining_manual_ticks: 0,
+        };
+
+        assert_eq!(telemetry_qtick_after_current_tick(true, 0, tick_plan, 0), 2);
+        assert_eq!(telemetry_qtick_after_current_tick(true, 0, tick_plan, 1), 1);
+        assert_eq!(telemetry_qtick_after_current_tick(true, 0, tick_plan, 2), 0);
+    }
+
+    #[test]
+    fn telemetry_frame_lines_emit_once_per_executed_tick_with_monotonic_tick() {
+        let frames = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut pump = FrameCapturePump {
+            frames: Arc::clone(&frames),
+        };
+        let tick_plan = TickExecutionPlan {
+            ticks_to_run: 4,
+            remaining_accumulator: Duration::ZERO,
+            dropped_backlog: Duration::ZERO,
+            remaining_manual_ticks: 0,
+        };
+        let mut tick_counter = 0u64;
+        for tick_index in 0..tick_plan.ticks_to_run {
+            tick_counter = tick_counter.saturating_add(1);
+            let qtick = telemetry_qtick_after_current_tick(true, 0, tick_plan, tick_index);
+            let line = format!(
+                "thruport.frame v1 tick:{} paused:1 qtick:{} ev:0 in:0 in_bad:0",
+                tick_counter, qtick
+            );
+            pump.send_thruport_frame(&line);
+        }
+
+        let captured = frames.lock().expect("lock");
+        assert_eq!(captured.len(), 4);
+        assert!(captured[0].contains("tick:1"));
+        assert!(captured[1].contains("tick:2"));
+        assert!(captured[2].contains("tick:3"));
+        assert!(captured[3].contains("tick:4"));
+        assert!(captured[3].contains("qtick:0"));
     }
 
     #[test]

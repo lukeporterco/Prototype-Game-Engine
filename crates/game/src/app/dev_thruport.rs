@@ -215,6 +215,31 @@ impl TcpRemoteConsoleTransport {
             }
         }
     }
+
+    fn send_frame_line(&mut self, line: &str) {
+        let mut index = 0usize;
+        while index < self.clients.len() {
+            let mut remove_client = false;
+            {
+                let client = &mut self.clients[index];
+                if let Err(err) = write_line_non_blocking(&mut client.stream, line) {
+                    if err.kind() == io::ErrorKind::WouldBlock {
+                        index += 1;
+                        continue;
+                    }
+
+                    warn!(error = %err, "thruport_client_write_failed");
+                    remove_client = true;
+                }
+            }
+
+            if remove_client {
+                self.clients.swap_remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
 }
 
 pub(crate) fn initialize(hooks: DevThruportHooks) -> DevThruport {
@@ -276,6 +301,16 @@ impl RemoteConsoleLinePump for DevThruport {
         if let DevThruportMode::Enabled(transport) = &mut self.mode {
             let clients_before = transport.clients.len();
             transport.send_output_lines(lines);
+            if clients_before > 0 && transport.clients.is_empty() {
+                self.disconnect_reset_requested = true;
+            }
+        }
+    }
+
+    fn send_thruport_frame(&mut self, line: &str) {
+        if let DevThruportMode::Enabled(transport) = &mut self.mode {
+            let clients_before = transport.clients.len();
+            transport.send_frame_line(line);
             if clients_before > 0 && transport.clients.is_empty() {
                 self.disconnect_reset_requested = true;
             }
@@ -489,5 +524,55 @@ mod tests {
         }
 
         panic!("disconnect reset flag was not set");
+    }
+
+    #[test]
+    fn tcp_transport_writes_telemetry_frame_line_to_connected_client() {
+        let transport = TcpRemoteConsoleTransport::bind_localhost(0).expect("bind");
+        let addr = transport.listener.local_addr().expect("local_addr");
+        let mut thruport = DevThruport {
+            mode: DevThruportMode::Enabled(transport),
+            _hooks: DevThruportHooks::no_op(),
+            disconnect_reset_requested: false,
+        };
+        let mut client = TcpStream::connect(addr).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set_read_timeout");
+        client
+            .set_nonblocking(true)
+            .expect("set_nonblocking_client");
+
+        let mut ignored = Vec::new();
+        for _ in 0..20 {
+            thruport.poll_lines(&mut ignored);
+            if matches!(&thruport.mode, DevThruportMode::Enabled(t) if t.clients.len() == 1) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let expected = b"thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0\n";
+        let mut received = Vec::new();
+        for _ in 0..40 {
+            thruport.send_thruport_frame(
+                "thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0",
+            );
+            let mut chunk = [0u8; 128];
+            match client.read(&mut chunk) {
+                Ok(bytes_read) if bytes_read > 0 => {
+                    received.extend_from_slice(&chunk[..bytes_read]);
+                    if received.ends_with(expected) {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                Err(err) => panic!("unexpected read error: {err}"),
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(received.ends_with(expected));
     }
 }

@@ -267,3 +267,11 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   - fixed field order
   - fixed float precision (`{:.2}`)
   - no pointer/internal unstable data beyond existing entity IDs.
+
+## Microticket 46.1 Thruport Frame Telemetry (2026-02-21)
+- Added opt-in thruport telemetry push line behind `PROTOGE_THRUPORT_TELEMETRY=1` (requires thruport enabled).
+- Telemetry schema (single UTF-8 newline-delimited line, no JSON):  
+  `thruport.frame v1 tick:<u64> paused:<0|1> qtick:<u32> ev:<u32> in:<u32> in_bad:<u32>`
+- Emission point is engine loop fixed-step execution: exactly one telemetry line per executed fixed tick on the normal update path (includes manual `tick <N>` execution path).
+- `tick` is monotonic loop-owned counter; `paused`/`qtick` come from existing sim gating state; `ev`/`in`/`in_bad` are derived from active-scene debug snapshot extra lines (`ev:`, `in:`, `in_bad:`), with zero fallback when unavailable.
+- Existing console `ok:`/`error:` output lines remain unchanged and unprefixed.
