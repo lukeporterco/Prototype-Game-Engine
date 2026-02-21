@@ -92,6 +92,11 @@ VERIFICATION (mandatory)
 - Include expected outcomes.
 - If commands are unknown, discover the correct commands from build files and CI configs before implementation.
 - If verification fails, fix and re-run until passing.
+- For thruport validation runs, use the proven command block in `.codex_artifacts/SOME_COMMANDS.md` first (run-first baseline) before ad-hoc/generated minset harness scripts.
+  - Reason: local runs showed generated minset scripts can produce false negatives/timeouts in this environment, while the `SOME_COMMANDS.md` sequence reliably exercises `sync`, telemetry frame burst, and disconnect/reconnect checks.
+  - Workflow:
+    - 1) Run `SOME_COMMANDS.md` command block and capture output summary.
+    - 2) Only then run broader minset scripts (for example `.codex_artifacts/run_minset_telemetry.ps1`) if needed for extended coverage.
 
 ## How to Work (Codex Operating Rules)
 - Before editing: restate the ticket goal and list the files you expect to touch.

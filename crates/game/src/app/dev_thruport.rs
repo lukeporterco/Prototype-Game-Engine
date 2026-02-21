@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 
@@ -27,6 +28,7 @@ pub(crate) enum InjectedInput {
 const THRUPORT_ENV_VAR: &str = "PROTOGE_THRUPORT";
 const THRUPORT_PORT_ENV_VAR: &str = "PROTOGE_THRUPORT_PORT";
 const THRUPORT_DEFAULT_PORT: u16 = 46001;
+const MAX_PENDING_TELEMETRY_BYTES_PER_CLIENT: usize = 256 * 1024;
 
 pub(crate) struct DevThruportHooks {
     _console_input: Option<Box<dyn ConsoleInputQueueHook + Send>>,
@@ -106,10 +108,31 @@ struct TcpRemoteConsoleTransport {
     clients: Vec<ClientConn>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutboundClass {
+    Control,
+    Telemetry,
+}
+
+#[derive(Debug)]
+struct OutboundChunk {
+    class: OutboundClass,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct OutboundChunkState {
+    chunk: OutboundChunk,
+    written: usize,
+}
+
 #[derive(Debug)]
 struct ClientConn {
     stream: TcpStream,
     read_buf: Vec<u8>,
+    active_chunk: Option<OutboundChunkState>,
+    queued_chunks: VecDeque<OutboundChunk>,
+    queued_telemetry_bytes: usize,
 }
 
 impl TcpRemoteConsoleTransport {
@@ -125,7 +148,9 @@ impl TcpRemoteConsoleTransport {
 
     fn poll_lines(&mut self, out: &mut Vec<String>) -> bool {
         self.accept_pending_clients();
-        self.poll_client_lines(out)
+        let removed_during_read = self.poll_client_lines(out);
+        let removed_during_flush = self.flush_all_client_outbound();
+        removed_during_read || removed_during_flush
     }
 
     fn accept_pending_clients(&mut self) {
@@ -142,6 +167,9 @@ impl TcpRemoteConsoleTransport {
                     self.clients.push(ClientConn {
                         stream,
                         read_buf: Vec::new(),
+                        active_chunk: None,
+                        queued_chunks: VecDeque::new(),
+                        queued_telemetry_bytes: 0,
                     });
                 }
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
@@ -192,58 +220,36 @@ impl TcpRemoteConsoleTransport {
     }
 
     fn send_output_lines(&mut self, lines: &[String]) -> bool {
-        if lines.is_empty() {
-            return false;
-        }
-
-        let mut removed_any = false;
-        let mut index = 0usize;
-        while index < self.clients.len() {
-            let mut remove_client = false;
-            {
-                let client = &mut self.clients[index];
-                for line in lines {
-                    if let Err(err) = write_line_non_blocking(&mut client.stream, line) {
-                        if err.kind() == io::ErrorKind::WouldBlock {
-                            break;
-                        }
-
-                        warn!(error = %err, "thruport_client_write_failed");
-                        remove_client = true;
-                        break;
-                    }
-                }
-            }
-
-            if remove_client {
-                self.clients.swap_remove(index);
-                removed_any = true;
-            } else {
-                index += 1;
+        for client in &mut self.clients {
+            for line in lines {
+                enqueue_control_line(client, line);
             }
         }
-        removed_any
+        self.flush_all_client_outbound()
     }
 
     fn send_frame_line(&mut self, line: &str) -> bool {
+        for client in &mut self.clients {
+            enqueue_telemetry_line_with_cap(client, line, MAX_PENDING_TELEMETRY_BYTES_PER_CLIENT);
+        }
+        self.flush_all_client_outbound()
+    }
+
+    fn flush_all_client_outbound(&mut self) -> bool {
         let mut removed_any = false;
         let mut index = 0usize;
         while index < self.clients.len() {
-            let mut remove_client = false;
-            {
+            let flush_result = {
                 let client = &mut self.clients[index];
-                if let Err(err) = write_line_non_blocking(&mut client.stream, line) {
-                    if err.kind() == io::ErrorKind::WouldBlock {
-                        index += 1;
-                        continue;
-                    }
-
-                    warn!(error = %err, "thruport_client_write_failed");
-                    remove_client = true;
-                }
-            }
-
-            if remove_client {
+                flush_pending_chunks(
+                    &mut client.active_chunk,
+                    &mut client.queued_chunks,
+                    &mut client.queued_telemetry_bytes,
+                    |payload| client.stream.write(payload),
+                )
+            };
+            if let Err(err) = flush_result {
+                warn!(error = %err, "thruport_client_write_failed");
                 self.clients.swap_remove(index);
                 removed_any = true;
             } else {
@@ -388,14 +394,84 @@ fn drain_complete_lines(buffer: &mut Vec<u8>, out: &mut Vec<String>) {
     }
 }
 
-fn write_line_non_blocking(stream: &mut TcpStream, line: &str) -> io::Result<()> {
+fn encode_line_payload(line: &str) -> Vec<u8> {
     let mut payload = Vec::with_capacity(line.len() + 1);
     payload.extend_from_slice(line.as_bytes());
     payload.push(b'\n');
+    payload
+}
 
-    let mut written = 0usize;
-    while written < payload.len() {
-        match stream.write(&payload[written..]) {
+fn enqueue_control_line(client: &mut ClientConn, line: &str) {
+    let chunk = OutboundChunk {
+        class: OutboundClass::Control,
+        bytes: encode_line_payload(line),
+    };
+    let insert_at = client
+        .queued_chunks
+        .iter()
+        .position(|existing| existing.class == OutboundClass::Telemetry)
+        .unwrap_or(client.queued_chunks.len());
+    client.queued_chunks.insert(insert_at, chunk);
+}
+
+fn enqueue_telemetry_line_with_cap(client: &mut ClientConn, line: &str, telemetry_cap: usize) {
+    let chunk = OutboundChunk {
+        class: OutboundClass::Telemetry,
+        bytes: encode_line_payload(line),
+    };
+    let chunk_bytes = chunk.bytes.len();
+    if chunk_bytes > telemetry_cap {
+        return;
+    }
+
+    while client.queued_telemetry_bytes.saturating_add(chunk_bytes) > telemetry_cap {
+        if !evict_oldest_queued_telemetry(client) {
+            return;
+        }
+    }
+
+    client.queued_telemetry_bytes = client.queued_telemetry_bytes.saturating_add(chunk_bytes);
+    client.queued_chunks.push_back(chunk);
+}
+
+fn evict_oldest_queued_telemetry(client: &mut ClientConn) -> bool {
+    let Some(index) = client
+        .queued_chunks
+        .iter()
+        .position(|chunk| chunk.class == OutboundClass::Telemetry)
+    else {
+        return false;
+    };
+    let removed = client.queued_chunks.remove(index).expect("index exists");
+    client.queued_telemetry_bytes = client
+        .queued_telemetry_bytes
+        .saturating_sub(removed.bytes.len());
+    true
+}
+
+fn flush_pending_chunks<F>(
+    active_chunk: &mut Option<OutboundChunkState>,
+    queued_chunks: &mut VecDeque<OutboundChunk>,
+    queued_telemetry_bytes: &mut usize,
+    mut write_payload: F,
+) -> io::Result<()>
+where
+    F: FnMut(&[u8]) -> io::Result<usize>,
+{
+    loop {
+        if active_chunk.is_none() {
+            let Some(chunk) = queued_chunks.pop_front() else {
+                return Ok(());
+            };
+            if chunk.class == OutboundClass::Telemetry {
+                *queued_telemetry_bytes = queued_telemetry_bytes.saturating_sub(chunk.bytes.len());
+            }
+            *active_chunk = Some(OutboundChunkState { chunk, written: 0 });
+        }
+
+        let state = active_chunk.as_mut().expect("active chunk");
+        let remaining = &state.chunk.bytes[state.written..];
+        match write_payload(remaining) {
             Ok(0) => {
                 return Err(io::Error::new(
                     io::ErrorKind::WriteZero,
@@ -403,13 +479,15 @@ fn write_line_non_blocking(stream: &mut TcpStream, line: &str) -> io::Result<()>
                 ));
             }
             Ok(bytes_written) => {
-                written += bytes_written;
+                state.written = state.written.saturating_add(bytes_written);
+                if state.written >= state.chunk.bytes.len() {
+                    *active_chunk = None;
+                }
             }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => return Ok(()),
             Err(err) => return Err(err),
         }
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -421,10 +499,26 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        initialize, localhost_bind_addr, parse_enabled_flag, parse_port_or_default, DevThruport,
-        DevThruportConfig, DevThruportHooks, DevThruportMode, TcpRemoteConsoleTransport,
+        encode_line_payload, enqueue_control_line, enqueue_telemetry_line_with_cap,
+        flush_pending_chunks, initialize, localhost_bind_addr, parse_enabled_flag,
+        parse_port_or_default, DevThruport, DevThruportConfig, DevThruportHooks, DevThruportMode,
+        OutboundChunk, OutboundChunkState, OutboundClass, TcpRemoteConsoleTransport,
         THRUPORT_DEFAULT_PORT,
     };
+
+    fn make_client_conn_for_queue_tests() -> super::ClientConn {
+        let listener = std::net::TcpListener::bind(localhost_bind_addr(0)).expect("bind");
+        listener.set_nonblocking(true).expect("listener nonblocking");
+        let addr = listener.local_addr().expect("addr");
+        let stream = TcpStream::connect(addr).expect("connect");
+        super::ClientConn {
+            stream,
+            read_buf: Vec::new(),
+            active_chunk: None,
+            queued_chunks: std::collections::VecDeque::new(),
+            queued_telemetry_bytes: 0,
+        }
+    }
 
     #[test]
     fn initialize_no_op_constructs_without_panic() {
@@ -643,6 +737,156 @@ mod tests {
         }
 
         assert!(received.ends_with(expected));
+    }
+
+    #[test]
+    fn wouldblock_retains_active_chunk_and_queue_order() {
+        let mut active_chunk = None;
+        let mut queued_chunks = std::collections::VecDeque::new();
+        let mut queued_telemetry_bytes = 0usize;
+        queued_chunks.push_back(OutboundChunk {
+            class: OutboundClass::Control,
+            bytes: encode_line_payload("ok: sync"),
+        });
+        queued_chunks.push_back(OutboundChunk {
+            class: OutboundClass::Control,
+            bytes: encode_line_payload("ok: sim paused"),
+        });
+        let telemetry = OutboundChunk {
+            class: OutboundClass::Telemetry,
+            bytes: encode_line_payload("thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0"),
+        };
+        queued_telemetry_bytes = telemetry.bytes.len();
+        queued_chunks.push_back(telemetry);
+
+        let mut first = true;
+        let _ = flush_pending_chunks(
+            &mut active_chunk,
+            &mut queued_chunks,
+            &mut queued_telemetry_bytes,
+            |payload| {
+                if first {
+                    first = false;
+                    Ok(payload.len().min(3))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::WouldBlock, "blocked"))
+                }
+            },
+        );
+
+        let active = active_chunk.expect("active chunk retained");
+        assert_eq!(active.chunk.class, OutboundClass::Control);
+        assert!(active.written > 0);
+        assert_eq!(queued_chunks.len(), 2);
+        assert_eq!(queued_chunks[0].class, OutboundClass::Control);
+        assert_eq!(queued_chunks[1].class, OutboundClass::Telemetry);
+    }
+
+    #[test]
+    fn control_never_dropped_under_telemetry_pressure() {
+        let mut client = make_client_conn_for_queue_tests();
+        let cap = 64usize;
+        for i in 0..50 {
+            enqueue_telemetry_line_with_cap(
+                &mut client,
+                &format!(
+                    "thruport.frame v1 tick:{i} paused:1 qtick:0 ev:0 in:0 in_bad:0"
+                ),
+                cap,
+            );
+        }
+        enqueue_control_line(&mut client, "ok: sync");
+
+        let has_control = client
+            .queued_chunks
+            .iter()
+            .any(|chunk| chunk.class == OutboundClass::Control);
+        assert!(has_control);
+        assert!(client.queued_telemetry_bytes <= cap);
+    }
+
+    #[test]
+    fn telemetry_eviction_only_affects_telemetry() {
+        let mut client = make_client_conn_for_queue_tests();
+        let cap = 64usize;
+        enqueue_control_line(&mut client, "ok: sync");
+        enqueue_control_line(&mut client, "ok: sim paused");
+        let controls_before: Vec<Vec<u8>> = client
+            .queued_chunks
+            .iter()
+            .filter(|chunk| chunk.class == OutboundClass::Control)
+            .map(|chunk| chunk.bytes.clone())
+            .collect();
+
+        for i in 0..80 {
+            enqueue_telemetry_line_with_cap(
+                &mut client,
+                &format!(
+                    "thruport.frame v1 tick:{i} paused:1 qtick:0 ev:0 in:0 in_bad:0"
+                ),
+                cap,
+            );
+        }
+
+        let controls_after: Vec<Vec<u8>> = client
+            .queued_chunks
+            .iter()
+            .filter(|chunk| chunk.class == OutboundClass::Control)
+            .map(|chunk| chunk.bytes.clone())
+            .collect();
+        assert_eq!(controls_before, controls_after);
+        assert!(client.queued_telemetry_bytes <= cap);
+    }
+
+    #[test]
+    fn poll_flush_drains_without_new_sends() {
+        let mut transport = TcpRemoteConsoleTransport::bind_localhost(0).expect("bind");
+        let addr = transport.listener.local_addr().expect("local_addr");
+        let mut client = TcpStream::connect(addr).expect("connect");
+        client
+            .set_nonblocking(true)
+            .expect("set_nonblocking_client");
+
+        let mut ignored = Vec::new();
+        for _ in 0..20 {
+            transport.poll_lines(&mut ignored);
+            if transport.clients.len() == 1 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(transport.clients.len(), 1);
+
+        transport.clients[0].active_chunk = Some(OutboundChunkState {
+            chunk: OutboundChunk {
+                class: OutboundClass::Telemetry,
+                bytes: encode_line_payload(
+                    "thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0",
+                ),
+            },
+            written: 0,
+        });
+        enqueue_control_line(&mut transport.clients[0], "ok: sync");
+
+        let mut received = Vec::new();
+        for _ in 0..60 {
+            transport.poll_lines(&mut ignored);
+            let mut chunk = [0u8; 256];
+            match client.read(&mut chunk) {
+                Ok(bytes_read) if bytes_read > 0 => {
+                    received.extend_from_slice(&chunk[..bytes_read]);
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                Err(err) => panic!("unexpected read error: {err}"),
+            }
+
+            if String::from_utf8_lossy(&received).contains("ok: sync\n") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(String::from_utf8_lossy(&received).contains("ok: sync\n"));
     }
 
     #[test]
