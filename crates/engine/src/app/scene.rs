@@ -360,7 +360,7 @@ pub enum DebugJobState {
     Working { remaining_time: f32 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DebugInfoSnapshot {
     pub selected_entity: Option<EntityId>,
     pub selected_position_world: Option<Vec2>,
@@ -370,6 +370,7 @@ pub struct DebugInfoSnapshot {
     pub actor_count: usize,
     pub interactable_count: usize,
     pub resource_count: u32,
+    pub system_order: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -951,6 +952,7 @@ mod tests {
                 actor_count: 0,
                 interactable_count: 0,
                 resource_count: 0,
+                system_order: "test_order".to_string(),
             })
         }
     }

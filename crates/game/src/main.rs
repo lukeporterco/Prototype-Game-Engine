@@ -24,6 +24,41 @@ const SAVE_VERSION: u32 = 3;
 const SCENE_A_SAVE_FILE: &str = "scene_a.save.json";
 const SCENE_B_SAVE_FILE: &str = "scene_b.save.json";
 const ORDER_MARKER_TTL_SECONDS: f32 = 0.75;
+const GAMEPLAY_SYSTEM_ORDER_TEXT: &str =
+    "InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GameplaySystemId {
+    InputIntent,
+    Interaction,
+    AI,
+    CombatResolution,
+    StatusEffects,
+    Cleanup,
+}
+
+impl GameplaySystemId {
+    #[cfg(test)]
+    fn name(self) -> &'static str {
+        match self {
+            Self::InputIntent => "InputIntent",
+            Self::Interaction => "Interaction",
+            Self::AI => "AI",
+            Self::CombatResolution => "CombatResolution",
+            Self::StatusEffects => "StatusEffects",
+            Self::Cleanup => "Cleanup",
+        }
+    }
+}
+
+const GAMEPLAY_SYSTEM_ORDER: [GameplaySystemId; 6] = [
+    GameplaySystemId::InputIntent,
+    GameplaySystemId::Interaction,
+    GameplaySystemId::AI,
+    GameplaySystemId::CombatResolution,
+    GameplaySystemId::StatusEffects,
+    GameplaySystemId::Cleanup,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum SavedSceneKey {
@@ -111,6 +146,161 @@ struct SaveGame {
 
 type SaveLoadResult<T> = Result<T, String>;
 
+#[derive(Clone, Copy)]
+struct WorldView<'a> {
+    world: &'a SceneWorld,
+}
+
+impl<'a> WorldView<'a> {
+    fn new(world: &'a SceneWorld) -> Self {
+        Self { world }
+    }
+
+    fn camera(&self) -> &engine::Camera2D {
+        self.world.camera()
+    }
+
+    fn entities(&self) -> &[engine::Entity] {
+        self.world.entities()
+    }
+
+    fn find_entity(&self, id: EntityId) -> Option<&engine::Entity> {
+        self.world.find_entity(id)
+    }
+
+    fn pick_topmost_selectable_at_cursor(
+        &self,
+        cursor_position_px: Vec2,
+        window_size: (u32, u32),
+    ) -> Option<EntityId> {
+        self.world
+            .pick_topmost_selectable_at_cursor(cursor_position_px, window_size)
+    }
+
+    fn pick_topmost_interactable_at_cursor(
+        &self,
+        cursor_position_px: Vec2,
+        window_size: (u32, u32),
+    ) -> Option<EntityId> {
+        self.world
+            .pick_topmost_interactable_at_cursor(cursor_position_px, window_size)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GameplayEvent {
+    SystemRan(GameplaySystemId),
+}
+
+#[derive(Default)]
+struct GameplayEventBus {
+    events: Vec<GameplayEvent>,
+}
+
+impl GameplayEventBus {
+    fn clear(&mut self) {
+        self.events.clear();
+    }
+
+    fn emit(&mut self, event: GameplayEvent) {
+        self.events.push(event);
+    }
+
+    fn take_all(&mut self) -> Vec<GameplayEvent> {
+        std::mem::take(&mut self.events)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum GameplayIntent {
+    ApplyGameplayTick,
+}
+
+#[derive(Default)]
+struct GameplayIntentQueue {
+    intents: Vec<GameplayIntent>,
+}
+
+impl GameplayIntentQueue {
+    fn clear(&mut self) {
+        self.intents.clear();
+    }
+
+    fn push(&mut self, intent: GameplayIntent) {
+        self.intents.push(intent);
+    }
+
+    fn take_all(&mut self) -> Vec<GameplayIntent> {
+        std::mem::take(&mut self.intents)
+    }
+}
+
+struct GameplaySystemContext<'a> {
+    fixed_dt_seconds: f32,
+    world_view: WorldView<'a>,
+    input: &'a InputSnapshot,
+    events: &'a mut GameplayEventBus,
+    intents: &'a mut GameplayIntentQueue,
+}
+
+#[derive(Default)]
+struct GameplaySystemsHost {
+    last_tick_order: Vec<GameplaySystemId>,
+}
+
+impl GameplaySystemsHost {
+    fn run_once_per_tick(
+        &mut self,
+        fixed_dt_seconds: f32,
+        world_view: WorldView<'_>,
+        input: &InputSnapshot,
+        events: &mut GameplayEventBus,
+        intents: &mut GameplayIntentQueue,
+    ) {
+        self.last_tick_order.clear();
+        for system_id in GAMEPLAY_SYSTEM_ORDER {
+            self.last_tick_order.push(system_id);
+            let mut context = GameplaySystemContext {
+                fixed_dt_seconds,
+                world_view,
+                input,
+                events,
+                intents,
+            };
+            self.run_system(system_id, &mut context);
+            context.events.emit(GameplayEvent::SystemRan(system_id));
+        }
+    }
+
+    fn run_system(&self, system_id: GameplaySystemId, context: &mut GameplaySystemContext<'_>) {
+        match system_id {
+            GameplaySystemId::InputIntent => {
+                let _ = context.fixed_dt_seconds;
+                let _ = context.world_view.entities().len();
+                let _ = context.world_view.camera().zoom;
+                let _ = context.world_view.find_entity(EntityId(0));
+                if let Some(cursor_px) = context.input.cursor_position_px() {
+                    let window_size = context.input.window_size();
+                    let _ = context
+                        .world_view
+                        .pick_topmost_selectable_at_cursor(cursor_px, window_size);
+                    let _ = context
+                        .world_view
+                        .pick_topmost_interactable_at_cursor(cursor_px, window_size);
+                }
+                context.intents.push(GameplayIntent::ApplyGameplayTick);
+            }
+            GameplaySystemId::Interaction
+            | GameplaySystemId::AI
+            | GameplaySystemId::CombatResolution
+            | GameplaySystemId::StatusEffects
+            | GameplaySystemId::Cleanup => {
+                let _ = context.input.quit_requested();
+            }
+        }
+    }
+}
+
 struct GameplayScene {
     scene_name: &'static str,
     switch_target: SceneKey,
@@ -125,6 +315,10 @@ struct GameplayScene {
     entity_save_ids: HashMap<EntityId, u64>,
     save_id_to_entity: HashMap<u64, EntityId>,
     next_save_id: u64,
+    systems_host: GameplaySystemsHost,
+    system_events: GameplayEventBus,
+    system_intents: GameplayIntentQueue,
+    system_order_text: String,
 }
 
 impl GameplayScene {
@@ -143,6 +337,10 @@ impl GameplayScene {
             entity_save_ids: HashMap::new(),
             save_id_to_entity: HashMap::new(),
             next_save_id: 0,
+            systems_host: GameplaySystemsHost::default(),
+            system_events: GameplayEventBus::default(),
+            system_intents: GameplayIntentQueue::default(),
+            system_order_text: String::new(),
         }
     }
 
@@ -702,139 +900,46 @@ impl GameplayScene {
     }
 }
 
-impl Scene for GameplayScene {
-    fn load(&mut self, world: &mut SceneWorld) {
-        self.entity_save_ids.clear();
-        self.save_id_to_entity.clear();
-        self.next_save_id = 0;
-        let player_archetype = resolve_player_archetype(world);
-        let pile_archetype = resolve_resource_pile_archetype(world);
-        world.set_tilemap(build_ground_tilemap(self.scene_key()));
-        self.player_move_speed = player_archetype.move_speed;
-        let player_id = world.spawn_actor(
-            Transform {
-                position: self.player_spawn,
-                rotation_radians: None,
-            },
-            RenderableDesc {
-                kind: player_archetype.renderable.clone(),
-                debug_name: "player",
-            },
-        );
-        let unit_a = world.spawn_actor(
-            Transform {
-                position: Vec2 {
-                    x: self.player_spawn.x + 2.0,
-                    y: self.player_spawn.y,
-                },
-                rotation_radians: None,
-            },
-            RenderableDesc {
-                kind: player_archetype.renderable.clone(),
-                debug_name: "unit_a",
-            },
-        );
-        let unit_b = world.spawn_actor(
-            Transform {
-                position: Vec2 {
-                    x: self.player_spawn.x - 2.0,
-                    y: self.player_spawn.y + 1.0,
-                },
-                rotation_radians: None,
-            },
-            RenderableDesc {
-                kind: player_archetype.renderable.clone(),
-                debug_name: "unit_b",
-            },
-        );
-        let pile_id = world.spawn(
-            Transform {
-                position: Vec2 {
-                    x: self.player_spawn.x + 4.0,
-                    y: self.player_spawn.y,
-                },
-                rotation_radians: None,
-            },
-            RenderableDesc {
-                kind: pile_archetype.renderable.clone(),
-                debug_name: "resource_pile",
-            },
-        );
-        self.player_id = Some(player_id);
-        self.selected_entity = None;
-        self.resource_count = 0;
-        self.interactable_cache.clear();
-        self.interactable_lookup_by_save_id.clear();
-        self.completed_target_ids.clear();
-        world.apply_pending();
-        for id in [player_id, unit_a, unit_b] {
-            if let Some(entity) = world.find_entity_mut(id) {
-                entity.selectable = true;
-            }
-        }
-        if let Some(pile) = world.find_entity_mut(pile_id) {
-            pile.interactable = Some(Interactable {
-                kind: InteractableKind::ResourcePile,
-                interaction_radius: RESOURCE_PILE_INTERACTION_RADIUS,
-                remaining_uses: RESOURCE_PILE_STARTING_USES,
-            });
-        }
-        self.sync_save_id_map_with_world(world)
-            .expect("initial save_id assignment should not fail");
-        info!(
-            scene = self.scene_name,
-            entity_count = world.entity_count(),
-            "scene_loaded"
+impl GameplayScene {
+    fn run_gameplay_systems_once(
+        &mut self,
+        fixed_dt_seconds: f32,
+        input: &InputSnapshot,
+        world: &SceneWorld,
+    ) {
+        self.system_events.clear();
+        self.system_intents.clear();
+        self.systems_host.run_once_per_tick(
+            fixed_dt_seconds,
+            WorldView::new(world),
+            input,
+            &mut self.system_events,
+            &mut self.system_intents,
         );
     }
 
-    fn update(
+    fn apply_system_outputs(
         &mut self,
         fixed_dt_seconds: f32,
         input: &InputSnapshot,
         world: &mut SceneWorld,
-    ) -> SceneCommand {
-        if input.save_pressed() {
-            match self.save_to_disk(world) {
-                Ok(path) => info!(
-                    scene = self.scene_name,
-                    path = %path.display(),
-                    "save_written"
-                ),
-                Err(error) => warn!(
-                    scene = self.scene_name,
-                    error = %error,
-                    "save_failed"
-                ),
-            }
-        }
-
-        if input.load_pressed() {
-            let expected_scene = SavedSceneKey::from_scene_key(self.scene_key());
-            match self.load_and_validate_save(expected_scene) {
-                Ok(save) => {
-                    if let Err(error) = self.apply_save_game(save, world) {
-                        warn!(
-                            scene = self.scene_name,
-                            error = %error,
-                            "load_apply_failed"
-                        );
-                    } else {
-                        info!(scene = self.scene_name, "save_loaded");
-                    }
+    ) {
+        for intent in self.system_intents.take_all() {
+            match intent {
+                GameplayIntent::ApplyGameplayTick => {
+                    self.apply_gameplay_tick_at_safe_point(fixed_dt_seconds, input, world);
                 }
-                Err(error) => warn!(
-                    scene = self.scene_name,
-                    error = %error,
-                    "load_failed"
-                ),
             }
         }
+        let _ = self.system_events.take_all();
+    }
 
-        if input.switch_scene_pressed() {
-            return SceneCommand::SwitchTo(self.switch_target);
-        }
-
+    fn apply_gameplay_tick_at_safe_point(
+        &mut self,
+        fixed_dt_seconds: f32,
+        input: &InputSnapshot,
+        world: &mut SceneWorld,
+    ) {
         world
             .camera_mut()
             .apply_zoom_steps(input.zoom_delta_steps());
@@ -1035,6 +1140,147 @@ impl Scene for GameplayScene {
         let camera_delta = camera_delta(input, fixed_dt_seconds, CAMERA_SPEED_UNITS_PER_SECOND);
         world.camera_mut().position.x += camera_delta.x;
         world.camera_mut().position.y += camera_delta.y;
+    }
+}
+
+impl Scene for GameplayScene {
+    fn load(&mut self, world: &mut SceneWorld) {
+        self.entity_save_ids.clear();
+        self.save_id_to_entity.clear();
+        self.next_save_id = 0;
+        let player_archetype = resolve_player_archetype(world);
+        let pile_archetype = resolve_resource_pile_archetype(world);
+        world.set_tilemap(build_ground_tilemap(self.scene_key()));
+        self.player_move_speed = player_archetype.move_speed;
+        let player_id = world.spawn_actor(
+            Transform {
+                position: self.player_spawn,
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: player_archetype.renderable.clone(),
+                debug_name: "player",
+            },
+        );
+        let unit_a = world.spawn_actor(
+            Transform {
+                position: Vec2 {
+                    x: self.player_spawn.x + 2.0,
+                    y: self.player_spawn.y,
+                },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: player_archetype.renderable.clone(),
+                debug_name: "unit_a",
+            },
+        );
+        let unit_b = world.spawn_actor(
+            Transform {
+                position: Vec2 {
+                    x: self.player_spawn.x - 2.0,
+                    y: self.player_spawn.y + 1.0,
+                },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: player_archetype.renderable.clone(),
+                debug_name: "unit_b",
+            },
+        );
+        let pile_id = world.spawn(
+            Transform {
+                position: Vec2 {
+                    x: self.player_spawn.x + 4.0,
+                    y: self.player_spawn.y,
+                },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: pile_archetype.renderable.clone(),
+                debug_name: "resource_pile",
+            },
+        );
+        self.player_id = Some(player_id);
+        self.selected_entity = None;
+        self.resource_count = 0;
+        self.interactable_cache.clear();
+        self.interactable_lookup_by_save_id.clear();
+        self.completed_target_ids.clear();
+        self.system_order_text = GAMEPLAY_SYSTEM_ORDER_TEXT.to_string();
+        world.apply_pending();
+        for id in [player_id, unit_a, unit_b] {
+            if let Some(entity) = world.find_entity_mut(id) {
+                entity.selectable = true;
+            }
+        }
+        if let Some(pile) = world.find_entity_mut(pile_id) {
+            pile.interactable = Some(Interactable {
+                kind: InteractableKind::ResourcePile,
+                interaction_radius: RESOURCE_PILE_INTERACTION_RADIUS,
+                remaining_uses: RESOURCE_PILE_STARTING_USES,
+            });
+        }
+        self.sync_save_id_map_with_world(world)
+            .expect("initial save_id assignment should not fail");
+        info!(
+            scene = self.scene_name,
+            entity_count = world.entity_count(),
+            sys = %self.system_order_text,
+            "scene_loaded"
+        );
+        info!(scene = self.scene_name, "sys: {}", self.system_order_text);
+    }
+
+    fn update(
+        &mut self,
+        fixed_dt_seconds: f32,
+        input: &InputSnapshot,
+        world: &mut SceneWorld,
+    ) -> SceneCommand {
+        if input.save_pressed() {
+            match self.save_to_disk(world) {
+                Ok(path) => info!(
+                    scene = self.scene_name,
+                    path = %path.display(),
+                    "save_written"
+                ),
+                Err(error) => warn!(
+                    scene = self.scene_name,
+                    error = %error,
+                    "save_failed"
+                ),
+            }
+        }
+
+        if input.load_pressed() {
+            let expected_scene = SavedSceneKey::from_scene_key(self.scene_key());
+            match self.load_and_validate_save(expected_scene) {
+                Ok(save) => {
+                    if let Err(error) = self.apply_save_game(save, world) {
+                        warn!(
+                            scene = self.scene_name,
+                            error = %error,
+                            "load_apply_failed"
+                        );
+                    } else {
+                        info!(scene = self.scene_name, "save_loaded");
+                    }
+                }
+                Err(error) => warn!(
+                    scene = self.scene_name,
+                    error = %error,
+                    "load_failed"
+                ),
+            }
+        }
+
+        if input.switch_scene_pressed() {
+            return SceneCommand::SwitchTo(self.switch_target);
+        }
+
+        self.run_gameplay_systems_once(fixed_dt_seconds, input, world);
+        self.apply_system_outputs(fixed_dt_seconds, input, world);
 
         SceneCommand::None
     }
@@ -1120,6 +1366,9 @@ impl Scene for GameplayScene {
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
         self.next_save_id = 0;
+        self.system_events.clear();
+        self.system_intents.clear();
+        self.system_order_text.clear();
     }
 
     fn debug_title(&self, world: &SceneWorld) -> Option<String> {
@@ -1208,6 +1457,7 @@ impl Scene for GameplayScene {
             actor_count,
             interactable_count,
             resource_count: self.resource_count,
+            system_order: self.system_order_text.clone(),
         })
     }
 }
@@ -1824,6 +2074,53 @@ mod tests {
             .copied()
             .expect("target save id");
         (scene, world, actor_save_id, target_save_id)
+    }
+
+    #[test]
+    fn gameplay_system_order_is_stable_and_expected_names() {
+        let names: Vec<&'static str> = GAMEPLAY_SYSTEM_ORDER
+            .iter()
+            .map(|system_id| system_id.name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "InputIntent",
+                "Interaction",
+                "AI",
+                "CombatResolution",
+                "StatusEffects",
+                "Cleanup",
+            ]
+        );
+        assert_eq!(
+            GAMEPLAY_SYSTEM_ORDER_TEXT,
+            "InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup"
+        );
+    }
+
+    #[test]
+    fn gameplay_systems_host_one_tick_executes_without_panic() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        scene.system_order_text = GAMEPLAY_SYSTEM_ORDER_TEXT.to_string();
+        let mut world = SceneWorld::default();
+        let input = InputSnapshot::empty().with_window_size((1280, 720));
+
+        scene.update(0.1, &input, &mut world);
+        world.apply_pending();
+
+        assert_eq!(
+            scene.systems_host.last_tick_order.len(),
+            GAMEPLAY_SYSTEM_ORDER.len()
+        );
+        for (actual, expected) in scene
+            .systems_host
+            .last_tick_order
+            .iter()
+            .zip(GAMEPLAY_SYSTEM_ORDER.iter())
+        {
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]
@@ -2564,6 +2861,7 @@ mod tests {
     #[test]
     fn debug_info_snapshot_reports_selected_entity_fields_and_counts() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        scene.system_order_text = GAMEPLAY_SYSTEM_ORDER_TEXT.to_string();
         let mut world = SceneWorld::default();
         let actor = world.spawn_actor(
             Transform {
@@ -2614,14 +2912,16 @@ mod tests {
         assert_eq!(snapshot.actor_count, 1);
         assert_eq!(snapshot.interactable_count, 1);
         assert_eq!(snapshot.resource_count, 7);
+        assert_eq!(snapshot.system_order, GAMEPLAY_SYSTEM_ORDER_TEXT);
     }
 
     #[test]
     fn debug_info_snapshot_handles_missing_selected_entity() {
-        let scene = GameplayScene {
+        let mut scene = GameplayScene {
             selected_entity: Some(EntityId(999)),
             ..GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 })
         };
+        scene.system_order_text = GAMEPLAY_SYSTEM_ORDER_TEXT.to_string();
         let world = SceneWorld::default();
         let snapshot = scene
             .debug_info_snapshot(&world)
@@ -2630,6 +2930,7 @@ mod tests {
         assert_eq!(snapshot.selected_position_world, None);
         assert_eq!(snapshot.selected_order_world, None);
         assert_eq!(snapshot.selected_job_state, DebugJobState::None);
+        assert_eq!(snapshot.system_order, GAMEPLAY_SYSTEM_ORDER_TEXT);
     }
 
     #[test]

@@ -10,7 +10,7 @@ const LINE_ADVANCE: i32 = (GLYPH_HEIGHT + 2) * TEXT_SCALE;
 const OVERLAY_PADDING: i32 = 6 * TEXT_SCALE;
 const OVERLAY_COLOR: [u8; 4] = [230, 240, 180, 255];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct OverlayData {
     pub metrics: LoopMetricsSnapshot,
     pub perf: PerfStatsSnapshot,
@@ -70,7 +70,7 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
         format!("items: {}", data.resource_count.unwrap_or(0)),
     ];
 
-    if let Some(debug_info) = data.debug_info {
+    if let Some(debug_info) = data.debug_info.as_ref() {
         lines.push("Inspect".to_string());
         lines.push(match debug_info.selected_entity {
             Some(id) => format!("sel: {}", id.0),
@@ -95,6 +95,7 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
             debug_info.interactable_count,
             debug_info.resource_count
         ));
+        lines.push(format!("sys: {}", debug_info.system_order));
     }
 
     lines
@@ -626,14 +627,20 @@ mod tests {
                 actor_count: 1,
                 interactable_count: 1,
                 resource_count: 2,
+                system_order: "InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup"
+                    .to_string(),
             }),
         };
         let lines = build_overlay_lines(&data);
-        assert_eq!(lines.len(), 16);
+        assert_eq!(lines.len(), 17);
         assert_eq!(lines[10], "Inspect");
         assert_eq!(
+            lines[16],
+            "sys: InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup"
+        );
+        assert_eq!(
             OVERLAY_PADDING + (lines.len() as i32 - 1) * LINE_ADVANCE,
-            333
+            354
         );
     }
 

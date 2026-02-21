@@ -112,3 +112,10 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - Scene switching semantics remain as implemented (persistent worlds per scene; explicit hard reset path).
 - Console commands that mutate gameplay route through a scene debug hook, not through loop runner directly.
 
+## Ticket 33 Systems Seam (2026-02-21)
+- `GameplayScene` now owns a `GameplaySystemsHost` lane in `crates/game/src/main.rs` and runs it exactly once per tick before a single post-host mutation apply point.
+- Deterministic system order is explicit and fixed: `InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup` (ASCII-only).
+- Systems receive `GameplaySystemContext` with `WorldView` (read-only wrapper over `SceneWorld`), tick input, and scene-local event/intent buffers.
+- Systems do not mutate `SceneWorld` directly; world/entity mutations are applied only in `apply_gameplay_tick_at_safe_point`.
+- Debug seam change: `DebugInfoSnapshot.system_order` is now owned `String` and overlay shows `sys: <order>`.
+
