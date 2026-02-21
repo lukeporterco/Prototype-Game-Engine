@@ -160,21 +160,8 @@ impl<'a> WorldView<'a> {
         self.world.camera()
     }
 
-    fn entities(&self) -> &[engine::Entity] {
-        self.world.entities()
-    }
-
     fn find_entity(&self, id: EntityId) -> Option<&engine::Entity> {
         self.world.find_entity(id)
-    }
-
-    fn pick_topmost_selectable_at_cursor(
-        &self,
-        cursor_position_px: Vec2,
-        window_size: (u32, u32),
-    ) -> Option<EntityId> {
-        self.world
-            .pick_topmost_selectable_at_cursor(cursor_position_px, window_size)
     }
 
     fn pick_topmost_interactable_at_cursor(
@@ -189,6 +176,18 @@ impl<'a> WorldView<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct StatusId(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct InteractionId(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ActiveInteraction {
+    actor_id: EntityId,
+    target_id: EntityId,
+    interaction_id: InteractionId,
+    duration_seconds: f32,
+    remaining_seconds: Option<f32>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GameplayEvent {
@@ -334,6 +333,9 @@ enum GameplayIntent {
         actor_id: EntityId,
         target_id: EntityId,
     },
+    CancelInteraction {
+        actor_id: EntityId,
+    },
     CompleteInteraction {
         actor_id: EntityId,
         target_id: EntityId,
@@ -348,6 +350,7 @@ enum GameplayIntentKind {
     AddStatus,
     RemoveStatus,
     StartInteraction,
+    CancelInteraction,
     CompleteInteraction,
 }
 
@@ -360,6 +363,7 @@ impl GameplayIntent {
             Self::AddStatus { .. } => GameplayIntentKind::AddStatus,
             Self::RemoveStatus { .. } => GameplayIntentKind::RemoveStatus,
             Self::StartInteraction { .. } => GameplayIntentKind::StartInteraction,
+            Self::CancelInteraction { .. } => GameplayIntentKind::CancelInteraction,
             Self::CompleteInteraction { .. } => GameplayIntentKind::CompleteInteraction,
         }
     }
@@ -374,6 +378,7 @@ struct GameplayIntentApplyStats {
     add_status: u32,
     remove_status: u32,
     start_interaction: u32,
+    cancel_interaction: u32,
     complete_interaction: u32,
     invalid_target_count: u32,
     spawned_entity_ids: Vec<EntityId>,
@@ -398,6 +403,9 @@ impl GameplayIntentApplyStats {
             }
             GameplayIntentKind::StartInteraction => {
                 self.start_interaction = self.start_interaction.saturating_add(1)
+            }
+            GameplayIntentKind::CancelInteraction => {
+                self.cancel_interaction = self.cancel_interaction.saturating_add(1)
             }
             GameplayIntentKind::CompleteInteraction => {
                 self.complete_interaction = self.complete_interaction.saturating_add(1)
@@ -438,6 +446,10 @@ struct GameplaySystemContext<'a> {
     fixed_dt_seconds: f32,
     world_view: WorldView<'a>,
     input: &'a InputSnapshot,
+    selected_entity: Option<EntityId>,
+    active_interactions_by_actor: &'a mut HashMap<EntityId, ActiveInteraction>,
+    next_interaction_id: &'a mut u64,
+    selected_completion_enqueued_this_tick: &'a mut bool,
     events: &'a mut GameplayEventBus,
     intents: &'a mut GameplayIntentQueue,
 }
@@ -453,6 +465,10 @@ impl GameplaySystemsHost {
         fixed_dt_seconds: f32,
         world_view: WorldView<'_>,
         input: &InputSnapshot,
+        selected_entity: Option<EntityId>,
+        active_interactions_by_actor: &mut HashMap<EntityId, ActiveInteraction>,
+        next_interaction_id: &mut u64,
+        selected_completion_enqueued_this_tick: &mut bool,
         events: &mut GameplayEventBus,
         intents: &mut GameplayIntentQueue,
     ) {
@@ -463,10 +479,197 @@ impl GameplaySystemsHost {
                 fixed_dt_seconds,
                 world_view,
                 input,
+                selected_entity,
+                active_interactions_by_actor,
+                next_interaction_id,
+                selected_completion_enqueued_this_tick,
                 events,
                 intents,
             };
             self.run_system(system_id, &mut context);
+        }
+    }
+
+    fn alloc_interaction_id(next_interaction_id: &mut u64) -> InteractionId {
+        let id = *next_interaction_id;
+        *next_interaction_id = next_interaction_id.saturating_add(1);
+        InteractionId(id)
+    }
+
+    fn interaction_duration_seconds_for_target(target: &engine::Entity) -> f32 {
+        if target.interactable.is_some() {
+            JOB_DURATION_SECONDS
+        } else {
+            0.0
+        }
+    }
+
+    fn within_interaction_range(actor: &engine::Entity, target: &engine::Entity) -> bool {
+        let Some(interactable) = target.interactable else {
+            return false;
+        };
+        let dx = target.transform.position.x - actor.transform.position.x;
+        let dy = target.transform.position.y - actor.transform.position.y;
+        let range_sq = interactable.interaction_radius * interactable.interaction_radius;
+        dx * dx + dy * dy <= range_sq
+    }
+
+    fn run_input_intent_system(&self, context: &mut GameplaySystemContext<'_>) {
+        if !context.input.right_click_pressed() {
+            return;
+        }
+        let Some(actor_id) = context.selected_entity else {
+            return;
+        };
+        let Some(cursor_px) = context.input.cursor_position_px() else {
+            return;
+        };
+        let window_size = context.input.window_size();
+        let Some(target_id) = context
+            .world_view
+            .pick_topmost_interactable_at_cursor(cursor_px, window_size)
+        else {
+            return;
+        };
+
+        let Some(actor) = context.world_view.find_entity(actor_id) else {
+            return;
+        };
+        if !actor.actor {
+            return;
+        }
+        let Some(target) = context.world_view.find_entity(target_id) else {
+            return;
+        };
+        if target.interactable.is_none() {
+            return;
+        }
+
+        if context.active_interactions_by_actor.contains_key(&actor_id) {
+            context
+                .intents
+                .enqueue(GameplayIntent::CancelInteraction { actor_id });
+        }
+
+        let interaction_id = Self::alloc_interaction_id(context.next_interaction_id);
+        let duration_seconds = Self::interaction_duration_seconds_for_target(target);
+        context.active_interactions_by_actor.insert(
+            actor_id,
+            ActiveInteraction {
+                actor_id,
+                target_id,
+                interaction_id,
+                duration_seconds,
+                remaining_seconds: None,
+            },
+        );
+        context.events.emit(GameplayEvent::InteractionStarted {
+            actor_id,
+            target_id,
+        });
+        context.intents.enqueue(GameplayIntent::StartInteraction {
+            actor_id,
+            target_id,
+        });
+    }
+
+    fn run_interaction_system(&self, context: &mut GameplaySystemContext<'_>) {
+        let mut actor_ids = context
+            .active_interactions_by_actor
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        actor_ids.sort_by_key(|id| id.0);
+
+        for actor_id in actor_ids {
+            let Some(mut interaction) =
+                context.active_interactions_by_actor.get(&actor_id).copied()
+            else {
+                continue;
+            };
+            let Some(actor) = context.world_view.find_entity(interaction.actor_id) else {
+                context
+                    .intents
+                    .enqueue(GameplayIntent::CancelInteraction { actor_id });
+                context.active_interactions_by_actor.remove(&actor_id);
+                continue;
+            };
+            if !actor.actor {
+                context
+                    .intents
+                    .enqueue(GameplayIntent::CancelInteraction { actor_id });
+                context.active_interactions_by_actor.remove(&actor_id);
+                continue;
+            }
+            let Some(target) = context.world_view.find_entity(interaction.target_id) else {
+                context
+                    .intents
+                    .enqueue(GameplayIntent::CancelInteraction { actor_id });
+                context.active_interactions_by_actor.remove(&actor_id);
+                continue;
+            };
+            if target.interactable.is_none() {
+                context
+                    .intents
+                    .enqueue(GameplayIntent::CancelInteraction { actor_id });
+                context.active_interactions_by_actor.remove(&actor_id);
+                continue;
+            }
+
+            let in_range = Self::within_interaction_range(actor, target);
+            if !in_range {
+                if interaction.remaining_seconds.is_some() {
+                    context
+                        .intents
+                        .enqueue(GameplayIntent::CancelInteraction { actor_id });
+                    context.active_interactions_by_actor.remove(&actor_id);
+                }
+                continue;
+            }
+
+            if interaction.duration_seconds <= 0.0 {
+                context.events.emit(GameplayEvent::InteractionCompleted {
+                    actor_id: interaction.actor_id,
+                    target_id: interaction.target_id,
+                });
+                context
+                    .intents
+                    .enqueue(GameplayIntent::CompleteInteraction {
+                        actor_id: interaction.actor_id,
+                        target_id: interaction.target_id,
+                    });
+                if context.selected_entity == Some(interaction.actor_id) {
+                    *context.selected_completion_enqueued_this_tick = true;
+                }
+                context.active_interactions_by_actor.remove(&actor_id);
+                continue;
+            }
+
+            let remaining = interaction
+                .remaining_seconds
+                .unwrap_or(interaction.duration_seconds)
+                - context.fixed_dt_seconds;
+            if remaining <= 0.0 {
+                context.events.emit(GameplayEvent::InteractionCompleted {
+                    actor_id: interaction.actor_id,
+                    target_id: interaction.target_id,
+                });
+                context
+                    .intents
+                    .enqueue(GameplayIntent::CompleteInteraction {
+                        actor_id: interaction.actor_id,
+                        target_id: interaction.target_id,
+                    });
+                if context.selected_entity == Some(interaction.actor_id) {
+                    *context.selected_completion_enqueued_this_tick = true;
+                }
+                context.active_interactions_by_actor.remove(&actor_id);
+            } else {
+                interaction.remaining_seconds = Some(remaining);
+                context
+                    .active_interactions_by_actor
+                    .insert(actor_id, interaction);
+            }
         }
     }
 
@@ -476,26 +679,12 @@ impl GameplaySystemsHost {
                 let _ = context.fixed_dt_seconds;
                 let _ = context.world_view.camera().zoom;
                 let _ = context.world_view.find_entity(EntityId(0));
-                if let Some(first_entity) = context.world_view.entities().first() {
-                    if cfg!(debug_assertions) {
-                        context.intents.enqueue(GameplayIntent::AddStatus {
-                            entity_id: first_entity.id,
-                            status_id: StatusId(1),
-                        });
-                    }
-                }
-                if let Some(cursor_px) = context.input.cursor_position_px() {
-                    let window_size = context.input.window_size();
-                    let _ = context
-                        .world_view
-                        .pick_topmost_selectable_at_cursor(cursor_px, window_size);
-                    let _ = context
-                        .world_view
-                        .pick_topmost_interactable_at_cursor(cursor_px, window_size);
-                }
+                self.run_input_intent_system(context);
             }
-            GameplaySystemId::Interaction
-            | GameplaySystemId::AI
+            GameplaySystemId::Interaction => {
+                self.run_interaction_system(context);
+            }
+            GameplaySystemId::AI
             | GameplaySystemId::CombatResolution
             | GameplaySystemId::StatusEffects
             | GameplaySystemId::Cleanup => {
@@ -515,10 +704,7 @@ impl GameplaySystemsHost {
                     entity_id: EntityId(0),
                     status_id: StatusId(1),
                 },
-                GameplaySystemId::Interaction => GameplayEvent::InteractionStarted {
-                    actor_id: EntityId(0),
-                    target_id: EntityId(1),
-                },
+                GameplaySystemId::Interaction => return,
                 GameplaySystemId::AI => GameplayEvent::EntityDamaged {
                     entity_id: EntityId(1),
                     amount: 1,
@@ -530,10 +716,7 @@ impl GameplaySystemsHost {
                     entity_id: EntityId(0),
                     status_id: StatusId(1),
                 },
-                GameplaySystemId::Cleanup => GameplayEvent::InteractionCompleted {
-                    actor_id: EntityId(0),
-                    target_id: EntityId(1),
-                },
+                GameplaySystemId::Cleanup => return,
             };
             context.events.emit(event);
         }
@@ -556,6 +739,9 @@ struct GameplayScene {
     next_save_id: u64,
     health_by_entity: HashMap<EntityId, u32>,
     status_ids_by_entity: HashMap<EntityId, Vec<StatusId>>,
+    active_interactions_by_actor: HashMap<EntityId, ActiveInteraction>,
+    next_interaction_id: u64,
+    selected_completion_enqueued_this_tick: bool,
     systems_host: GameplaySystemsHost,
     system_events: GameplayEventBus,
     system_intents: GameplayIntentQueue,
@@ -580,6 +766,9 @@ impl GameplayScene {
             next_save_id: 0,
             health_by_entity: HashMap::new(),
             status_ids_by_entity: HashMap::new(),
+            active_interactions_by_actor: HashMap::new(),
+            next_interaction_id: 0,
+            selected_completion_enqueued_this_tick: false,
             systems_host: GameplaySystemsHost::default(),
             system_events: GameplayEventBus::default(),
             system_intents: GameplayIntentQueue::default(),
@@ -1141,6 +1330,7 @@ impl GameplayScene {
         self.rebuild_save_id_map_from_loaded(world, &spawned_ids_by_save_id, save.next_save_id)?;
         self.resource_count = save.resource_count;
         self.sync_runtime_component_stores_with_world(world);
+        self.rebuild_active_interactions_from_world_order(world);
         Ok(())
     }
 }
@@ -1149,6 +1339,8 @@ impl GameplayScene {
     fn reset_runtime_component_stores(&mut self) {
         self.health_by_entity.clear();
         self.status_ids_by_entity.clear();
+        self.active_interactions_by_actor.clear();
+        self.next_interaction_id = 0;
     }
 
     fn sync_runtime_component_stores_with_world(&mut self, world: &SceneWorld) {
@@ -1164,6 +1356,48 @@ impl GameplayScene {
         }
     }
 
+    fn rebuild_active_interactions_from_world_order(&mut self, world: &SceneWorld) {
+        self.active_interactions_by_actor.clear();
+        for entity in world.entities() {
+            if !entity.actor {
+                continue;
+            }
+
+            let (target_save_id, remaining_seconds) = match entity.order_state {
+                OrderState::Interact { target_save_id } => (target_save_id, None),
+                OrderState::Working {
+                    target_save_id,
+                    remaining_time,
+                } => (target_save_id, Some(remaining_time.max(0.0))),
+                _ => continue,
+            };
+            let Some(target_id) = self.resolve_runtime_target_id(target_save_id, world) else {
+                continue;
+            };
+            let Some(target) = world.find_entity(target_id) else {
+                continue;
+            };
+            if target.interactable.is_none() {
+                continue;
+            }
+
+            let duration_seconds =
+                GameplaySystemsHost::interaction_duration_seconds_for_target(target);
+            let interaction_id =
+                GameplaySystemsHost::alloc_interaction_id(&mut self.next_interaction_id);
+            self.active_interactions_by_actor.insert(
+                entity.id,
+                ActiveInteraction {
+                    actor_id: entity.id,
+                    target_id,
+                    interaction_id,
+                    duration_seconds,
+                    remaining_seconds,
+                },
+            );
+        }
+    }
+
     fn run_gameplay_systems_once(
         &mut self,
         fixed_dt_seconds: f32,
@@ -1171,10 +1405,15 @@ impl GameplayScene {
         world: &SceneWorld,
     ) {
         self.system_events.clear_current_tick();
+        self.selected_completion_enqueued_this_tick = false;
         self.systems_host.run_once_per_tick(
             fixed_dt_seconds,
             WorldView::new(world),
             input,
+            self.selected_entity,
+            &mut self.active_interactions_by_actor,
+            &mut self.next_interaction_id,
+            &mut self.selected_completion_enqueued_this_tick,
             &mut self.system_events,
             &mut self.system_intents,
         );
@@ -1239,6 +1478,7 @@ impl GameplayScene {
                     }
                     self.health_by_entity.remove(&entity_id);
                     self.status_ids_by_entity.remove(&entity_id);
+                    self.active_interactions_by_actor.remove(&entity_id);
                 }
                 GameplayIntent::ApplyDamage { entity_id, amount } => {
                     if world.find_entity(entity_id).is_none() {
@@ -1299,6 +1539,17 @@ impl GameplayScene {
                         continue;
                     }
                     actor.order_state = OrderState::Interact { target_save_id };
+                }
+                GameplayIntent::CancelInteraction { actor_id } => {
+                    let Some(actor) = world.find_entity_mut(actor_id) else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    if !actor.actor {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    actor.order_state = OrderState::Idle;
                 }
                 GameplayIntent::CompleteInteraction {
                     actor_id,
@@ -1366,18 +1617,15 @@ impl GameplayScene {
                 let window_size = input.window_size();
                 let ground_target = screen_to_world_px(world.camera(), window_size, cursor_px);
                 let interactable_target = hovered_interactable.and_then(|id| {
-                    let target_world = world
+                    world
                         .find_entity(id)
-                        .map(|entity| entity.transform.position)?;
-                    let target_save_id = self.save_id_for_entity(id)?;
-                    Some((target_save_id, target_world))
+                        .map(|entity| entity.transform.position)
                 });
 
                 let mut marker_position = None::<Vec2>;
                 if let Some(entity) = world.find_entity_mut(selected_id) {
                     if entity.actor {
-                        if let Some((target_save_id, target_world)) = interactable_target {
-                            entity.order_state = OrderState::Interact { target_save_id };
+                        if let Some(target_world) = interactable_target {
                             marker_position = Some(target_world);
                         } else {
                             entity.order_state = OrderState::MoveTo {
@@ -1449,7 +1697,7 @@ impl GameplayScene {
         }
 
         self.completed_target_ids.clear();
-        let mut completed_jobs = 0u32;
+        let completed_jobs = 0u32;
         for entity in world.entities_mut() {
             if !entity.actor {
                 continue;
@@ -1497,27 +1745,13 @@ impl GameplayScene {
                         entity.order_state = OrderState::Idle;
                     }
                 }
-                OrderState::Working {
-                    target_save_id,
-                    remaining_time,
-                } => {
-                    if let Some((target_id, _, _)) = self
+                OrderState::Working { target_save_id, .. } => {
+                    if self
                         .interactable_lookup_by_save_id
                         .get(&target_save_id)
                         .copied()
+                        .is_none()
                     {
-                        let next_remaining = remaining_time - fixed_dt_seconds;
-                        if next_remaining <= 0.0 {
-                            entity.order_state = OrderState::Idle;
-                            completed_jobs = completed_jobs.saturating_add(1);
-                            self.completed_target_ids.push(target_id);
-                        } else {
-                            entity.order_state = OrderState::Working {
-                                target_save_id,
-                                remaining_time: next_remaining,
-                            };
-                        }
-                    } else {
                         entity.order_state = OrderState::Idle;
                     }
                 }
@@ -1758,6 +1992,7 @@ impl Scene for GameplayScene {
         self.system_events = GameplayEventBus::default();
         self.system_intents = GameplayIntentQueue::default();
         self.system_order_text.clear();
+        self.selected_completion_enqueued_this_tick = false;
     }
 
     fn debug_title(&self, world: &SceneWorld) -> Option<String> {
@@ -1839,6 +2074,66 @@ impl Scene for GameplayScene {
 
         let event_counts = self.system_events.last_tick_counts();
         let intent_stats = self.system_intents.last_tick_apply_stats();
+        let interaction_line = if let Some(selected_id) = self.selected_entity {
+            if let Some(active) = self.active_interactions_by_actor.get(&selected_id) {
+                let rem_text = match active.remaining_seconds {
+                    Some(remaining) => format!("{remaining:.2}"),
+                    None => "ready".to_string(),
+                };
+                format!(
+                    "ix: a:{} t:{} iid:{} rem:{}",
+                    active.actor_id.0, active.target_id.0, active.interaction_id.0, rem_text
+                )
+            } else {
+                "ix: none".to_string()
+            }
+        } else {
+            "ix: none".to_string()
+        };
+        let interaction_probe_line = if let Some(selected_id) = self.selected_entity {
+            if let Some(active) = self.active_interactions_by_actor.get(&selected_id) {
+                let in_range = world
+                    .find_entity(active.actor_id)
+                    .zip(world.find_entity(active.target_id))
+                    .map(|(actor, target)| {
+                        GameplaySystemsHost::within_interaction_range(actor, target)
+                    })
+                    .unwrap_or(false);
+                let remaining = match active.remaining_seconds {
+                    Some(value) => format!("{value:.2}"),
+                    None => "ready".to_string(),
+                };
+                format!(
+                    "ixd: act:1 dur:{:.2} in:{} rem:{} ciq:{}",
+                    active.duration_seconds,
+                    if in_range { 1 } else { 0 },
+                    remaining,
+                    if self.selected_completion_enqueued_this_tick {
+                        1
+                    } else {
+                        0
+                    }
+                )
+            } else {
+                format!(
+                    "ixd: act:0 dur:none in:na rem:none ciq:{}",
+                    if self.selected_completion_enqueued_this_tick {
+                        1
+                    } else {
+                        0
+                    }
+                )
+            }
+        } else {
+            format!(
+                "ixd: act:0 dur:none in:na rem:none ciq:{}",
+                if self.selected_completion_enqueued_this_tick {
+                    1
+                } else {
+                    0
+                }
+            )
+        };
         let extra_debug_lines = vec![
             format!("ev: {}", event_counts.total),
             format!(
@@ -1852,7 +2147,7 @@ impl Scene for GameplayScene {
             ),
             format!("in: {}", intent_stats.total),
             format!(
-                "ink: sp:{} de:{} dmg:{} add:{} rem:{} si:{} ci:{}",
+                "ink: sp:{} de:{} dmg:{} add:{} rem:{} si:{} ci:{} ca:{}",
                 intent_stats.spawn_by_archetype_id,
                 intent_stats.despawn_entity,
                 intent_stats.apply_damage,
@@ -1860,8 +2155,11 @@ impl Scene for GameplayScene {
                 intent_stats.remove_status,
                 intent_stats.start_interaction,
                 intent_stats.complete_interaction,
+                intent_stats.cancel_interaction,
             ),
             format!("in_bad: {}", intent_stats.invalid_target_count),
+            interaction_line,
+            interaction_probe_line,
         ];
 
         Some(DebugInfoSnapshot {
@@ -3194,7 +3492,7 @@ mod tests {
     }
 
     #[test]
-    fn job_completion_increments_items_and_despawns_depleted_pile() {
+    fn timed_interaction_completes_with_expected_fixed_ticks() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
         let actor = world.spawn_actor(
@@ -3207,31 +3505,89 @@ mod tests {
                 debug_name: "actor",
             },
         );
-        let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 1);
+        let _pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 1);
         scene
             .sync_save_id_map_with_world(&world)
             .expect("save-id sync");
-        let pile_save_id = scene
-            .entity_save_ids
-            .get(&pile)
-            .copied()
-            .expect("pile save id");
-        {
-            let entity = world.find_entity_mut(actor).expect("actor");
-            entity.order_state = OrderState::Interact {
-                target_save_id: pile_save_id,
-            };
-        }
+        scene.selected_entity = Some(actor);
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &click, &mut world);
+        world.apply_pending();
 
+        let mut saw_completed_event = false;
+        let mut saw_completed_intent = false;
         for _ in 0..40 {
             scene.update(0.1, &InputSnapshot::empty(), &mut world);
             world.apply_pending();
+            let last_events = scene.system_events.last_tick_counts();
+            if last_events.interaction_completed > 0 {
+                saw_completed_event = true;
+            }
+            let last_intents = scene.system_intents.last_tick_apply_stats();
+            if last_intents.complete_interaction > 0 {
+                saw_completed_intent = true;
+            }
         }
 
         let actor_entity = world.find_entity(actor).expect("actor");
         assert_eq!(actor_entity.order_state, OrderState::Idle);
-        assert_eq!(scene.resource_count, 1);
-        assert!(world.find_entity(pile).is_none());
+        assert!(saw_completed_event);
+        assert!(saw_completed_intent);
+    }
+
+    #[test]
+    fn stockpile_interaction_from_out_of_range_completes_within_expected_ticks() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let actor_id = scene.player_id.expect("player id");
+        scene.selected_entity = Some(actor_id);
+
+        let stockpile = world
+            .entities()
+            .iter()
+            .find(|entity| entity.interactable.is_some())
+            .map(|entity| entity.id)
+            .expect("stockpile");
+        let stockpile_pos = world
+            .find_entity(stockpile)
+            .expect("stockpile entity")
+            .transform
+            .position;
+        let (sx, sy) = engine::world_to_screen_px(world.camera(), (1280, 720), stockpile_pos);
+        let click = right_click_snapshot(
+            Vec2 {
+                x: sx as f32,
+                y: sy as f32,
+            },
+            (1280, 720),
+        );
+        scene.update(1.0 / 60.0, &click, &mut world);
+        world.apply_pending();
+
+        let mut saw_start = scene.system_events.last_tick_counts().interaction_started > 0;
+        let mut saw_complete = false;
+        for _ in 0..80 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let counts = scene.system_events.last_tick_counts();
+            if counts.interaction_started > 0 {
+                saw_start = true;
+            }
+            if counts.interaction_completed > 0 {
+                saw_complete = true;
+            }
+        }
+        assert!(saw_start);
+        assert!(saw_complete);
+        assert_eq!(
+            world.find_entity(actor_id).expect("actor").order_state,
+            OrderState::Idle
+        );
     }
 
     #[test]
@@ -3264,7 +3620,7 @@ mod tests {
     }
 
     #[test]
-    fn job_remaining_time_pauses_while_inactive_and_completes_after_resume() {
+    fn interaction_cancellation_uses_cancel_intent_not_complete() {
         let mut scene_a = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world_a = SceneWorld::default();
         let actor = world_a.spawn_actor(
@@ -3281,18 +3637,16 @@ mod tests {
         scene_a
             .sync_save_id_map_with_world(&world_a)
             .expect("save-id sync");
-        let pile_save_id = scene_a
-            .entity_save_ids
-            .get(&pile)
-            .copied()
-            .expect("pile save id");
-        {
-            let entity = world_a.find_entity_mut(actor).expect("actor");
-            entity.order_state = OrderState::Working {
-                target_save_id: pile_save_id,
-                remaining_time: 1.0,
-            };
-        }
+        scene_a.active_interactions_by_actor.insert(
+            actor,
+            ActiveInteraction {
+                actor_id: actor,
+                target_id: pile,
+                interaction_id: InteractionId(99),
+                duration_seconds: JOB_DURATION_SECONDS,
+                remaining_seconds: Some(1.0),
+            },
+        );
 
         let mut scene_b = GameplayScene::new("B", SceneKey::A, Vec2 { x: 5.0, y: 5.0 });
         let mut world_b = SceneWorld::default();
@@ -3305,31 +3659,158 @@ mod tests {
         );
         world_b.apply_pending();
 
+        world_a
+            .find_entity_mut(actor)
+            .expect("actor")
+            .transform
+            .position = Vec2 { x: 9.0, y: 0.0 };
         scene_a.update(0.1, &InputSnapshot::empty(), &mut world_a);
-        let before_pause = match world_a.find_entity(actor).expect("actor").order_state {
-            OrderState::Working { remaining_time, .. } => remaining_time,
-            _ => panic!("expected working"),
-        };
-
-        for _ in 0..10 {
-            scene_b.update(0.1, &InputSnapshot::empty(), &mut world_b);
-            world_b.apply_pending();
-        }
-
-        let after_pause = match world_a.find_entity(actor).expect("actor").order_state {
-            OrderState::Working { remaining_time, .. } => remaining_time,
-            _ => panic!("expected working"),
-        };
-        assert!((before_pause - after_pause).abs() < 0.0001);
-
-        for _ in 0..20 {
-            scene_a.update(0.1, &InputSnapshot::empty(), &mut world_a);
-            world_a.apply_pending();
-        }
+        world_a.apply_pending();
 
         let actor_entity = world_a.find_entity(actor).expect("actor");
         assert_eq!(actor_entity.order_state, OrderState::Idle);
-        assert_eq!(scene_a.resource_count, 1);
+        assert!(scene_a.active_interactions_by_actor.is_empty());
+        let last_intents = scene_a.system_intents.last_tick_apply_stats();
+        assert_eq!(last_intents.cancel_interaction, 1);
+        assert_eq!(last_intents.complete_interaction, 0);
+
+        scene_b.update(0.1, &InputSnapshot::empty(), &mut world_b);
+        world_b.apply_pending();
+    }
+
+    #[test]
+    fn interaction_state_machine_start_tick_complete_and_cancel_out_of_range() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: -2.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 3);
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.selected_entity = Some(actor);
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("save-id sync");
+
+        let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &click, &mut world);
+        world.apply_pending();
+        let started_counts = scene.system_events.last_tick_counts();
+        assert_eq!(started_counts.interaction_started, 1);
+        assert!(scene.active_interactions_by_actor.contains_key(&actor));
+
+        world
+            .find_entity_mut(actor)
+            .expect("actor")
+            .transform
+            .position = Vec2 { x: 0.0, y: 0.0 };
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+        assert!(scene
+            .active_interactions_by_actor
+            .get(&actor)
+            .and_then(|ix| ix.remaining_seconds)
+            .is_some());
+
+        world
+            .find_entity_mut(actor)
+            .expect("actor")
+            .transform
+            .position = Vec2 { x: 9.0, y: 0.0 };
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+        let canceled_stats = scene.system_intents.last_tick_apply_stats();
+        assert_eq!(canceled_stats.cancel_interaction, 1);
+        assert!(scene.active_interactions_by_actor.get(&actor).is_none());
+
+        world
+            .find_entity_mut(actor)
+            .expect("actor")
+            .transform
+            .position = Vec2 { x: 0.0, y: 0.0 };
+        scene.update(1.0 / 60.0, &click, &mut world);
+        world.apply_pending();
+        let mut saw_completed_event = false;
+        let mut saw_completed_intent = false;
+        for _ in 0..25 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let completed_counts = scene.system_events.last_tick_counts();
+            if completed_counts.interaction_completed > 0 {
+                saw_completed_event = true;
+            }
+            let completed_stats = scene.system_intents.last_tick_apply_stats();
+            if completed_stats.complete_interaction > 0 {
+                saw_completed_intent = true;
+            }
+        }
+        assert!(saw_completed_event);
+        assert!(saw_completed_intent);
+        assert_eq!(
+            world.find_entity(actor).expect("actor").order_state,
+            OrderState::Idle
+        );
+        assert!(world.find_entity(pile).is_some());
+    }
+
+    #[test]
+    fn immediate_interaction_completion_is_emitted_by_interaction_system_only() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let target = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 1);
+        scene.active_interactions_by_actor.insert(
+            actor,
+            ActiveInteraction {
+                actor_id: actor,
+                target_id: target,
+                interaction_id: InteractionId(777),
+                duration_seconds: 0.0,
+                remaining_seconds: None,
+            },
+        );
+
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let completion_events = scene
+            .system_events
+            .iter_emitted_so_far()
+            .filter(|event| matches!(event, GameplayEvent::InteractionCompleted { .. }))
+            .count();
+        let start_events = scene
+            .system_events
+            .iter_emitted_so_far()
+            .filter(|event| matches!(event, GameplayEvent::InteractionStarted { .. }))
+            .count();
+        assert_eq!(completion_events, 1);
+        assert_eq!(start_events, 0);
+
+        let intents = scene.system_intents.drain_current_tick();
+        let complete_count = intents
+            .iter()
+            .filter(|intent| matches!(intent, GameplayIntent::CompleteInteraction { .. }))
+            .count();
+        let start_count = intents
+            .iter()
+            .filter(|intent| matches!(intent, GameplayIntent::StartInteraction { .. }))
+            .count();
+        assert_eq!(complete_count, 1);
+        assert_eq!(start_count, 0);
     }
 
     #[test]
@@ -3451,8 +3932,12 @@ mod tests {
         assert!(extra.iter().any(|line| line.starts_with("ev: ")));
         assert!(extra.iter().any(|line| line.starts_with("evk: ")));
         assert!(extra.iter().any(|line| line.starts_with("in: ")));
-        assert!(extra.iter().any(|line| line.starts_with("ink: ")));
+        assert!(extra
+            .iter()
+            .any(|line| line.starts_with("ink: ") && line.contains(" ca:")));
         assert!(extra.iter().any(|line| line.starts_with("in_bad: ")));
+        assert!(extra.iter().any(|line| line.starts_with("ix: ")));
+        assert!(extra.iter().any(|line| line.starts_with("ixd: ")));
     }
 
     #[test]
@@ -3475,8 +3960,12 @@ mod tests {
         assert!(extra.iter().any(|line| line.starts_with("ev: ")));
         assert!(extra.iter().any(|line| line.starts_with("evk: ")));
         assert!(extra.iter().any(|line| line.starts_with("in: ")));
-        assert!(extra.iter().any(|line| line.starts_with("ink: ")));
+        assert!(extra
+            .iter()
+            .any(|line| line.starts_with("ink: ") && line.contains(" ca:")));
         assert!(extra.iter().any(|line| line.starts_with("in_bad: ")));
+        assert!(extra.iter().any(|line| line.starts_with("ix: ")));
+        assert!(extra.iter().any(|line| line.starts_with("ixd: ")));
     }
 
     #[test]
@@ -4039,8 +4528,10 @@ mod tests {
         let resumed_actor_entity = resumed_world
             .find_entity(resumed_scene.player_id.expect("resumed player"))
             .expect("actor");
-        assert_eq!(baseline_actor_entity.order_state, OrderState::Idle);
-        assert_eq!(resumed_actor_entity.order_state, OrderState::Idle);
+        assert_eq!(
+            baseline_actor_entity.order_state,
+            resumed_actor_entity.order_state
+        );
         assert_eq!(resumed_scene.resource_count, baseline_scene.resource_count);
         assert_eq!(
             interactable_entity_count(&resumed_world),
@@ -4161,13 +4652,13 @@ mod tests {
         assert_eq!(digest_a, digest_b);
 
         let (_, final_digest) = digest_a.last().expect("final checkpoint digest");
-        assert_eq!(final_digest.resource_count, 1);
+        assert_eq!(final_digest.resource_count, 0);
         assert!(
-            !final_digest
+            final_digest
                 .entities
                 .iter()
                 .any(|entity| entity.save_id == target_save_id_a),
-            "expected spawned target save_id {} to be despawned",
+            "expected target save_id {} to remain present without legacy despawn side effects",
             target_save_id_a
         );
     }

@@ -137,3 +137,12 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - Debug observability uses generic overlay extra lines: `in:`, `ink:`, `in_bad:` plus `spawned_entity_ids` in apply stats for deterministic tests/debug only.
 - Same-tick spawned-entity reference handles are intentionally not supported in intent payloads yet.
 
+## Ticket 36 Interaction Seam (2026-02-21)
+- Interaction flow is now system-driven with scene-local runtime state: `active_interactions_by_actor` and monotonic `InteractionId`.
+- `InputIntent` starts interactions only (`InteractionStarted` event + `StartInteraction` intent), and never emits completion.
+- `Interaction` system owns all completion paths (including duration `0.0` immediate) and emits `InteractionCompleted` + `CompleteInteraction` intent only on successful completion.
+- `GameplayIntent::CancelInteraction { actor_id }` was added; all cancellation paths use it and `CompleteInteraction` is reserved for successful completion only.
+- Safe-point apply handles `StartInteraction`, `CancelInteraction`, and `CompleteInteraction` mechanically via actor order-state transitions; invalid targets remain non-panicking.
+- Legacy direct completion/depletion logic was removed from `apply_gameplay_tick_at_safe_point`; world mutation outcomes now flow through intents only.
+- Overlay debug block now includes interaction runtime line: `ix: ...`, and intent-kind counters include cancellation as `ca` in `ink: ...`.
+
