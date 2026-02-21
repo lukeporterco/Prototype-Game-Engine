@@ -29,6 +29,16 @@ pub(crate) enum DebugCommand {
         def_name: String,
         position: Option<(f32, f32)>,
     },
+    Select {
+        entity_id: u64,
+    },
+    OrderMove {
+        x: f32,
+        y: f32,
+    },
+    OrderInteract {
+        target_entity_id: u64,
+    },
     InjectInput {
         event: InjectedInputEvent,
     },
@@ -211,6 +221,30 @@ impl ConsoleCommandRegistry {
                 "Spawn entity by def name",
                 "<def_name:string> [x:f32 y:f32]",
                 parse_spawn_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "select",
+                "Select entity by id",
+                "<entity_id:u64>",
+                parse_select_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "order.move",
+                "Queue move order for selected actor",
+                "<x:f32> <y:f32>",
+                parse_order_move_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "order.interact",
+                "Queue interaction order for selected actor",
+                "<target_entity_id:u64>",
+                parse_order_interact_command,
             )
             .expect("built-in command registration should not fail");
         registry
@@ -605,6 +639,60 @@ fn parse_spawn_command(args: &[String]) -> Result<ParsedCommand, CommandParseErr
     }))
 }
 
+fn parse_select_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    if args.len() != 1 {
+        return Err(CommandParseError {
+            reason: "expected exactly one argument <entity_id>".to_string(),
+            usage: "select <entity_id>".to_string(),
+        });
+    }
+
+    let entity_id = args[0].parse::<u64>().map_err(|_| CommandParseError {
+        reason: format!("invalid entity id '{}' (expected u64)", args[0]),
+        usage: "select <entity_id>".to_string(),
+    })?;
+
+    Ok(ParsedCommand::Queueable(DebugCommand::Select { entity_id }))
+}
+
+fn parse_order_move_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    if args.len() != 2 {
+        return Err(CommandParseError {
+            reason: "expected exactly two arguments <x> <y>".to_string(),
+            usage: "order.move <x> <y>".to_string(),
+        });
+    }
+
+    let x = args[0].parse::<f32>().map_err(|_| CommandParseError {
+        reason: format!("invalid x coordinate '{}' (expected f32)", args[0]),
+        usage: "order.move <x> <y>".to_string(),
+    })?;
+    let y = args[1].parse::<f32>().map_err(|_| CommandParseError {
+        reason: format!("invalid y coordinate '{}' (expected f32)", args[1]),
+        usage: "order.move <x> <y>".to_string(),
+    })?;
+
+    Ok(ParsedCommand::Queueable(DebugCommand::OrderMove { x, y }))
+}
+
+fn parse_order_interact_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    if args.len() != 1 {
+        return Err(CommandParseError {
+            reason: "expected exactly one argument <target_entity_id>".to_string(),
+            usage: "order.interact <target_entity_id>".to_string(),
+        });
+    }
+
+    let target_entity_id = args[0].parse::<u64>().map_err(|_| CommandParseError {
+        reason: format!("invalid target entity id '{}' (expected u64)", args[0]),
+        usage: "order.interact <target_entity_id>".to_string(),
+    })?;
+
+    Ok(ParsedCommand::Queueable(DebugCommand::OrderInteract {
+        target_entity_id,
+    }))
+}
+
 fn parse_input_key_down_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
     let key = parse_single_injected_key_arg(args, "input.key_down <key>")?;
     Ok(ParsedCommand::Queueable(DebugCommand::InjectInput {
@@ -779,24 +867,33 @@ mod tests {
             lines[14],
             "spawn <def_name:string> [x:f32 y:f32] - Spawn entity by def name"
         );
-        assert_eq!(
-            lines[15],
-            "input.key_down <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key down"
-        );
+        assert_eq!(lines[15], "select <entity_id:u64> - Select entity by id");
         assert_eq!(
             lines[16],
-            "input.key_up <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key up"
+            "order.move <x:f32> <y:f32> - Queue move order for selected actor"
         );
         assert_eq!(
             lines[17],
-            "input.mouse_move <x:f32> <y:f32> - Inject mouse move (px)"
+            "order.interact <target_entity_id:u64> - Queue interaction order for selected actor"
         );
         assert_eq!(
             lines[18],
-            "input.mouse_down <button:left|right> - Inject mouse down"
+            "input.key_down <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key down"
         );
         assert_eq!(
             lines[19],
+            "input.key_up <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key up"
+        );
+        assert_eq!(
+            lines[20],
+            "input.mouse_move <x:f32> <y:f32> - Inject mouse move (px)"
+        );
+        assert_eq!(
+            lines[21],
+            "input.mouse_down <button:left|right> - Inject mouse down"
+        );
+        assert_eq!(
+            lines[22],
             "input.mouse_up <button:left|right> - Inject mouse up"
         );
     }
@@ -861,6 +958,9 @@ mod tests {
         console.push_pending_line_for_test("quit");
         console.push_pending_line_for_test("despawn 42");
         console.push_pending_line_for_test("spawn proto.worker 1.5 -2.0");
+        console.push_pending_line_for_test("select 43");
+        console.push_pending_line_for_test("order.move 4.0 -8.0");
+        console.push_pending_line_for_test("order.interact 44");
         console.push_pending_line_for_test("input.key_down w");
         console.push_pending_line_for_test("input.key_up right");
         console.push_pending_line_for_test("input.mouse_move 10.0 -4.0");
@@ -888,6 +988,11 @@ mod tests {
                 DebugCommand::Spawn {
                     def_name: "proto.worker".to_string(),
                     position: Some((1.5, -2.0)),
+                },
+                DebugCommand::Select { entity_id: 43 },
+                DebugCommand::OrderMove { x: 4.0, y: -8.0 },
+                DebugCommand::OrderInteract {
+                    target_entity_id: 44
                 },
                 DebugCommand::InjectInput {
                     event: InjectedInputEvent::KeyDown {
@@ -937,6 +1042,32 @@ mod tests {
                 "error: invalid x coordinate 'x' (expected f32). usage: input.mouse_move <x> <y>",
                 "error: invalid button 'middle' (expected left|right). usage: input.mouse_down <button>",
                 "error: expected exactly one argument <button>. usage: input.mouse_up <button>",
+            ]
+        );
+    }
+
+    #[test]
+    fn select_and_order_commands_validate_bad_args_with_usage() {
+        let mut processor = ConsoleCommandProcessor::new();
+        let mut console = ConsoleState::default();
+        console.push_pending_line_for_test("select");
+        console.push_pending_line_for_test("select nope");
+        console.push_pending_line_for_test("order.move 1");
+        console.push_pending_line_for_test("order.move x 2");
+        console.push_pending_line_for_test("order.interact");
+        console.push_pending_line_for_test("order.interact nope");
+
+        processor.process_pending_lines(&mut console);
+
+        assert_eq!(
+            collect_output(&console),
+            vec![
+                "error: expected exactly one argument <entity_id>. usage: select <entity_id>",
+                "error: invalid entity id 'nope' (expected u64). usage: select <entity_id>",
+                "error: expected exactly two arguments <x> <y>. usage: order.move <x> <y>",
+                "error: invalid x coordinate 'x' (expected f32). usage: order.move <x> <y>",
+                "error: expected exactly one argument <target_entity_id>. usage: order.interact <target_entity_id>",
+                "error: invalid target entity id 'nope' (expected u64). usage: order.interact <target_entity_id>",
             ]
         );
     }

@@ -25,6 +25,16 @@ pub enum SceneDebugCommand {
     Despawn {
         entity_id: u64,
     },
+    Select {
+        entity_id: u64,
+    },
+    OrderMove {
+        x: f32,
+        y: f32,
+    },
+    OrderInteract {
+        target_entity_id: u64,
+    },
     DumpState,
     DumpAi,
 }
@@ -1003,9 +1013,11 @@ mod tests {
                         SceneDebugCommandResult::Error("missing entity".to_string())
                     }
                 }
-                SceneDebugCommand::DumpState | SceneDebugCommand::DumpAi => {
-                    SceneDebugCommandResult::Unsupported
-                }
+                SceneDebugCommand::Select { .. }
+                | SceneDebugCommand::OrderMove { .. }
+                | SceneDebugCommand::OrderInteract { .. }
+                | SceneDebugCommand::DumpState
+                | SceneDebugCommand::DumpAi => SceneDebugCommandResult::Unsupported,
             }
         }
     }
