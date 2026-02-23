@@ -1,4 +1,5 @@
 # Thruport CLI Harness
+Last updated: 2026-02-23. Covers: Tickets 51-53.
 
 `thruport_cli` is a lightweight repo-owned client for deterministic thruport automation.
 
@@ -42,23 +43,27 @@ Output behavior:
 Wait for the remote listener to be ready:
 
 ```powershell
-thruport_cli wait-ready
+thruport_cli --port 46001 wait-ready
 ```
 
 Send one command:
 
 ```powershell
-thruport_cli send thruport.status
+thruport_cli --port 46001 send thruport.status
 ```
 
 Run a script file and end on sync barrier:
 
 ```powershell
-thruport_cli script .\minset.txt --barrier
+thruport_cli --port 46001 script .\minset.txt --barrier
 ```
 
 Send a barrier directly:
 
 ```powershell
-thruport_cli barrier
+thruport_cli --port 46001 barrier
 ```
+
+## See also
+
+- Workflow helper runbook: `.codex_artifacts/SOME_COMMANDS.md` (non-authoritative)

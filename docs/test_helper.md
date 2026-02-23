@@ -1,9 +1,12 @@
 # Test Helper (Dev Workflow)
+Last updated: 2026-02-23. Covers: Tickets 51-52.
 
 This repo ships a small PowerShell helper for deterministic test discovery and single-test execution:
 
 - Script: `scripts/test-helper.ps1`
 - Supported packages: `engine`, `game`, `thruport_cli`
+
+If `pwsh` is unavailable, use `powershell -ExecutionPolicy Bypass -File <script.ps1>`.
 
 ## Why this exists
 

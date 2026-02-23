@@ -1,8 +1,9 @@
 # PROTOGE Infrastructure Reference
+Last updated: 2026-02-23. Covers: Tickets 0-52.
 
 ## 1) Project snapshot
 - Proto GE is a prototype-first Rust engine + colony-sim vertical slice.
-- Current implementation baseline includes Tickets 0-24.
+- Current implementation baseline reflects work through Ticket 52.
 - Vertical slice status:
   - fixed-step loop and scene lifecycle
   - entity control/selection/orders/jobs

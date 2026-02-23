@@ -1,4 +1,5 @@
 # Prototype Game Engine
+Last updated: 2026-02-23. Covers: Tickets 0-52.
 
 Prototype-first Rust game engine + colony-sim vertical slice scaffold.
 
@@ -15,7 +16,9 @@ Prototype-first Rust game engine + colony-sim vertical slice scaffold.
 cargo run
 ```
 
-## Current baseline (Tickets 0-24)
+Canonical baseline: `docs/PROTOGE_INFRASTRUCTURE_REFERENCE.md`.
+
+## Current baseline
 - Fixed-step loop with decoupled render cadence.
 - Persistent dual-scene runtime with deterministic switching/reset semantics.
 - Entity rendering via placeholder or sprites.

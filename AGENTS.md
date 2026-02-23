@@ -1,4 +1,5 @@
 # AGENTS.md
+Last updated: 2026-02-23. Covers: Tickets 0-52.
 
 ## Project
 Proto GE: a prototype-first Rust game engine + colony-sim vertical slice (RimWorld-inspired).  
@@ -37,6 +38,19 @@ Everything else is optional until this works.
 - Use small, incremental commits/changes aligned to a single ticket.
 - Keep code modular by module responsibility (App/Loop, Scene, Rendering, Assets, Input, Tools).
 - Prefer clear, explicit data structures over clever abstractions.
+
+## Doc Map / Source of Truth
+### Primary sources (contracts)
+- Runtime/architecture: `docs/PROTOGE_INFRASTRUCTURE_REFERENCE.md`
+- Content contract: `docs/content_pipeline_contract_v1.md`
+- CLI details: `docs/thruport_cli.md`
+- Console command schemas: `CONSOLE_COMMANDS.md`
+- Test targeting / harness guidance: `docs/test_helper.md`
+
+### Workflow helpers (non-authoritative)
+- Thruport session workflow helpers: `.codex_artifacts/SOME_COMMANDS.md`
+
+If guidance conflicts, the Primary sources (contracts) override Workflow helpers.
 
 ## Repo-first workflow (Required)
 Before implementing any ticket, Codex must inspect repo reality and use it as the primary source of truth.

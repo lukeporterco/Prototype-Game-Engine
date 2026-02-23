@@ -1,4 +1,5 @@
 # Console Commands (Developer Reference)
+Last updated: 2026-02-23. Covers: Tickets 0-52.
 
 Status: `Ticket 32.3` implements routing/execution for queueable commands.
 

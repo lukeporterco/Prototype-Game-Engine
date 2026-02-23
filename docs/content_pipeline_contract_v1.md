@@ -1,4 +1,5 @@
 # Content Pipeline Contract v1
+Last updated: 2026-02-23. Covers: Ticket 6 (contract v1).
 
 Status: Locked for Ticket 6 (spec-first).  
 Scope: Contract only. No compiler or loader implementation in this ticket.

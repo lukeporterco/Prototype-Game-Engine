@@ -1,4 +1,5 @@
 # CODEXNOTES.md
+Last updated: 2026-02-23. Covers: Tickets 0-52.
 ## Purpose
 Living, structured notes for Codex and humans to keep consistent context across threads.
 Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.

@@ -155,5 +155,6 @@ thruport_cli --port 46001 barrier
 # Appendix: command reference pointers
 - Thruport CLI contract and options: `docs/thruport_cli.md`
 - Console command syntax and schemas: `CONSOLE_COMMANDS.md`
+- See also (contract/spec): `docs/thruport_cli.md`
 - If anything appears out of date, discover via grep:
   - `rg -n "PROTOGE_THRUPORT|PROTOGE_THRUPORT_PORT|PROTOGE_THRUPORT_TELEMETRY|thruport.ready|thruport.telemetry|wait-ready|ok: sync|\\bsync\\b" -S .`
