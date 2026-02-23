@@ -108,3 +108,6 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Scene/game logic may read defs but must not mutate content database contracts.
 - Def defaults for Ticket 48 gameplay knobs are centralized in `GameplayScene` helper.
 - Simulation intent ordering remains `InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup`.
+
+- Ticket 49 (2026-02-23): `ContentCompileError` now includes optional structured context fields `def_name` and `field_name` so gameplay tuning validation failures are deterministic and testable.
+- Ticket 49: gameplay tuning validation fixture added at `docs/fixtures/content_pipeline_v1/fail_09_invalid_gameplay_field/badgameplay/defs.xml`; pipeline tests assert `InvalidValue` plus `mod_id`/`def_name`/`field_name`.

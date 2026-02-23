@@ -39,6 +39,8 @@ pub struct ContentCompileError {
     pub code: ContentErrorCode,
     pub message: String,
     pub mod_id: String,
+    pub def_name: Option<String>,
+    pub field_name: Option<String>,
     pub file_path: PathBuf,
     pub location: Option<SourceLocation>,
 }
@@ -48,20 +50,24 @@ impl fmt::Display for ContentCompileError {
         match self.location {
             Some(loc) => write!(
                 f,
-                "{:?}: {} (mod={}, file={}, line={}, column={})",
+                "{:?}: {} (mod={}, def={}, field={}, file={}, line={}, column={})",
                 self.code,
                 self.message,
                 self.mod_id,
+                self.def_name.as_deref().unwrap_or("-"),
+                self.field_name.as_deref().unwrap_or("-"),
                 self.file_path.display(),
                 loc.line,
                 loc.column
             ),
             None => write!(
                 f,
-                "{:?}: {} (mod={}, file={})",
+                "{:?}: {} (mod={}, def={}, field={}, file={})",
                 self.code,
                 self.message,
                 self.mod_id,
+                self.def_name.as_deref().unwrap_or("-"),
+                self.field_name.as_deref().unwrap_or("-"),
                 self.file_path.display()
             ),
         }
@@ -122,6 +128,8 @@ pub fn compile_mod_entity_defs(
                         def.def_name, mod_id
                     ),
                     mod_id: mod_id.to_string(),
+                    def_name: Some(def.def_name.clone()),
+                    field_name: None,
                     file_path: xml_file.clone(),
                     location: None,
                 });
@@ -235,6 +243,8 @@ fn missing_override_target_error(def: &CompiledEntityDef) -> ContentCompileError
             def.def_name
         ),
         mod_id: def.source_mod_id.clone(),
+        def_name: Some(def.def_name.clone()),
+        field_name: None,
         file_path: def.source_file_path.clone(),
         location: def.source_location,
     }
@@ -249,6 +259,8 @@ fn parse_defs_document(
         code: ContentErrorCode::XmlMalformed,
         message: format!("malformed XML: {error}"),
         mod_id: mod_id.to_string(),
+        def_name: None,
+        field_name: None,
         file_path: file_path.to_path_buf(),
         location: Some(SourceLocation {
             line: error.pos().row as usize,
@@ -295,6 +307,7 @@ fn parse_entity_def(
     doc: &Document<'_>,
     node: Node<'_, '_>,
 ) -> Result<CompiledEntityDef, ContentCompileError> {
+    let def_name_hint = def_name_hint_from_node(node);
     let mut seen_fields = HashSet::<String>::new();
     let mut def_name = None::<String>;
     let mut label = None::<String>;
@@ -310,13 +323,15 @@ fn parse_entity_def(
     for field in node.children().filter(|child| child.is_element()) {
         let field_name = field.tag_name().name().to_string();
         if !seen_fields.insert(field_name.clone()) {
-            return Err(error_at_node(
+            return Err(error_at_node_with_context(
                 ContentErrorCode::DuplicateField,
                 format!("duplicate field <{}> in <EntityDef>", field_name),
                 mod_id,
                 file_path,
                 doc,
                 field,
+                def_name_hint.as_deref(),
+                Some(field_name.as_str()),
             ));
         }
 
@@ -330,43 +345,75 @@ fn parse_entity_def(
             "moveSpeed" => {
                 let value = required_text(mod_id, file_path, doc, field, "moveSpeed")?;
                 let parsed = value.parse::<f32>().map_err(|_| {
-                    error_at_node(
+                    error_at_node_with_context(
                         ContentErrorCode::InvalidValue,
                         format!("moveSpeed '{}' is not a valid number", value),
                         mod_id,
                         file_path,
                         doc,
                         field,
+                        def_name_hint.as_deref(),
+                        Some("moveSpeed"),
                     )
                 })?;
                 if !parsed.is_finite() || parsed < 0.0 {
-                    return Err(error_at_node(
+                    return Err(error_at_node_with_context(
                         ContentErrorCode::InvalidValue,
                         "moveSpeed must be finite and >= 0".to_string(),
                         mod_id,
                         file_path,
                         doc,
                         field,
+                        def_name_hint.as_deref(),
+                        Some("moveSpeed"),
                     ));
                 }
                 move_speed = Some(parsed);
             }
             "health_max" => {
-                let parsed = parse_u32_field(mod_id, file_path, doc, field, "health_max", true)?;
+                let parsed = parse_u32_field(
+                    mod_id,
+                    file_path,
+                    doc,
+                    field,
+                    def_name_hint.as_deref(),
+                    "health_max",
+                    true,
+                )?;
                 health_max = Some(parsed);
             }
             "base_damage" => {
-                let parsed = parse_u32_field(mod_id, file_path, doc, field, "base_damage", false)?;
+                let parsed = parse_u32_field(
+                    mod_id,
+                    file_path,
+                    doc,
+                    field,
+                    def_name_hint.as_deref(),
+                    "base_damage",
+                    false,
+                )?;
                 base_damage = Some(parsed);
             }
             "aggro_radius" => {
-                let parsed =
-                    parse_non_negative_f32_field(mod_id, file_path, doc, field, "aggro_radius")?;
+                let parsed = parse_non_negative_f32_field(
+                    mod_id,
+                    file_path,
+                    doc,
+                    field,
+                    def_name_hint.as_deref(),
+                    "aggro_radius",
+                )?;
                 aggro_radius = Some(parsed);
             }
             "attack_range" => {
-                let parsed =
-                    parse_non_negative_f32_field(mod_id, file_path, doc, field, "attack_range")?;
+                let parsed = parse_non_negative_f32_field(
+                    mod_id,
+                    file_path,
+                    doc,
+                    field,
+                    def_name_hint.as_deref(),
+                    "attack_range",
+                )?;
                 attack_range = Some(parsed);
             }
             "attack_cooldown_seconds" => {
@@ -375,19 +422,22 @@ fn parse_entity_def(
                     file_path,
                     doc,
                     field,
+                    def_name_hint.as_deref(),
                     "attack_cooldown_seconds",
                 )?;
                 attack_cooldown_seconds = Some(parsed);
             }
             "tags" => tags = Some(parse_tags(mod_id, file_path, doc, field)?),
             _ => {
-                return Err(error_at_node(
+                return Err(error_at_node_with_context(
                     ContentErrorCode::UnknownField,
                     format!("unknown field <{}> in <EntityDef>", field_name),
                     mod_id,
                     file_path,
                     doc,
                     field,
+                    def_name_hint.as_deref(),
+                    Some(field_name.as_str()),
                 ))
             }
         }
@@ -422,6 +472,19 @@ fn parse_entity_def(
             column: pos.col as usize,
         }),
     })
+}
+
+fn def_name_hint_from_node(node: Node<'_, '_>) -> Option<String> {
+    node.children()
+        .filter(|child| child.is_element() && child.tag_name().name() == "defName")
+        .find_map(|def_name| {
+            let value = def_name.text().map(str::trim).unwrap_or_default();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        })
 }
 
 fn parse_tags(
@@ -609,28 +672,33 @@ fn parse_u32_field(
     file_path: &Path,
     doc: &Document<'_>,
     node: Node<'_, '_>,
+    def_name: Option<&str>,
     field_name: &str,
     strictly_positive: bool,
 ) -> Result<u32, ContentCompileError> {
     let value = required_text(mod_id, file_path, doc, node, field_name)?;
     let parsed = value.parse::<u32>().map_err(|_| {
-        error_at_node(
+        error_at_node_with_context(
             ContentErrorCode::InvalidValue,
             format!("{field_name} '{value}' is not a valid u32"),
             mod_id,
             file_path,
             doc,
             node,
+            def_name,
+            Some(field_name),
         )
     })?;
     if strictly_positive && parsed == 0 {
-        return Err(error_at_node(
+        return Err(error_at_node_with_context(
             ContentErrorCode::InvalidValue,
             format!("{field_name} must be > 0"),
             mod_id,
             file_path,
             doc,
             node,
+            def_name,
+            Some(field_name),
         ));
     }
     Ok(parsed)
@@ -641,27 +709,32 @@ fn parse_non_negative_f32_field(
     file_path: &Path,
     doc: &Document<'_>,
     node: Node<'_, '_>,
+    def_name: Option<&str>,
     field_name: &str,
 ) -> Result<f32, ContentCompileError> {
     let value = required_text(mod_id, file_path, doc, node, field_name)?;
     let parsed = value.parse::<f32>().map_err(|_| {
-        error_at_node(
+        error_at_node_with_context(
             ContentErrorCode::InvalidValue,
             format!("{field_name} '{value}' is not a valid number"),
             mod_id,
             file_path,
             doc,
             node,
+            def_name,
+            Some(field_name),
         )
     })?;
     if !parsed.is_finite() || parsed < 0.0 {
-        return Err(error_at_node(
+        return Err(error_at_node_with_context(
             ContentErrorCode::InvalidValue,
             format!("{field_name} must be finite and >= 0"),
             mod_id,
             file_path,
             doc,
             node,
+            def_name,
+            Some(field_name),
         ));
     }
     Ok(parsed)
@@ -675,11 +748,26 @@ fn error_at_node(
     doc: &Document<'_>,
     node: Node<'_, '_>,
 ) -> ContentCompileError {
+    error_at_node_with_context(code, message, mod_id, file_path, doc, node, None, None)
+}
+
+fn error_at_node_with_context(
+    code: ContentErrorCode,
+    message: String,
+    mod_id: &str,
+    file_path: &Path,
+    doc: &Document<'_>,
+    node: Node<'_, '_>,
+    def_name: Option<&str>,
+    field_name: Option<&str>,
+) -> ContentCompileError {
     let pos = doc.text_pos_at(node.range().start);
     ContentCompileError {
         code,
         message,
         mod_id: mod_id.to_string(),
+        def_name: def_name.map(ToString::to_string),
+        field_name: field_name.map(ToString::to_string),
         file_path: file_path.to_path_buf(),
         location: Some(SourceLocation {
             line: pos.row as usize,
@@ -740,6 +828,8 @@ fn read_error(mod_id: &str, path: PathBuf, source: std::io::Error) -> ContentCom
         code: ContentErrorCode::ReadFile,
         message: format!("failed to read XML file: {source}"),
         mod_id: mod_id.to_string(),
+        def_name: None,
+        field_name: None,
         file_path: path,
         location: None,
     }
@@ -758,6 +848,8 @@ fn map_discovery_error(error: ContentPlanError, root: &Path) -> ContentCompileEr
                 expected_dir.display()
             ),
             mod_id,
+            def_name: None,
+            field_name: None,
             file_path: expected_dir,
             location: None,
         },
@@ -765,6 +857,8 @@ fn map_discovery_error(error: ContentPlanError, root: &Path) -> ContentCompileEr
             code: ContentErrorCode::Discovery,
             message: other.to_string(),
             mod_id: "<discovery>".to_string(),
+            def_name: None,
+            field_name: None,
             file_path: root.to_path_buf(),
             location: None,
         },
@@ -1163,6 +1257,49 @@ mod tests {
         );
         let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("error");
         assert_eq!(err.code, ContentErrorCode::InvalidValue);
+        assert_eq!(err.mod_id, "base");
+        assert_eq!(err.def_name.as_deref(), Some("a"));
+        assert_eq!(err.field_name.as_deref(), Some("health_max"));
+    }
+
+    #[test]
+    fn gameplay_non_negative_fields_reject_negative_values_with_context() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+
+        for (field_name, value) in [
+            ("aggro_radius", "-1.0"),
+            ("attack_range", "-0.5"),
+            ("attack_cooldown_seconds", "-0.25"),
+        ] {
+            write_file(
+                &app.base_content_dir.join("defs.xml"),
+                &format!(
+                    "<Defs><EntityDef><defName>proto.bad</defName><label>Bad</label><renderable>Placeholder</renderable><{}>{}</{}></EntityDef></Defs>",
+                    field_name, value, field_name
+                ),
+            );
+            let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+            assert_eq!(err.code, ContentErrorCode::InvalidValue);
+            assert_eq!(err.mod_id, "base");
+            assert_eq!(err.def_name.as_deref(), Some("proto.bad"));
+            assert_eq!(err.field_name.as_deref(), Some(field_name));
+        }
+    }
+
+    #[test]
+    fn gameplay_fields_allow_zero_when_runtime_logic_supports_it() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>proto.zero_ok</defName><label>ZeroOk</label><renderable>Placeholder</renderable><base_damage>0</base_damage><attack_cooldown_seconds>0</attack_cooldown_seconds></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("proto.zero_ok").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(def.base_damage, Some(0));
+        assert_eq!(def.attack_cooldown_seconds, Some(0.0));
     }
 
     #[test]

@@ -1,0 +1,8 @@
+<Defs>
+  <EntityDef>
+    <defName>proto.badgameplay</defName>
+    <label>BadGameplay</label>
+    <renderable>Placeholder</renderable>
+    <attack_cooldown_seconds>-0.25</attack_cooldown_seconds>
+  </EntityDef>
+</Defs>

@@ -231,6 +231,7 @@ fn validate_pack_meta_matches_manifest(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
 
     use tempfile::TempDir;
 
@@ -256,6 +257,31 @@ mod tests {
             fs::create_dir_all(parent).expect("parent");
         }
         fs::write(path, content).expect("write xml");
+    }
+
+    fn fixture_root(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("docs")
+            .join("fixtures")
+            .join("content_pipeline_v1")
+            .join(name)
+    }
+
+    fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
+        fs::create_dir_all(dst).expect("mkdir dst");
+        let entries = fs::read_dir(src).expect("read src");
+        for entry in entries {
+            let entry = entry.expect("entry");
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            if src_path.is_dir() {
+                copy_dir_recursive(&src_path, &dst_path);
+            } else {
+                fs::copy(&src_path, &dst_path).expect("copy");
+            }
+        }
     }
 
     fn request() -> ContentPlanRequest {
@@ -361,5 +387,35 @@ mod tests {
 
         let error = build_or_load_def_database(&app, &request()).expect_err("error");
         assert!(matches!(error, ContentPipelineError::Compile(_)));
+    }
+
+    #[test]
+    fn fixture_invalid_gameplay_field_fails_with_structured_context() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        fs::create_dir_all(app.mods_dir.join("badgameplay")).expect("mkdir badgameplay");
+        copy_dir_recursive(
+            &fixture_root("fail_09_invalid_gameplay_field").join("badgameplay"),
+            &app.mods_dir.join("badgameplay"),
+        );
+
+        let error = build_or_load_def_database(
+            &app,
+            &ContentPlanRequest {
+                enabled_mods: vec!["badgameplay".to_string()],
+                compiler_version: "dev".to_string(),
+                game_version: "dev".to_string(),
+            },
+        )
+        .expect_err("error");
+
+        let ContentPipelineError::Compile(err) = error else {
+            panic!("expected compile error");
+        };
+        assert_eq!(err.code, super::super::compiler::ContentErrorCode::InvalidValue);
+        assert_eq!(err.mod_id, "badgameplay");
+        assert_eq!(err.def_name.as_deref(), Some("proto.badgameplay"));
+        assert_eq!(err.field_name.as_deref(), Some("attack_cooldown_seconds"));
+        assert!(err.message.contains("attack_cooldown_seconds"));
     }
 }

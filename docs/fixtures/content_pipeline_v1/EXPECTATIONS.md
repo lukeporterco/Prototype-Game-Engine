@@ -152,6 +152,22 @@ Expected error properties:
 3. `file_path` includes `missingtarget/defs.xml`.
 4. message explains this is a partial override with no earlier definition.
 
+### fail_09_invalid_gameplay_field
+
+Load order:
+
+1. `badgameplay`
+
+Expected result: FAIL.
+
+Expected error properties:
+
+1. `code` indicates invalid numeric value.
+2. `mod_id = "badgameplay"`.
+3. `def_name = "proto.badgameplay"`.
+4. `field_name = "attack_cooldown_seconds"`.
+5. message references the invalid gameplay field and deterministic non-negative rule.
+
 ## 3. Invalidation Checks (metadata-focused)
 
 These checks are not separate XML fixtures; they are required behavior checks over any valid fixture set.
