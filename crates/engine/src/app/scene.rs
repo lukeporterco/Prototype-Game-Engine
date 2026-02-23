@@ -37,6 +37,9 @@ pub enum SceneDebugCommand {
     },
     DumpState,
     DumpAi,
+    ScenarioSetup {
+        scenario_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -1017,7 +1020,8 @@ mod tests {
                 | SceneDebugCommand::OrderMove { .. }
                 | SceneDebugCommand::OrderInteract { .. }
                 | SceneDebugCommand::DumpState
-                | SceneDebugCommand::DumpAi => SceneDebugCommandResult::Unsupported,
+                | SceneDebugCommand::DumpAi
+                | SceneDebugCommand::ScenarioSetup { .. } => SceneDebugCommandResult::Unsupported,
             }
         }
     }

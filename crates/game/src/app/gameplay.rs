@@ -37,6 +37,9 @@ const ATTACK_DAMAGE_PER_HIT: u32 = 25;
 const STATUS_SLOW: StatusId = StatusId("status.slow");
 const STATUS_SLOW_DURATION_SECONDS: f32 = 2.0;
 const STATUS_SLOW_MULTIPLIER: f32 = 0.5;
+const COMBAT_CHASER_PLAYER_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
+const COMBAT_CHASER_CHASER_POS: Vec2 = Vec2 { x: 0.75, y: 0.0 };
+const COMBAT_CHASER_DUMMY_POS: Vec2 = Vec2 { x: 7.0, y: 0.0 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GameplaySystemId {
@@ -1157,6 +1160,13 @@ struct GameplayScene {
     system_events: GameplayEventBus,
     system_intents: GameplayIntentQueue,
     system_order_text: String,
+    combat_chaser_scenario: CombatChaserScenarioSlot,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CombatChaserScenarioSlot {
+    chaser_id: Option<EntityId>,
+    dummy_id: Option<EntityId>,
 }
 
 impl GameplayScene {
@@ -1188,6 +1198,7 @@ impl GameplayScene {
             system_events: GameplayEventBus::default(),
             system_intents: GameplayIntentQueue::default(),
             system_order_text: String::new(),
+            combat_chaser_scenario: CombatChaserScenarioSlot::default(),
         }
     }
 
@@ -1937,6 +1948,83 @@ impl GameplayScene {
                 .and_then(|value| value.attack_cooldown_seconds)
                 .unwrap_or(AI_ATTACK_COOLDOWN_SECONDS),
         }
+    }
+
+    fn apply_spawn_intent_now(
+        &mut self,
+        world: &mut SceneWorld,
+        def_name: &str,
+        position: Vec2,
+    ) -> SaveLoadResult<EntityId> {
+        let archetype = try_resolve_archetype_by_name(world, def_name)?;
+        let stats = self.apply_gameplay_intents_at_safe_point(
+            vec![GameplayIntent::SpawnByArchetypeId {
+                archetype_id: archetype.id,
+                position,
+            }],
+            world,
+        );
+        let Some(spawned_id) = stats.spawned_entity_ids.first().copied() else {
+            return Err(format!(
+                "failed to spawn '{def_name}' via scenario setup (invalid_target:{})",
+                stats.invalid_target_count
+            ));
+        };
+        Ok(spawned_id)
+    }
+
+    fn apply_despawn_intent_now(
+        &mut self,
+        world: &mut SceneWorld,
+        entity_id: EntityId,
+    ) -> SaveLoadResult<()> {
+        if world.find_entity(entity_id).is_none() {
+            return Ok(());
+        }
+        let stats = self.apply_gameplay_intents_at_safe_point(
+            vec![GameplayIntent::DespawnEntity { entity_id }],
+            world,
+        );
+        if stats.invalid_target_count > 0 {
+            return Err(format!(
+                "failed to despawn entity {} via scenario setup",
+                entity_id.0
+            ));
+        }
+        Ok(())
+    }
+
+    fn run_scenario_setup_combat_chaser(
+        &mut self,
+        world: &mut SceneWorld,
+    ) -> SaveLoadResult<(EntityId, EntityId, EntityId)> {
+        let stale_ids = [
+            self.player_id,
+            self.combat_chaser_scenario.chaser_id,
+            self.combat_chaser_scenario.dummy_id,
+        ];
+        for stale_id in stale_ids.into_iter().flatten() {
+            self.apply_despawn_intent_now(world, stale_id)?;
+        }
+
+        self.player_id = None;
+        self.selected_entity = None;
+        self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
+
+        let player_id =
+            self.apply_spawn_intent_now(world, "proto.player", COMBAT_CHASER_PLAYER_POS)?;
+        let chaser_id =
+            self.apply_spawn_intent_now(world, "proto.npc_chaser", COMBAT_CHASER_CHASER_POS)?;
+        let dummy_id =
+            self.apply_spawn_intent_now(world, "proto.npc_dummy", COMBAT_CHASER_DUMMY_POS)?;
+
+        self.selected_entity = Some(player_id);
+        self.combat_chaser_scenario = CombatChaserScenarioSlot {
+            chaser_id: Some(chaser_id),
+            dummy_id: Some(dummy_id),
+        };
+
+        Ok((player_id, chaser_id, dummy_id))
     }
 
     fn status_multiplier(status_id: StatusId) -> f32 {
@@ -2711,6 +2799,7 @@ impl Scene for GameplayScene {
         self.interactable_cache.clear();
         self.interactable_lookup_by_save_id.clear();
         self.completed_target_ids.clear();
+        self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
         self.system_order_text = GAMEPLAY_SYSTEM_ORDER_TEXT.to_string();
         world.apply_pending();
         self.sync_save_id_map_with_world(world)
@@ -2950,6 +3039,22 @@ impl Scene for GameplayScene {
             SceneDebugCommand::DumpAi => {
                 SceneDebugCommandResult::Success(self.format_dump_ai(world))
             }
+            SceneDebugCommand::ScenarioSetup { scenario_id } => {
+                if scenario_id != "combat_chaser" {
+                    return SceneDebugCommandResult::Error(format!(
+                        "unknown scenario '{scenario_id}'"
+                    ));
+                }
+                match self.run_scenario_setup_combat_chaser(world) {
+                    Ok((player_id, chaser_id, dummy_id)) => {
+                        SceneDebugCommandResult::Success(format!(
+                            "scenario.setup combat_chaser player:{} chaser:{} dummy:{}",
+                            player_id.0, chaser_id.0, dummy_id.0
+                        ))
+                    }
+                    Err(error) => SceneDebugCommandResult::Error(error),
+                }
+            }
         }
     }
 
@@ -2974,6 +3079,7 @@ impl Scene for GameplayScene {
         self.system_events = GameplayEventBus::default();
         self.system_intents = GameplayIntentQueue::default();
         self.system_order_text.clear();
+        self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
         self.selected_completion_enqueued_this_tick = false;
         self.reselect_player_on_respawn = false;
     }
@@ -3489,6 +3595,14 @@ mod tests {
             .count()
     }
 
+    fn actor_entity_count(world: &SceneWorld) -> usize {
+        world
+            .entities()
+            .iter()
+            .filter(|entity| entity.actor)
+            .count()
+    }
+
     fn missing_entity_id_from_world(world: &SceneWorld) -> EntityId {
         let max_id = world
             .entities()
@@ -3550,6 +3664,26 @@ mod tests {
         let player_id = scene.player_id.expect("player id assigned");
         assert_eq!(player_id, spawned_id);
         player_id
+    }
+
+    fn parse_scenario_setup_ids(message: &str) -> (u64, u64, u64) {
+        let mut player = None::<u64>;
+        let mut chaser = None::<u64>;
+        let mut dummy = None::<u64>;
+        for token in message.split_whitespace() {
+            if let Some(value) = token.strip_prefix("player:") {
+                player = value.parse::<u64>().ok();
+            } else if let Some(value) = token.strip_prefix("chaser:") {
+                chaser = value.parse::<u64>().ok();
+            } else if let Some(value) = token.strip_prefix("dummy:") {
+                dummy = value.parse::<u64>().ok();
+            }
+        }
+        (
+            player.expect("player id"),
+            chaser.expect("chaser id"),
+            dummy.expect("dummy id"),
+        )
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5004,6 +5138,143 @@ mod tests {
         world.apply_pending();
         assert!(world.entity_count() <= before_despawn_count);
         assert!(world.find_entity(victim_id).is_none());
+    }
+
+    #[test]
+    fn scenario_setup_combat_chaser_creates_expected_layout_and_selection() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "combat_chaser".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let message = match result {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        assert!(message.starts_with("scenario.setup combat_chaser "));
+        assert!(message.contains("player:"));
+        assert!(message.contains("chaser:"));
+        assert!(message.contains("dummy:"));
+
+        let (player_raw, chaser_raw, dummy_raw) = parse_scenario_setup_ids(&message);
+        let player_id = EntityId(player_raw);
+        let chaser_id = EntityId(chaser_raw);
+        let dummy_id = EntityId(dummy_raw);
+
+        assert!(world.find_entity(player_id).is_some());
+        assert!(world.find_entity(chaser_id).is_some());
+        assert!(world.find_entity(dummy_id).is_some());
+        assert_eq!(scene.player_id, Some(player_id));
+        assert_eq!(scene.selected_entity, Some(player_id));
+        assert_eq!(world.entity_count(), 3);
+        assert_eq!(actor_entity_count(&world), 3);
+
+        let player = world.find_entity(player_id).expect("player");
+        let chaser = world.find_entity(chaser_id).expect("chaser");
+        let dummy = world.find_entity(dummy_id).expect("dummy");
+        assert_eq!(player.transform.position, COMBAT_CHASER_PLAYER_POS);
+        assert_eq!(chaser.transform.position, COMBAT_CHASER_CHASER_POS);
+        assert_eq!(dummy.transform.position, COMBAT_CHASER_DUMMY_POS);
+
+        assert!(scene.health_by_entity.contains_key(&player_id));
+        assert!(scene.health_by_entity.contains_key(&chaser_id));
+        assert!(scene.health_by_entity.contains_key(&dummy_id));
+        assert!(scene.damage_by_entity.contains_key(&player_id));
+        assert!(scene.damage_by_entity.contains_key(&chaser_id));
+        assert!(scene.damage_by_entity.contains_key(&dummy_id));
+        assert!(!scene.ai_agents_by_entity.contains_key(&player_id));
+        assert!(scene.ai_agents_by_entity.contains_key(&chaser_id));
+        assert!(scene.ai_agents_by_entity.contains_key(&dummy_id));
+    }
+
+    #[test]
+    fn scenario_setup_combat_chaser_is_idempotent() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let first = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "combat_chaser".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let first_message = match first {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        let (first_player_raw, first_chaser_raw, first_dummy_raw) =
+            parse_scenario_setup_ids(&first_message);
+
+        let second = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "combat_chaser".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let second_message = match second {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        let (second_player_raw, second_chaser_raw, second_dummy_raw) =
+            parse_scenario_setup_ids(&second_message);
+        let second_player_id = EntityId(second_player_raw);
+        let second_chaser_id = EntityId(second_chaser_raw);
+        let second_dummy_id = EntityId(second_dummy_raw);
+
+        assert_eq!(world.entity_count(), 3);
+        assert_eq!(actor_entity_count(&world), 3);
+        assert_eq!(scene.player_id, Some(second_player_id));
+        assert_eq!(scene.selected_entity, Some(second_player_id));
+        assert!(world.find_entity(second_player_id).is_some());
+        assert!(world.find_entity(second_chaser_id).is_some());
+        assert!(world.find_entity(second_dummy_id).is_some());
+        assert_eq!(
+            world
+                .find_entity(second_player_id)
+                .expect("player")
+                .transform
+                .position,
+            COMBAT_CHASER_PLAYER_POS
+        );
+        assert_eq!(
+            world
+                .find_entity(second_chaser_id)
+                .expect("chaser")
+                .transform
+                .position,
+            COMBAT_CHASER_CHASER_POS
+        );
+        assert_eq!(
+            world
+                .find_entity(second_dummy_id)
+                .expect("dummy")
+                .transform
+                .position,
+            COMBAT_CHASER_DUMMY_POS
+        );
+
+        if first_player_raw != second_player_raw {
+            assert!(world.find_entity(EntityId(first_player_raw)).is_none());
+        }
+        if first_chaser_raw != second_chaser_raw {
+            assert!(world.find_entity(EntityId(first_chaser_raw)).is_none());
+        }
+        if first_dummy_raw != second_dummy_raw {
+            assert!(world.find_entity(EntityId(first_dummy_raw)).is_none());
+        }
     }
 
     #[test]

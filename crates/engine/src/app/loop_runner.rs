@@ -1118,6 +1118,17 @@ fn execute_drained_debug_commands(
                     scenes.execute_debug_command_active(SceneDebugCommand::DumpAi, context);
                 append_scene_debug_result(console, result);
             }
+            DebugCommand::ScenarioSetup { scenario_id } => {
+                let context = SceneDebugContext {
+                    cursor_world: cursor_world_from_input(scenes, input_collector),
+                };
+                let result = scenes.execute_debug_command_active(
+                    SceneDebugCommand::ScenarioSetup { scenario_id },
+                    context,
+                );
+                append_scene_debug_result(console, result);
+                should_apply_after_batch = true;
+            }
             DebugCommand::SwitchScene { scene } => {
                 if scenes.switch_to(scene) {
                     scenes.apply_pending_active();
@@ -1212,6 +1223,7 @@ fn debug_command_token(command: &DebugCommand) -> &'static str {
         DebugCommand::Tick { .. } => "tick",
         DebugCommand::DumpState => "dump.state",
         DebugCommand::DumpAi => "dump.ai",
+        DebugCommand::ScenarioSetup { .. } => "scenario.setup",
         DebugCommand::SwitchScene { .. } => "switch_scene",
         DebugCommand::Spawn { .. } => "spawn",
         DebugCommand::Despawn { .. } => "despawn",
@@ -1727,7 +1739,8 @@ mod tests {
                 | SceneDebugCommand::OrderMove { .. }
                 | SceneDebugCommand::OrderInteract { .. }
                 | SceneDebugCommand::DumpState
-                | SceneDebugCommand::DumpAi => SceneDebugCommandResult::Unsupported,
+                | SceneDebugCommand::DumpAi
+                | SceneDebugCommand::ScenarioSetup { .. } => SceneDebugCommandResult::Unsupported,
             }
         }
     }
@@ -2116,6 +2129,9 @@ mod tests {
             DebugCommand::OrderInteract {
                 target_entity_id: 2,
             },
+            DebugCommand::ScenarioSetup {
+                scenario_id: "combat_chaser".to_string(),
+            },
         ];
         let mut hooks = LoopRuntimeHooks::default();
 
@@ -2134,6 +2150,7 @@ mod tests {
         assert_eq!(
             console.output_lines().collect::<Vec<_>>(),
             vec![
+                "error: active scene does not support this command",
                 "error: active scene does not support this command",
                 "error: active scene does not support this command",
                 "error: active scene does not support this command",

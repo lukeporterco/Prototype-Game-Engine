@@ -21,6 +21,9 @@ pub(crate) enum DebugCommand {
     },
     DumpState,
     DumpAi,
+    ScenarioSetup {
+        scenario_id: String,
+    },
     SwitchScene {
         scene: SceneKey,
     },
@@ -205,6 +208,14 @@ impl ConsoleCommandRegistry {
                 "Dump deterministic AI probe",
                 "",
                 parse_dump_ai_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "scenario.setup",
+                "Setup deterministic gameplay scenario",
+                "<scenario_id:string>",
+                parse_scenario_setup_command,
             )
             .expect("built-in command registration should not fail");
         registry
@@ -598,6 +609,18 @@ fn parse_dump_ai_command(args: &[String]) -> Result<ParsedCommand, CommandParseE
     Ok(ParsedCommand::Queueable(DebugCommand::DumpAi))
 }
 
+fn parse_scenario_setup_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    if args.len() != 1 {
+        return Err(CommandParseError {
+            reason: "expected exactly one argument <scenario_id>".to_string(),
+            usage: "scenario.setup <scenario_id>".to_string(),
+        });
+    }
+    Ok(ParsedCommand::Queueable(DebugCommand::ScenarioSetup {
+        scenario_id: args[0].clone(),
+    }))
+}
+
 fn parse_switch_scene_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
     if args.len() != 1 {
         return Err(CommandParseError {
@@ -898,41 +921,45 @@ mod tests {
         assert_eq!(lines[11], "dump.ai - Dump deterministic AI probe");
         assert_eq!(
             lines[12],
+            "scenario.setup <scenario_id:string> - Setup deterministic gameplay scenario"
+        );
+        assert_eq!(
+            lines[13],
             "switch_scene <scene_id:a|b> - Switch active scene"
         );
-        assert_eq!(lines[13], "quit - Quit app");
-        assert_eq!(lines[14], "despawn <entity_id:u64> - Despawn entity by id");
+        assert_eq!(lines[14], "quit - Quit app");
+        assert_eq!(lines[15], "despawn <entity_id:u64> - Despawn entity by id");
         assert_eq!(
-            lines[15],
+            lines[16],
             "spawn <def_name:string> [x:f32 y:f32] - Spawn entity by def name"
         );
-        assert_eq!(lines[16], "select <entity_id:u64> - Select entity by id");
+        assert_eq!(lines[17], "select <entity_id:u64> - Select entity by id");
         assert_eq!(
-            lines[17],
+            lines[18],
             "order.move <x:f32> <y:f32> - Queue move order for selected actor"
         );
         assert_eq!(
-            lines[18],
+            lines[19],
             "order.interact <target_entity_id:u64> - Queue interaction order for selected actor"
         );
         assert_eq!(
-            lines[19],
+            lines[20],
             "input.key_down <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key down"
         );
         assert_eq!(
-            lines[20],
+            lines[21],
             "input.key_up <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key up"
         );
         assert_eq!(
-            lines[21],
+            lines[22],
             "input.mouse_move <x:f32> <y:f32> - Inject mouse move (px)"
         );
         assert_eq!(
-            lines[22],
+            lines[23],
             "input.mouse_down <button:left|right> - Inject mouse down"
         );
         assert_eq!(
-            lines[23],
+            lines[24],
             "input.mouse_up <button:left|right> - Inject mouse up"
         );
     }
@@ -995,6 +1022,7 @@ mod tests {
         console.push_pending_line_for_test("resume_sim");
         console.push_pending_line_for_test("dump.state");
         console.push_pending_line_for_test("dump.ai");
+        console.push_pending_line_for_test("scenario.setup combat_chaser");
         console.push_pending_line_for_test("switch_scene a");
         console.push_pending_line_for_test("quit");
         console.push_pending_line_for_test("despawn 42");
@@ -1025,6 +1053,9 @@ mod tests {
                 DebugCommand::ResumeSim,
                 DebugCommand::DumpState,
                 DebugCommand::DumpAi,
+                DebugCommand::ScenarioSetup {
+                    scenario_id: "combat_chaser".to_string(),
+                },
                 DebugCommand::SwitchScene { scene: SceneKey::A },
                 DebugCommand::Quit,
                 DebugCommand::Despawn { entity_id: 42 },
@@ -1145,6 +1176,8 @@ mod tests {
         let mut console = ConsoleState::default();
         console.push_pending_line_for_test("dump.state now");
         console.push_pending_line_for_test("dump.ai now");
+        console.push_pending_line_for_test("scenario.setup");
+        console.push_pending_line_for_test("scenario.setup combat chaser");
 
         processor.process_pending_lines(&mut console);
 
@@ -1153,6 +1186,8 @@ mod tests {
             vec![
                 "error: unexpected extra arguments. usage: dump.state",
                 "error: unexpected extra arguments. usage: dump.ai",
+                "error: expected exactly one argument <scenario_id>. usage: scenario.setup <scenario_id>",
+                "error: expected exactly one argument <scenario_id>. usage: scenario.setup <scenario_id>",
             ]
         );
     }

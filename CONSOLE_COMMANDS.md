@@ -29,6 +29,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `order.interact`
 - `dump.state`
 - `dump.ai`
+- `scenario.setup`
 - `pause_sim`
 - `resume_sim`
 - `tick`
@@ -224,6 +225,18 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `dump.ai`
 - Result example:
 - `ok: dump.ai v1 | cnt:id:0 wa:1 ch:2 use:0 | near:4@1.00,7@2.50`
+
+### scenario.setup
+- Layer: Engine queueable -> active scene debug hook (scene-owned implementation)
+- Description: Sets up a deterministic scenario layout for automation preconditions.
+- Syntax: `scenario.setup <scenario_id>`
+- Supported scenario IDs (GameplayScene): `combat_chaser`
+- Example:
+- `scenario.setup combat_chaser`
+- Result examples:
+- `ok: scenario.setup combat_chaser player:1 chaser:2 dummy:3`
+- `error: unknown scenario 'foo'`
+- `error: active scene does not support this command`
 
 ### input.key_down
 - Layer: Engine loop input bridge
