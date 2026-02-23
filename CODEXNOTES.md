@@ -123,3 +123,5 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 51.4 (2026-02-23): added repo tooling helper `scripts/test-helper.ps1` for deterministic test discovery and single-test execution.
 - Ticket 51.4: helper supports `-Mode list` and `-Mode run-one` for packages `engine|game|thruport_cli`; `run-one` resolves regex to exactly one canonical test name and executes with `cargo test -p <pkg> <name> -- --exact`.
 - Ticket 51.4: workflow docs added in `docs/test_helper.md` and linked from `README.md`.
+- Ticket 52 (2026-02-23): `crates/game/src/app/gameplay.rs` was structurally decomposed into `crates/game/src/app/gameplay/` chunk files (`mod.rs`, `types.rs`, `systems.rs`, `scene_state.rs`, `scene_impl.rs`, `util.rs`, `tests.rs`) using include-based composition to preserve runtime behavior and private-access semantics.
+- Ticket 52: external gameplay entrypoint contract is unchanged (`crate::app::gameplay::build_scene_pair`), and system order constants/intent pipeline behavior remain intact.
