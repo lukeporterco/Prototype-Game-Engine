@@ -1071,4 +1071,99 @@ mod tests {
             "thruport.status v1 enabled:1 telemetry:1 clients:1"
         );
     }
+
+    #[test]
+    fn telemetry_pressure_preserves_all_control_lines_in_order_under_strain() {
+        let mut client = make_client_conn_for_queue_tests();
+        let cap = 96usize;
+        let control_payloads = vec![
+            "ok: sync",
+            "ok: queued tick 1",
+            "ok: sim paused",
+            "error: test fault",
+            "ok: sim resumed",
+        ];
+
+        for i in 0..300 {
+            enqueue_telemetry_line_with_cap(
+                &mut client,
+                &format!("thruport.frame v1 tick:{i} paused:1 qtick:0 ev:0 in:0 in_bad:0"),
+                cap,
+            );
+            if i % 57 == 0 {
+                let idx = (i / 57) as usize;
+                if idx < control_payloads.len() {
+                    enqueue_control_line(&mut client, control_payloads[idx]);
+                }
+            }
+        }
+
+        for payload in &control_payloads {
+            enqueue_control_line(&mut client, payload);
+        }
+
+        let queued_controls: Vec<Vec<u8>> = client
+            .queued_chunks
+            .iter()
+            .filter(|chunk| chunk.class == OutboundClass::Control)
+            .map(|chunk| chunk.bytes.clone())
+            .collect();
+        let expected_controls: Vec<Vec<u8>> = control_payloads
+            .iter()
+            .map(|payload| format!("C {payload}\n").into_bytes())
+            .collect();
+
+        assert!(client.queued_telemetry_bytes <= cap);
+        assert!(queued_controls.len() >= control_payloads.len());
+        assert_eq!(
+            queued_controls[queued_controls.len() - control_payloads.len()..],
+            expected_controls
+        );
+    }
+
+    #[test]
+    fn flush_pending_chunks_handles_large_partial_write_sequence() {
+        let mut active_chunk = None;
+        let mut queued_chunks = std::collections::VecDeque::new();
+        let mut queued_telemetry_bytes = 0usize;
+        for i in 0..240 {
+            if i % 6 == 0 {
+                queued_chunks.push_back(OutboundChunk {
+                    class: OutboundClass::Control,
+                    bytes: encode_line_payload(&format!("ok: batch-{i}")),
+                });
+            } else {
+                let chunk = OutboundChunk {
+                    class: OutboundClass::Telemetry,
+                    bytes: encode_line_payload(&format!(
+                        "thruport.frame v1 tick:{i} paused:1 qtick:0 ev:0 in:0 in_bad:0"
+                    )),
+                };
+                queued_telemetry_bytes = queued_telemetry_bytes.saturating_add(chunk.bytes.len());
+                queued_chunks.push_back(chunk);
+            }
+        }
+
+        let mut stride = 1usize;
+        for _ in 0..20_000 {
+            flush_pending_chunks(
+                &mut active_chunk,
+                &mut queued_chunks,
+                &mut queued_telemetry_bytes,
+                |payload| {
+                    let step = stride.min(payload.len());
+                    stride = if stride >= 7 { 1 } else { stride + 1 };
+                    Ok(step)
+                },
+            )
+            .expect("flush should succeed");
+            if active_chunk.is_none() && queued_chunks.is_empty() {
+                break;
+            }
+        }
+
+        assert!(active_chunk.is_none());
+        assert!(queued_chunks.is_empty());
+        assert_eq!(queued_telemetry_bytes, 0);
+    }
 }
