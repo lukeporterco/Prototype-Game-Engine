@@ -17,21 +17,25 @@ cargo build -p thruport_cli
 ## Usage
 
 ```powershell
-thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--include-telemetry] wait-ready
-thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--include-telemetry] send <command...>
-thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--include-telemetry] script <file> [--barrier]
-thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--include-telemetry] barrier
+thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--quiet-ms <u64>] [--include-telemetry] wait-ready
+thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--quiet-ms <u64>] [--include-telemetry] send <command...>
+thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--quiet-ms <u64>] [--include-telemetry] script <file> [--barrier]
+thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--quiet-ms <u64>] [--include-telemetry] barrier
 ```
 
 Defaults:
 - `--port 46001`
 - `--timeout-ms 5000`
 - `--retry-ms 100`
+- `--quiet-ms 250`
 
 Output behavior:
 - Default prints control payload lines only.
 - `--include-telemetry` prints both control and telemetry payloads.
 - Channel tags are stripped before printing.
+- `send` issues an internal `sync` barrier by default, waits for `ok: sync`, and does not print that internal barrier line.
+- If internal `sync` is unavailable, `send` falls back to quiet-window completion using `--quiet-ms`.
+- `script --barrier` behavior is unchanged: it sends exactly one explicit barrier at script end.
 
 ## Examples
 

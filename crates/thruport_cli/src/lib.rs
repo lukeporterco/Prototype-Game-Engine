@@ -28,6 +28,7 @@ pub struct CommonOptions {
     pub port: u16,
     pub timeout_ms: u64,
     pub retry_ms: u64,
+    pub quiet_ms: u64,
     pub include_telemetry: bool,
 }
 
@@ -37,6 +38,7 @@ impl Default for CommonOptions {
             port: DEFAULT_PORT,
             timeout_ms: DEFAULT_TIMEOUT_MS,
             retry_ms: DEFAULT_RETRY_MS,
+            quiet_ms: DEFAULT_QUIET_MS,
             include_telemetry: false,
         }
     }
@@ -90,6 +92,10 @@ pub fn is_sync_ok_payload(payload: &str) -> bool {
     payload == "ok: sync"
 }
 
+pub fn is_sync_unavailable_payload(payload: &str) -> bool {
+    payload.starts_with("error: unknown command 'sync'")
+}
+
 pub fn parse_script_commands(content: &str) -> Vec<String> {
     let mut commands = Vec::new();
     for line in content.lines() {
@@ -105,6 +111,7 @@ pub fn parse_script_commands(content: &str) -> Vec<String> {
 pub fn run<W: Write>(kind: CommandKind, opts: CommonOptions, stdout: &mut W) -> Result<(), String> {
     let timeout = Duration::from_millis(opts.timeout_ms);
     let retry_base = Duration::from_millis(opts.retry_ms.max(1));
+    let quiet_window = Duration::from_millis(opts.quiet_ms.max(1));
     let mut session = connect_and_wait_ready(opts.port, timeout, retry_base, |line| {
         emit_line(stdout, line, opts.include_telemetry)
     })?;
@@ -112,13 +119,9 @@ pub fn run<W: Write>(kind: CommandKind, opts: CommonOptions, stdout: &mut W) -> 
     match kind {
         CommandKind::WaitReady => Ok(()),
         CommandKind::Send { command } => {
-            send_line(&mut session.writer, &command)?;
-            read_until_quiet(
-                &mut session.reader,
-                timeout,
-                Duration::from_millis(DEFAULT_QUIET_MS),
-                |line| emit_line(stdout, line, opts.include_telemetry),
-            )
+            send_with_internal_sync_boundary(&mut session, &command, timeout, quiet_window, |line| {
+                emit_line(stdout, line, opts.include_telemetry)
+            })
         }
         CommandKind::Script { path, barrier } => {
             let content = fs::read_to_string(&path)
@@ -129,7 +132,7 @@ pub fn run<W: Write>(kind: CommandKind, opts: CommonOptions, stdout: &mut W) -> 
                 read_until_quiet(
                     &mut session.reader,
                     timeout,
-                    Duration::from_millis(DEFAULT_QUIET_MS),
+                    quiet_window,
                     |line| emit_line(stdout, line, opts.include_telemetry),
                 )?;
             }
@@ -143,6 +146,55 @@ pub fn run<W: Write>(kind: CommandKind, opts: CommonOptions, stdout: &mut W) -> 
         CommandKind::Barrier => send_barrier_and_wait_ack(&mut session, timeout, |line| {
             emit_line(stdout, line, opts.include_telemetry)
         }),
+    }
+}
+
+fn send_with_internal_sync_boundary<F>(
+    session: &mut Session,
+    command: &str,
+    timeout: Duration,
+    quiet_window: Duration,
+    mut on_line: F,
+) -> Result<(), String>
+where
+    F: FnMut(&ParsedLine),
+{
+    send_line(&mut session.writer, command)?;
+    send_line(&mut session.writer, "sync")?;
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match read_one_line(&mut session.reader, deadline) {
+            ReadOutcome::Line(raw) => {
+                let parsed = parse_wire_line(&raw);
+                if parsed.channel == LineChannel::Control && is_sync_ok_payload(&parsed.payload) {
+                    return Ok(());
+                }
+                if parsed.channel == LineChannel::Control
+                    && is_sync_unavailable_payload(&parsed.payload)
+                {
+                    return read_until_quiet(
+                        &mut session.reader,
+                        timeout,
+                        quiet_window,
+                        |line| on_line(line),
+                    );
+                }
+                on_line(&parsed);
+            }
+            ReadOutcome::NoData => {}
+            ReadOutcome::Disconnected => {
+                return Err("socket disconnected while waiting for internal sync ack".to_string());
+            }
+            ReadOutcome::DeadlineExceeded => {
+                return Err("timed out waiting for internal sync ack (ok: sync)".to_string());
+            }
+            ReadOutcome::IoError(error) => {
+                return Err(format!(
+                    "socket read error while waiting for internal sync ack: {error}"
+                ));
+            }
+        }
     }
 }
 
@@ -422,6 +474,12 @@ mod tests {
         assert!(!is_ready_payload("ok: sync"));
         assert!(is_sync_ok_payload("ok: sync"));
         assert!(!is_sync_ok_payload("ok: sim paused"));
+        assert!(is_sync_unavailable_payload(
+            "error: unknown command 'sync'. try: help"
+        ));
+        assert!(!is_sync_unavailable_payload(
+            "error: unknown command 'tick'. try: help"
+        ));
     }
 
     #[test]

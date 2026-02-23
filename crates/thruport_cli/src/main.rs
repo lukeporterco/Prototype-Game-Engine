@@ -55,6 +55,15 @@ fn run_cli() -> Result<(), String> {
                     .map_err(|_| format!("invalid --retry-ms value '{value}' (expected u64)"))?;
                 index += 2;
             }
+            "--quiet-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "missing value for --quiet-ms".to_string())?;
+                options.quiet_ms = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("invalid --quiet-ms value '{value}' (expected u64)"))?;
+                index += 2;
+            }
             "--include-telemetry" => {
                 options.include_telemetry = true;
                 index += 1;
@@ -122,15 +131,16 @@ fn usage_text() -> String {
         "thruport_cli - deterministic thruport client",
         "",
         "Usage:",
-        "  thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--include-telemetry] wait-ready",
-        "  thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--include-telemetry] send <command...>",
-        "  thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--include-telemetry] script <file> [--barrier]",
-        "  thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--include-telemetry] barrier",
+        "  thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--quiet-ms <u64>] [--include-telemetry] wait-ready",
+        "  thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--quiet-ms <u64>] [--include-telemetry] send <command...>",
+        "  thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--quiet-ms <u64>] [--include-telemetry] script <file> [--barrier]",
+        "  thruport_cli [--port <u16>] [--timeout-ms <u64>] [--retry-ms <u64>] [--quiet-ms <u64>] [--include-telemetry] barrier",
         "",
         "Defaults:",
         "  --port 46001",
         "  --timeout-ms 5000",
         "  --retry-ms 100",
+        "  --quiet-ms 250",
     ]
     .join("\n")
 }

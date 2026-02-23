@@ -125,3 +125,6 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 51.4: workflow docs added in `docs/test_helper.md` and linked from `README.md`.
 - Ticket 52 (2026-02-23): `crates/game/src/app/gameplay.rs` was structurally decomposed into `crates/game/src/app/gameplay/` chunk files (`mod.rs`, `types.rs`, `systems.rs`, `scene_state.rs`, `scene_impl.rs`, `util.rs`, `tests.rs`) using include-based composition to preserve runtime behavior and private-access semantics.
 - Ticket 52: external gameplay entrypoint contract is unchanged (`crate::app::gameplay::build_scene_pair`), and system order constants/intent pipeline behavior remain intact.
+- Ticket 53 (2026-02-23): `thruport_cli send` now uses an internal `sync` completion boundary in `crates/thruport_cli/src/lib.rs` and suppresses the internal `ok: sync` line from default output.
+- Ticket 53: `thruport_cli` fallback behavior uses quiet-window completion only when internal sync is unavailable; CLI now exposes `--quiet-ms` (default `250`) in `crates/thruport_cli/src/main.rs` and `docs/thruport_cli.md`.
+- Ticket 53: `script --barrier` contract remains one explicit end-of-script barrier (no added per-command barriers).
