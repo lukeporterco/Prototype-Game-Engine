@@ -30,6 +30,8 @@ const THRUPORT_PORT_ENV_VAR: &str = "PROTOGE_THRUPORT_PORT";
 const THRUPORT_DIAG_ENV_VAR: &str = "PROTOGE_THRUPORT_DIAG";
 const THRUPORT_DEFAULT_PORT: u16 = 46001;
 const MAX_PENDING_TELEMETRY_BYTES_PER_CLIENT: usize = 256 * 1024;
+const REMOTE_CONTROL_PREFIX: &str = "C ";
+const REMOTE_TELEMETRY_PREFIX: &str = "T ";
 
 pub(crate) struct DevThruportHooks {
     _console_input: Option<Box<dyn ConsoleInputQueueHook + Send>>,
@@ -106,6 +108,7 @@ pub(crate) struct DevThruport {
 #[derive(Debug)]
 struct TcpRemoteConsoleTransport {
     listener: TcpListener,
+    bound_port: u16,
     clients: Vec<ClientConn>,
 }
 
@@ -141,8 +144,10 @@ impl TcpRemoteConsoleTransport {
         let addr = localhost_bind_addr(port);
         let listener = TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
+        let bound_port = listener.local_addr()?.port();
         Ok(Self {
             listener,
+            bound_port,
             clients: Vec::new(),
         })
     }
@@ -165,13 +170,15 @@ impl TcpRemoteConsoleTransport {
                     if let Err(err) = stream.set_nodelay(true) {
                         warn!(error = %err, "thruport_client_nodelay_failed");
                     }
-                    self.clients.push(ClientConn {
+                    let mut client = ClientConn {
                         stream,
                         read_buf: Vec::new(),
                         active_chunk: None,
                         queued_chunks: VecDeque::new(),
                         queued_telemetry_bytes: 0,
-                    });
+                    };
+                    enqueue_control_line(&mut client, &ready_line_text(self.bound_port));
+                    self.clients.push(client);
                 }
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
                 Err(err) => {
@@ -267,7 +274,13 @@ pub(crate) fn initialize(hooks: DevThruportHooks) -> DevThruport {
     let config = DevThruportConfig::from_env();
     let mode = if config.enabled {
         match TcpRemoteConsoleTransport::bind_localhost(config.port) {
-            Ok(transport) => DevThruportMode::Enabled(transport),
+            Ok(transport) => {
+                info!(
+                    line = %ready_line_text(transport.bound_port),
+                    "thruport_ready_bound"
+                );
+                DevThruportMode::Enabled(transport)
+            }
             Err(err) => {
                 warn!(error = %err, port = config.port, "thruport_bind_failed_disabled");
                 DevThruportMode::Disabled
@@ -414,10 +427,22 @@ fn encode_line_payload(line: &str) -> Vec<u8> {
     payload
 }
 
+fn encode_remote_tagged_payload(prefix: &str, line: &str) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(prefix.len() + line.len() + 1);
+    payload.extend_from_slice(prefix.as_bytes());
+    payload.extend_from_slice(line.as_bytes());
+    payload.push(b'\n');
+    payload
+}
+
+fn ready_line_text(port: u16) -> String {
+    format!("thruport.ready v1 port:{port}")
+}
+
 fn enqueue_control_line(client: &mut ClientConn, line: &str) {
     let chunk = OutboundChunk {
         class: OutboundClass::Control,
-        bytes: encode_line_payload(line),
+        bytes: encode_remote_tagged_payload(REMOTE_CONTROL_PREFIX, line),
     };
     let insert_at = client
         .queued_chunks
@@ -438,15 +463,14 @@ fn enqueue_control_line(client: &mut ClientConn, line: &str) {
 fn enqueue_telemetry_line_with_cap(client: &mut ClientConn, line: &str, telemetry_cap: usize) {
     let chunk = OutboundChunk {
         class: OutboundClass::Telemetry,
-        bytes: encode_line_payload(line),
+        bytes: encode_remote_tagged_payload(REMOTE_TELEMETRY_PREFIX, line),
     };
     let chunk_bytes = chunk.bytes.len();
     if chunk_bytes > telemetry_cap {
         if thruport_diag_enabled() {
             info!(
                 chunk_bytes,
-                telemetry_cap,
-                "thruport_diag_drop_telemetry_chunk_over_cap"
+                telemetry_cap, "thruport_diag_drop_telemetry_chunk_over_cap"
             );
         }
         return;
@@ -585,14 +609,16 @@ mod tests {
     use super::{
         encode_line_payload, enqueue_control_line, enqueue_telemetry_line_with_cap,
         flush_pending_chunks, initialize, localhost_bind_addr, parse_enabled_flag,
-        parse_port_or_default, DevThruport, DevThruportConfig, DevThruportHooks, DevThruportMode,
-        OutboundChunk, OutboundChunkState, OutboundClass, TcpRemoteConsoleTransport,
-        THRUPORT_DEFAULT_PORT,
+        parse_port_or_default, ready_line_text, DevThruport, DevThruportConfig, DevThruportHooks,
+        DevThruportMode, OutboundChunk, OutboundChunkState, OutboundClass,
+        TcpRemoteConsoleTransport, THRUPORT_DEFAULT_PORT,
     };
 
     fn make_client_conn_for_queue_tests() -> super::ClientConn {
         let listener = std::net::TcpListener::bind(localhost_bind_addr(0)).expect("bind");
-        listener.set_nonblocking(true).expect("listener nonblocking");
+        listener
+            .set_nonblocking(true)
+            .expect("listener nonblocking");
         let addr = listener.local_addr().expect("addr");
         let stream = TcpStream::connect(addr).expect("connect");
         super::ClientConn {
@@ -680,7 +706,9 @@ mod tests {
         }
         assert_eq!(transport.clients.len(), 1);
 
-        let expected = b"ok: ready\nerror: nope\n";
+        let expected_ready = format!("C {}\n", ready_line_text(transport.bound_port));
+        let expected_ok = "C ok: ready\n";
+        let expected_error = "C error: nope\n";
         let mut received = Vec::new();
         for _ in 0..40 {
             transport.send_output_lines(&["ok: ready".to_string(), "error: nope".to_string()]);
@@ -688,7 +716,11 @@ mod tests {
             match client.read(&mut chunk) {
                 Ok(bytes_read) if bytes_read > 0 => {
                     received.extend_from_slice(&chunk[..bytes_read]);
-                    if received.ends_with(expected) {
+                    let text = String::from_utf8_lossy(&received);
+                    if text.contains(&expected_ready)
+                        && text.contains(expected_ok)
+                        && text.contains(expected_error)
+                    {
                         break;
                     }
                 }
@@ -699,7 +731,10 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
 
-        assert!(received.ends_with(expected));
+        let received_text = String::from_utf8_lossy(&received);
+        assert!(received_text.contains(&expected_ready));
+        assert!(received_text.contains(expected_ok));
+        assert!(received_text.contains(expected_error));
     }
 
     #[test]
@@ -777,6 +812,7 @@ mod tests {
     fn tcp_transport_writes_telemetry_frame_line_to_connected_client() {
         let transport = TcpRemoteConsoleTransport::bind_localhost(0).expect("bind");
         let addr = transport.listener.local_addr().expect("local_addr");
+        let bound_port = transport.bound_port;
         let mut thruport = DevThruport {
             mode: DevThruportMode::Enabled(transport),
             _hooks: DevThruportHooks::no_op(),
@@ -799,7 +835,8 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
 
-        let expected = b"thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0\n";
+        let expected_ready = format!("C {}\n", ready_line_text(bound_port));
+        let expected = "T thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0\n";
         let mut received = Vec::new();
         for _ in 0..40 {
             thruport.send_thruport_frame(
@@ -809,7 +846,8 @@ mod tests {
             match client.read(&mut chunk) {
                 Ok(bytes_read) if bytes_read > 0 => {
                     received.extend_from_slice(&chunk[..bytes_read]);
-                    if received.ends_with(expected) {
+                    let text = String::from_utf8_lossy(&received);
+                    if text.contains(&expected_ready) && text.contains(expected) {
                         break;
                     }
                 }
@@ -820,7 +858,9 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
 
-        assert!(received.ends_with(expected));
+        let received_text = String::from_utf8_lossy(&received);
+        assert!(received_text.contains(&expected_ready));
+        assert!(received_text.contains(expected));
     }
 
     #[test]
@@ -838,7 +878,9 @@ mod tests {
         });
         let telemetry = OutboundChunk {
             class: OutboundClass::Telemetry,
-            bytes: encode_line_payload("thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0"),
+            bytes: encode_line_payload(
+                "thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0",
+            ),
         };
         queued_telemetry_bytes = telemetry.bytes.len();
         queued_chunks.push_back(telemetry);
@@ -873,9 +915,7 @@ mod tests {
         for i in 0..50 {
             enqueue_telemetry_line_with_cap(
                 &mut client,
-                &format!(
-                    "thruport.frame v1 tick:{i} paused:1 qtick:0 ev:0 in:0 in_bad:0"
-                ),
+                &format!("thruport.frame v1 tick:{i} paused:1 qtick:0 ev:0 in:0 in_bad:0"),
                 cap,
             );
         }
@@ -905,9 +945,7 @@ mod tests {
         for i in 0..80 {
             enqueue_telemetry_line_with_cap(
                 &mut client,
-                &format!(
-                    "thruport.frame v1 tick:{i} paused:1 qtick:0 ev:0 in:0 in_bad:0"
-                ),
+                &format!("thruport.frame v1 tick:{i} paused:1 qtick:0 ev:0 in:0 in_bad:0"),
                 cap,
             );
         }
@@ -965,12 +1003,47 @@ mod tests {
                 Err(err) => panic!("unexpected read error: {err}"),
             }
 
-            if String::from_utf8_lossy(&received).contains("ok: sync\n") {
+            if String::from_utf8_lossy(&received).contains("C ok: sync\n") {
                 break;
             }
             thread::sleep(Duration::from_millis(5));
         }
-        assert!(String::from_utf8_lossy(&received).contains("ok: sync\n"));
+        assert!(String::from_utf8_lossy(&received).contains("C ok: sync\n"));
+    }
+
+    #[test]
+    fn ready_line_is_sent_immediately_on_accept() {
+        let mut transport = TcpRemoteConsoleTransport::bind_localhost(0).expect("bind");
+        let addr = transport.listener.local_addr().expect("local_addr");
+        let mut client = TcpStream::connect(addr).expect("connect");
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set_read_timeout");
+        client
+            .set_nonblocking(true)
+            .expect("set_nonblocking_client");
+
+        let expected = format!("C {}\n", ready_line_text(transport.bound_port));
+        let mut out = Vec::new();
+        let mut received = Vec::new();
+        for _ in 0..40 {
+            transport.poll_lines(&mut out);
+            let mut chunk = [0u8; 128];
+            match client.read(&mut chunk) {
+                Ok(bytes_read) if bytes_read > 0 => {
+                    received.extend_from_slice(&chunk[..bytes_read]);
+                    if String::from_utf8_lossy(&received).contains(&expected) {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                Err(err) => panic!("unexpected read error: {err}"),
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(String::from_utf8_lossy(&received).contains(&expected));
     }
 
     #[test]

@@ -412,7 +412,10 @@ mod tests {
         let ContentPipelineError::Compile(err) = error else {
             panic!("expected compile error");
         };
-        assert_eq!(err.code, super::super::compiler::ContentErrorCode::InvalidValue);
+        assert_eq!(
+            err.code,
+            super::super::compiler::ContentErrorCode::InvalidValue
+        );
         assert_eq!(err.mod_id, "badgameplay");
         assert_eq!(err.def_name.as_deref(), Some("proto.badgameplay"));
         assert_eq!(err.field_name.as_deref(), Some("attack_cooldown_seconds"));

@@ -4910,14 +4910,21 @@ mod tests {
             let has_slow = scene
                 .status_sets_by_entity
                 .get(&player_id)
-                .map(|set| set.active.iter().any(|status| status.status_id == STATUS_SLOW))
+                .map(|set| {
+                    set.active
+                        .iter()
+                        .any(|status| status.status_id == STATUS_SLOW)
+                })
                 .unwrap_or(false);
             if has_slow {
                 slow_applied = true;
                 break;
             }
         }
-        assert!(slow_applied, "expected proto.npc_chaser to apply status.slow");
+        assert!(
+            slow_applied,
+            "expected proto.npc_chaser to apply status.slow"
+        );
         let player_health_after_hit = scene
             .health_by_entity
             .get(&player_id)
@@ -4937,7 +4944,11 @@ mod tests {
             let has_slow = scene
                 .status_sets_by_entity
                 .get(&player_id)
-                .map(|set| set.active.iter().any(|status| status.status_id == STATUS_SLOW))
+                .map(|set| {
+                    set.active
+                        .iter()
+                        .any(|status| status.status_id == STATUS_SLOW)
+                })
                 .unwrap_or(false);
             if !has_slow {
                 slow_expired = true;

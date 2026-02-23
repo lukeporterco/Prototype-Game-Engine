@@ -241,7 +241,7 @@ fn run_app_with_metrics_and_hooks(
     let mut drained_debug_commands = Vec::<DebugCommand>::new();
     let mut remote_console_lines = Vec::<String>::new();
     let mut remote_console_output_lines = Vec::<String>::new();
-    let thruport_telemetry_enabled = parse_enabled_flag_from_env(THRUPORT_TELEMETRY_ENV_VAR);
+    let mut thruport_telemetry_enabled = parse_enabled_flag_from_env(THRUPORT_TELEMETRY_ENV_VAR);
     info!(
         perf_stats_enabled_by_default = PerfStats::enabled_by_default(),
         perf_window_frames = PerfStats::window_len(),
@@ -334,7 +334,7 @@ fn run_app_with_metrics_and_hooks(
                             &mut sim_paused,
                             &mut queued_manual_ticks,
                             &mut runtime_hooks,
-                            thruport_telemetry_enabled,
+                            &mut thruport_telemetry_enabled,
                         ) {
                             info!(reason = "console_quit_command", "shutdown_requested");
                             window_target.exit();
@@ -1043,7 +1043,7 @@ fn execute_drained_debug_commands(
     sim_paused: &mut bool,
     queued_manual_ticks: &mut u32,
     runtime_hooks: &mut LoopRuntimeHooks,
-    thruport_telemetry_enabled: bool,
+    thruport_telemetry_enabled: &mut bool,
 ) -> bool {
     let mut quit_requested = false;
     let mut should_apply_after_batch = false;
@@ -1071,9 +1071,9 @@ fn execute_drained_debug_commands(
             }
             DebugCommand::ThruportStatus => {
                 let line = match runtime_hooks.remote_console_pump.as_mut() {
-                    Some(pump) => pump.status_line(thruport_telemetry_enabled),
+                    Some(pump) => pump.status_line(*thruport_telemetry_enabled),
                     None => {
-                        let telemetry_value = if thruport_telemetry_enabled { 1 } else { 0 };
+                        let telemetry_value = if *thruport_telemetry_enabled { 1 } else { 0 };
                         format!(
                             "thruport.status v1 enabled:0 telemetry:{} clients:0",
                             telemetry_value
@@ -1081,6 +1081,14 @@ fn execute_drained_debug_commands(
                     }
                 };
                 console.append_output_line(line);
+            }
+            DebugCommand::ThruportTelemetry { enabled } => {
+                *thruport_telemetry_enabled = enabled;
+                let enabled_value = if enabled { 1 } else { 0 };
+                console.append_output_line(format!(
+                    "ok: thruport.telemetry v1 enabled:{}",
+                    enabled_value
+                ));
             }
             DebugCommand::PauseSim => {
                 *sim_paused = true;
@@ -1198,6 +1206,7 @@ fn debug_command_token(command: &DebugCommand) -> &'static str {
         DebugCommand::ResetScene => "reset_scene",
         DebugCommand::Sync => "sync",
         DebugCommand::ThruportStatus => "thruport.status",
+        DebugCommand::ThruportTelemetry { .. } => "thruport.telemetry",
         DebugCommand::PauseSim => "pause_sim",
         DebugCommand::ResumeSim => "resume_sim",
         DebugCommand::Tick { .. } => "tick",
@@ -1785,6 +1794,25 @@ mod tests {
         }
     }
 
+    struct OutputAndFrameCapturePump {
+        outputs: Arc<Mutex<Vec<String>>>,
+        frames: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RemoteConsoleLinePump for OutputAndFrameCapturePump {
+        fn poll_lines(&mut self, _out: &mut Vec<String>) {}
+
+        fn send_output_lines(&mut self, lines: &[String]) {
+            let mut outputs = self.outputs.lock().expect("lock");
+            outputs.extend(lines.iter().cloned());
+        }
+
+        fn send_thruport_frame(&mut self, line: &str) {
+            let mut frames = self.frames.lock().expect("lock");
+            frames.push(line.to_string());
+        }
+    }
+
     struct StatusLinePump {
         status_line_text: String,
     }
@@ -2004,6 +2032,7 @@ mod tests {
         ];
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut hooks = LoopRuntimeHooks::default();
 
         let quit = execute_drained_debug_commands(
@@ -2014,7 +2043,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
 
         assert!(!quit);
@@ -2041,6 +2070,7 @@ mod tests {
         let mut input_collector = InputCollector::new(1280, 720);
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut commands = vec![DebugCommand::DumpState, DebugCommand::DumpAi];
         let mut hooks = LoopRuntimeHooks::default();
 
@@ -2052,7 +2082,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
 
         assert!(!quit);
@@ -2079,6 +2109,7 @@ mod tests {
         let mut input_collector = InputCollector::new(1280, 720);
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut commands = vec![
             DebugCommand::Select { entity_id: 1 },
             DebugCommand::OrderMove { x: 1.0, y: -2.0 },
@@ -2096,7 +2127,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
 
         assert!(!quit);
@@ -2125,6 +2156,7 @@ mod tests {
         let mut commands = vec![DebugCommand::SwitchScene { scene: SceneKey::B }];
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut hooks = LoopRuntimeHooks::default();
 
         let _ = execute_drained_debug_commands(
@@ -2135,7 +2167,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
 
         assert_eq!(scenes.active_scene(), SceneKey::B);
@@ -2162,6 +2194,7 @@ mod tests {
         let mut commands = vec![DebugCommand::ResetScene];
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut hooks = LoopRuntimeHooks::default();
 
         let _ = execute_drained_debug_commands(
@@ -2172,7 +2205,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
 
         assert_eq!(scenes.active_world().entity_count(), 1);
@@ -2223,6 +2256,7 @@ mod tests {
         let mut input_collector = InputCollector::new(1280, 720);
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut hooks = LoopRuntimeHooks::default();
         let mut commands = vec![
             DebugCommand::PauseSim,
@@ -2238,7 +2272,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
 
         assert!(!quit);
@@ -2260,6 +2294,7 @@ mod tests {
         let mut input_collector = InputCollector::new(1280, 720);
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut hooks = LoopRuntimeHooks::default();
         let mut commands = vec![
             DebugCommand::PauseSim,
@@ -2275,7 +2310,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
 
         assert!(!quit);
@@ -2296,6 +2331,7 @@ mod tests {
         let mut input_collector = InputCollector::new(1280, 720);
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut hooks = LoopRuntimeHooks::default();
         let mut commands = vec![
             DebugCommand::ResetScene,
@@ -2311,7 +2347,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
 
         assert!(!quit);
@@ -2333,6 +2369,7 @@ mod tests {
         let mut input_collector = InputCollector::new(1280, 720);
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = true;
         let mut commands = vec![DebugCommand::ThruportStatus];
         let mut hooks = LoopRuntimeHooks {
             remote_console_pump: Some(Box::new(StatusLinePump {
@@ -2348,7 +2385,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            true,
+            &mut thruport_telemetry_enabled,
         );
 
         assert!(!quit);
@@ -2356,6 +2393,116 @@ mod tests {
             console.output_lines().collect::<Vec<_>>(),
             vec!["thruport.status v1 enabled:1 telemetry:1 clients:3"]
         );
+    }
+
+    #[test]
+    fn thruport_telemetry_command_emits_explicit_state_schema_lines() {
+        let mut scenes = SceneMachine::new(Box::new(NoopScene), Box::new(NoopScene), SceneKey::A);
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut console = ConsoleState::default();
+        let mut input_collector = InputCollector::new(1280, 720);
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = true;
+        let mut hooks = LoopRuntimeHooks::default();
+        let mut commands = vec![
+            DebugCommand::ThruportTelemetry { enabled: false },
+            DebugCommand::ThruportTelemetry { enabled: true },
+        ];
+
+        let quit = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
+            &mut hooks,
+            &mut thruport_telemetry_enabled,
+        );
+
+        assert!(!quit);
+        assert!(thruport_telemetry_enabled);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec![
+                "ok: thruport.telemetry v1 enabled:0",
+                "ok: thruport.telemetry v1 enabled:1"
+            ]
+        );
+    }
+
+    #[test]
+    fn thruport_telemetry_off_then_tick_and_sync_emits_no_frames() {
+        let mut scenes = SceneMachine::new(Box::new(NoopScene), Box::new(NoopScene), SceneKey::A);
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let outputs = Arc::new(Mutex::new(Vec::<String>::new()));
+        let frames = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut hooks = LoopRuntimeHooks {
+            remote_console_pump: Some(Box::new(OutputAndFrameCapturePump {
+                outputs: Arc::clone(&outputs),
+                frames: Arc::clone(&frames),
+            })),
+        };
+        let mut console = ConsoleState::default();
+        let mut input_collector = InputCollector::new(1280, 720);
+        let mut sim_paused = false;
+        let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = true;
+        let mut commands = vec![
+            DebugCommand::ThruportTelemetry { enabled: false },
+            DebugCommand::Tick { steps: 1 },
+            DebugCommand::Sync,
+        ];
+
+        let quit = execute_drained_debug_commands(
+            &mut commands,
+            &mut scenes,
+            &mut console,
+            &mut input_collector,
+            &mut sim_paused,
+            &mut queued_manual_ticks,
+            &mut hooks,
+            &mut thruport_telemetry_enabled,
+        );
+        assert!(!quit);
+        assert!(!thruport_telemetry_enabled);
+        assert_eq!(queued_manual_ticks, 1);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec![
+                "ok: thruport.telemetry v1 enabled:0",
+                "ok: queued tick 1",
+                "ok: sync"
+            ]
+        );
+
+        let mut scratch = Vec::<String>::new();
+        forward_console_output_lines_to_remote(&mut hooks, &mut console, &mut scratch);
+        let captured_outputs = outputs.lock().expect("lock");
+        assert_eq!(
+            *captured_outputs,
+            vec![
+                "ok: thruport.telemetry v1 enabled:0".to_string(),
+                "ok: queued tick 1".to_string(),
+                "ok: sync".to_string()
+            ]
+        );
+        drop(captured_outputs);
+
+        if thruport_telemetry_enabled {
+            let line = "thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0".to_string();
+            hooks
+                .remote_console_pump
+                .as_mut()
+                .expect("pump")
+                .send_thruport_frame(&line);
+        }
+        assert!(frames.lock().expect("lock").is_empty());
     }
 
     #[test]
@@ -2368,6 +2515,7 @@ mod tests {
         let mut input_collector = InputCollector::new(1280, 720);
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut hooks = LoopRuntimeHooks::default();
         let mut commands = vec![DebugCommand::InjectInput {
             event: InjectedInputEvent::KeyDown {
@@ -2383,7 +2531,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
 
         assert!(!quit);
@@ -2409,6 +2557,7 @@ mod tests {
         let mut input_collector = InputCollector::new(1280, 720);
         let mut sim_paused = false;
         let mut queued_manual_ticks = 0u32;
+        let mut thruport_telemetry_enabled = false;
         let mut commands = vec![DebugCommand::InjectInput {
             event: InjectedInputEvent::KeyUp {
                 key: InjectedKey::A,
@@ -2423,7 +2572,7 @@ mod tests {
             &mut sim_paused,
             &mut queued_manual_ticks,
             &mut hooks,
-            false,
+            &mut thruport_telemetry_enabled,
         );
         assert!(!quit);
 

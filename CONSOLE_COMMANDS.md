@@ -33,6 +33,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `resume_sim`
 - `tick`
 - `thruport.status`
+- `thruport.telemetry`
 - `input.key_down`
 - `input.key_up`
 - `input.mouse_move`
@@ -195,6 +196,17 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - Result example:
 - `thruport.status v1 enabled:1 telemetry:1 clients:1`
 
+### thruport.telemetry
+- Layer: Engine loop runtime hooks / game thruport pump
+- Description: Toggles remote telemetry frame streaming for the current process session.
+- Syntax: `thruport.telemetry <on|off>`
+- Examples:
+- `thruport.telemetry on`
+- `thruport.telemetry off`
+- Result examples:
+- `ok: thruport.telemetry v1 enabled:1`
+- `ok: thruport.telemetry v1 enabled:0`
+
 ### dump.state
 - Layer: Engine queueable -> active scene debug hook
 - Description: Prints deterministic state probe line for automation assertions.
@@ -270,6 +282,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `pause_sim` affects only simulation stepping; rendering/frame pacing continues normally.
 - `tick <steps>` advances the same fixed update path used by normal gameplay; no alternate loop exists.
 - `thruport.status` prints exactly one status line with schema `thruport.status v1 enabled:<0|1> telemetry:<0|1> clients:<u32>`.
+- `thruport.status telemetry:<0|1>` reflects the current runtime toggle value (startup default comes from `PROTOGE_THRUPORT_TELEMETRY`).
 - `dump.state` / `dump.ai` are versioned text probes intended for remote automation checks without reading pixels.
 - `input.*` commands enqueue synthetic input events that are applied once at `InputCollector::snapshot_for_tick` and merged into the normal input snapshot.
 - If the authoritative player is missing, gameplay auto-spawns exactly one authoritative player actor on tick apply.
@@ -280,6 +293,21 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `order.interact <target_entity_id>`
 - Processor prints parse errors with usage hints.
 - Unknown commands print `error: unknown command '<name>'. try: help`.
+
+## Remote Wire Channels
+
+- TCP remote lines are channel-tagged at send time:
+- `C ` prefix: control lines (`ok:`, `error:`, `dump.*`, `sync`, `thruport.status`, `thruport.ready`).
+- `T ` prefix: telemetry frame lines (`thruport.frame ...`).
+- Exactly one space follows the channel tag.
+- Local in-window console text is unchanged (no `C `/`T ` prefixes).
+
+Example remote transcript snippet:
+- `C thruport.ready v1 port:46001`
+- `C ok: sim paused`
+- `C ok: queued tick 1`
+- `T thruport.frame v1 tick:42 paused:1 qtick:0 ev:1 in:1 in_bad:0`
+- `C ok: thruport.telemetry v1 enabled:0`
 
 ## Update Rule
 
