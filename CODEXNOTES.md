@@ -120,3 +120,6 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 51.3 (2026-02-23): queueable command `scenario.setup <scenario_id>` added to engine parser/routing (`crates/engine/src/app/tools/console_commands.rs`, `crates/engine/src/app/loop_runner.rs`) and scene debug API (`crates/engine/src/app/scene.rs`).
 - Ticket 51.3: gameplay scene owns `combat_chaser` setup in `crates/game/src/app/gameplay.rs` via safe-point intents only; contract line is `ok: scenario.setup combat_chaser player:<id> chaser:<id> dummy:<id>`.
 - Ticket 51.3: deterministic overwrite rule is scene-local slot replacement (previous scenario chaser/dummy and current authoritative player are despawned, then player/chaser/dummy respawn at fixed coordinates and player is re-selected).
+- Ticket 51.4 (2026-02-23): added repo tooling helper `scripts/test-helper.ps1` for deterministic test discovery and single-test execution.
+- Ticket 51.4: helper supports `-Mode list` and `-Mode run-one` for packages `engine|game|thruport_cli`; `run-one` resolves regex to exactly one canonical test name and executes with `cargo test -p <pkg> <name> -- --exact`.
+- Ticket 51.4: workflow docs added in `docs/test_helper.md` and linked from `README.md`.

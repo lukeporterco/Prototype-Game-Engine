@@ -6,6 +6,7 @@ Prototype-first Rust game engine + colony-sim vertical slice scaffold.
 - Infrastructure reference: `docs/PROTOGE_INFRASTRUCTURE_REFERENCE.md`
 - Content pipeline contract: `docs/content_pipeline_contract_v1.md`
 - Thruport CLI harness usage: `docs/thruport_cli.md`
+- Test discovery helper workflow: `docs/test_helper.md`
 - Working context log: `CODEXNOTES.md`
 
 ## Run
