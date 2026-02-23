@@ -12,6 +12,11 @@ pub struct EntityArchetype {
     pub label: String,
     pub renderable: RenderableKind,
     pub move_speed: f32,
+    pub health_max: Option<u32>,
+    pub base_damage: Option<u32>,
+    pub aggro_radius: Option<f32>,
+    pub attack_range: Option<f32>,
+    pub attack_cooldown_seconds: Option<f32>,
     pub tags: Vec<String>,
 }
 

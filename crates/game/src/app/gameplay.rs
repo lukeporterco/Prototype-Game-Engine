@@ -224,6 +224,15 @@ struct Health {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+struct EffectiveCombatAiParams {
+    health_max: u32,
+    base_damage: u32,
+    aggro_radius: f32,
+    attack_range: f32,
+    attack_cooldown_seconds: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct ActiveStatus {
     status_id: StatusId,
     remaining_seconds: f32,
@@ -254,14 +263,14 @@ struct AiAgent {
 }
 
 impl AiAgent {
-    fn from_home_position(home_position: Vec2) -> Self {
+    fn from_home_position(home_position: Vec2, params: EffectiveCombatAiParams) -> Self {
         Self {
             state: AiState::Idle,
             home_position,
             wander_target: None,
-            aggro_radius: AI_AGGRO_RADIUS_UNITS,
-            attack_range: AI_ATTACK_RANGE_UNITS,
-            cooldown_seconds: AI_ATTACK_COOLDOWN_SECONDS,
+            aggro_radius: params.aggro_radius,
+            attack_range: params.attack_range,
+            cooldown_seconds: params.attack_cooldown_seconds,
             cooldown_remaining_seconds: 0.0,
         }
     }
@@ -561,6 +570,7 @@ struct GameplaySystemContext<'a> {
     ai_agents_by_entity: &'a mut HashMap<EntityId, AiAgent>,
     status_sets_by_entity: &'a mut HashMap<EntityId, StatusSet>,
     active_interactions_by_actor: &'a mut HashMap<EntityId, ActiveInteraction>,
+    damage_by_entity: &'a HashMap<EntityId, u32>,
     completed_attack_pairs_this_tick: &'a mut HashSet<(EntityId, EntityId)>,
     next_interaction_id: &'a mut u64,
     selected_completion_enqueued_this_tick: &'a mut bool,
@@ -584,6 +594,7 @@ impl GameplaySystemsHost {
         ai_agents_by_entity: &mut HashMap<EntityId, AiAgent>,
         status_sets_by_entity: &mut HashMap<EntityId, StatusSet>,
         active_interactions_by_actor: &mut HashMap<EntityId, ActiveInteraction>,
+        damage_by_entity: &HashMap<EntityId, u32>,
         completed_attack_pairs_this_tick: &mut HashSet<(EntityId, EntityId)>,
         next_interaction_id: &mut u64,
         selected_completion_enqueued_this_tick: &mut bool,
@@ -602,6 +613,7 @@ impl GameplaySystemsHost {
                 ai_agents_by_entity,
                 status_sets_by_entity,
                 active_interactions_by_actor,
+                damage_by_entity,
                 completed_attack_pairs_this_tick,
                 next_interaction_id,
                 selected_completion_enqueued_this_tick,
@@ -1076,9 +1088,14 @@ impl GameplaySystemsHost {
                     {
                         continue;
                     }
+                    let damage = context
+                        .damage_by_entity
+                        .get(actor_id)
+                        .copied()
+                        .unwrap_or(ATTACK_DAMAGE_PER_HIT);
                     context.intents.enqueue(GameplayIntent::ApplyDamage {
                         entity_id: *target_id,
-                        amount: ATTACK_DAMAGE_PER_HIT,
+                        amount: damage,
                     });
                     context.intents.enqueue(GameplayIntent::AddStatus {
                         entity_id: *target_id,
@@ -1128,6 +1145,7 @@ struct GameplayScene {
     save_id_to_entity: HashMap<u64, EntityId>,
     next_save_id: u64,
     health_by_entity: HashMap<EntityId, Health>,
+    damage_by_entity: HashMap<EntityId, u32>,
     status_sets_by_entity: HashMap<EntityId, StatusSet>,
     ai_agents_by_entity: HashMap<EntityId, AiAgent>,
     active_interactions_by_actor: HashMap<EntityId, ActiveInteraction>,
@@ -1158,6 +1176,7 @@ impl GameplayScene {
             save_id_to_entity: HashMap::new(),
             next_save_id: 0,
             health_by_entity: HashMap::new(),
+            damage_by_entity: HashMap::new(),
             status_sets_by_entity: HashMap::new(),
             ai_agents_by_entity: HashMap::new(),
             active_interactions_by_actor: HashMap::new(),
@@ -1735,6 +1754,7 @@ impl GameplayScene {
 impl GameplayScene {
     fn reset_runtime_component_stores(&mut self) {
         self.health_by_entity.clear();
+        self.damage_by_entity.clear();
         self.status_sets_by_entity.clear();
         self.ai_agents_by_entity.clear();
         self.active_interactions_by_actor.clear();
@@ -1746,17 +1766,24 @@ impl GameplayScene {
         let live_ids: HashSet<EntityId> = world.entities().iter().map(|entity| entity.id).collect();
         self.health_by_entity
             .retain(|entity_id, _| live_ids.contains(entity_id));
+        self.damage_by_entity
+            .retain(|entity_id, _| live_ids.contains(entity_id));
         self.status_sets_by_entity
             .retain(|entity_id, _| live_ids.contains(entity_id));
 
         for entity in world.entities() {
             if entity.actor {
+                let defaults = Self::effective_combat_ai_params(None);
                 self.health_by_entity.entry(entity.id).or_insert(Health {
-                    current: DEFAULT_MAX_HEALTH,
-                    max: DEFAULT_MAX_HEALTH,
+                    current: defaults.health_max,
+                    max: defaults.health_max,
                 });
+                self.damage_by_entity
+                    .entry(entity.id)
+                    .or_insert(defaults.base_damage);
             } else {
                 self.health_by_entity.remove(&entity.id);
+                self.damage_by_entity.remove(&entity.id);
             }
             self.status_sets_by_entity.entry(entity.id).or_default();
         }
@@ -1768,9 +1795,10 @@ impl GameplayScene {
             if !entity.actor || Some(entity.id) == self.player_id {
                 continue;
             }
+            let defaults = Self::effective_combat_ai_params(None);
             self.ai_agents_by_entity.insert(
                 entity.id,
-                AiAgent::from_home_position(entity.transform.position),
+                AiAgent::from_home_position(entity.transform.position, defaults),
             );
         }
     }
@@ -1889,6 +1917,26 @@ impl GameplayScene {
             "dump.ai v1 | cnt:id:{} wa:{} ch:{} use:{} | near:{}",
             counts.idle, counts.wander, counts.chase, counts.use_interaction, near_text
         )
+    }
+
+    fn effective_combat_ai_params(archetype: Option<&EntityArchetype>) -> EffectiveCombatAiParams {
+        EffectiveCombatAiParams {
+            health_max: archetype
+                .and_then(|value| value.health_max)
+                .unwrap_or(DEFAULT_MAX_HEALTH),
+            base_damage: archetype
+                .and_then(|value| value.base_damage)
+                .unwrap_or(ATTACK_DAMAGE_PER_HIT),
+            aggro_radius: archetype
+                .and_then(|value| value.aggro_radius)
+                .unwrap_or(AI_AGGRO_RADIUS_UNITS),
+            attack_range: archetype
+                .and_then(|value| value.attack_range)
+                .unwrap_or(AI_ATTACK_RANGE_UNITS),
+            attack_cooldown_seconds: archetype
+                .and_then(|value| value.attack_cooldown_seconds)
+                .unwrap_or(AI_ATTACK_COOLDOWN_SECONDS),
+        }
     }
 
     fn status_multiplier(status_id: StatusId) -> f32 {
@@ -2012,6 +2060,7 @@ impl GameplayScene {
             &mut self.ai_agents_by_entity,
             &mut self.status_sets_by_entity,
             &mut self.active_interactions_by_actor,
+            &self.damage_by_entity,
             &mut self.completed_attack_pairs_this_tick,
             &mut self.next_interaction_id,
             &mut self.selected_completion_enqueued_this_tick,
@@ -2046,6 +2095,7 @@ impl GameplayScene {
                         stats.record_invalid_target();
                         continue;
                     };
+                    let effective_params = Self::effective_combat_ai_params(Some(&archetype));
                     if archetype.def_name == "proto.player"
                         && self
                             .player_id
@@ -2100,9 +2150,12 @@ impl GameplayScene {
                     }
                     if has_actor_tag {
                         self.health_by_entity.entry(entity_id).or_insert(Health {
-                            current: DEFAULT_MAX_HEALTH,
-                            max: DEFAULT_MAX_HEALTH,
+                            current: effective_params.health_max,
+                            max: effective_params.health_max,
                         });
+                        self.damage_by_entity
+                            .entry(entity_id)
+                            .or_insert(effective_params.base_damage);
                     }
                     self.status_sets_by_entity.entry(entity_id).or_default();
 
@@ -2117,8 +2170,10 @@ impl GameplayScene {
                     }
 
                     if has_actor_tag && Some(entity_id) != self.player_id {
-                        self.ai_agents_by_entity
-                            .insert(entity_id, AiAgent::from_home_position(position));
+                        self.ai_agents_by_entity.insert(
+                            entity_id,
+                            AiAgent::from_home_position(position, effective_params),
+                        );
                     }
                     if archetype.def_name == "proto.player" {
                         let current_player_missing = self
@@ -2158,6 +2213,7 @@ impl GameplayScene {
                         self.player_id = None;
                     }
                     self.health_by_entity.remove(&entity_id);
+                    self.damage_by_entity.remove(&entity_id);
                     self.status_sets_by_entity.remove(&entity_id);
                     self.ai_agents_by_entity.remove(&entity_id);
                     self.active_interactions_by_actor.remove(&entity_id);
@@ -2314,6 +2370,7 @@ impl GameplayScene {
                             self.remove_entity_save_mapping(target_id);
                         }
                         self.health_by_entity.remove(&target_id);
+                        self.damage_by_entity.remove(&target_id);
                         self.status_sets_by_entity.remove(&target_id);
                         self.ai_agents_by_entity.remove(&target_id);
                         self.active_interactions_by_actor.remove(&target_id);
@@ -2356,6 +2413,7 @@ impl GameplayScene {
         }
 
         let player_archetype = resolve_player_archetype(world);
+        let effective_params = Self::effective_combat_ai_params(Some(&player_archetype));
         let player_id = world.spawn_actor(
             Transform {
                 position: self.player_spawn,
@@ -2385,9 +2443,12 @@ impl GameplayScene {
         }
 
         self.health_by_entity.entry(player_id).or_insert(Health {
-            current: DEFAULT_MAX_HEALTH,
-            max: DEFAULT_MAX_HEALTH,
+            current: effective_params.health_max,
+            max: effective_params.health_max,
         });
+        self.damage_by_entity
+            .entry(player_id)
+            .or_insert(effective_params.base_damage);
         self.status_sets_by_entity.entry(player_id).or_default();
         self.ai_agents_by_entity.remove(&player_id);
         self.player_id = Some(player_id);
@@ -4242,6 +4303,7 @@ mod tests {
             .sync_save_id_map_with_world(&world)
             .expect("save-id sync");
         scene.sync_runtime_component_stores_with_world(&world);
+        assert!(scene.damage_by_entity.contains_key(&victim_id));
         let before_count = world.entity_count();
         let archetype_id = world
             .def_database()
@@ -4272,6 +4334,8 @@ mod tests {
         assert_eq!(world.entity_count(), before_count);
         assert!(!scene.entity_save_ids.contains_key(&victim_id));
         assert!(scene.entity_save_ids.contains_key(&spawned_id));
+        assert!(!scene.damage_by_entity.contains_key(&victim_id));
+        assert!(scene.damage_by_entity.contains_key(&spawned_id));
     }
 
     #[test]
@@ -4432,6 +4496,7 @@ mod tests {
                 remaining_seconds: None,
             },
         );
+        scene.damage_by_entity.insert(attacker_attack, 77);
         scene.active_interactions_by_actor.insert(
             attacker_use,
             ActiveInteraction {
@@ -4447,15 +4512,15 @@ mod tests {
 
         scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
         let intents = scene.system_intents.drain_current_tick();
-        let mut apply_damage_targets = intents
+        let mut apply_damage = intents
             .iter()
             .filter_map(|intent| match intent {
-                GameplayIntent::ApplyDamage { entity_id, .. } => Some(*entity_id),
+                GameplayIntent::ApplyDamage { entity_id, amount } => Some((*entity_id, *amount)),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        apply_damage_targets.sort_by_key(|id| id.0);
-        assert_eq!(apply_damage_targets, vec![target_attack]);
+        apply_damage.sort_by_key(|(id, _)| id.0);
+        assert_eq!(apply_damage, vec![(target_attack, 77)]);
     }
 
     #[test]
@@ -4764,7 +4829,10 @@ mod tests {
         scene.ai_agents_by_entity.clear();
         scene.ai_agents_by_entity.insert(
             npc_id,
-            AiAgent::from_home_position(world.find_entity(npc_id).expect("npc").transform.position),
+            AiAgent::from_home_position(
+                world.find_entity(npc_id).expect("npc").transform.position,
+                GameplayScene::effective_combat_ai_params(None),
+            ),
         );
         world
             .find_entity_mut(player_id)
@@ -5210,6 +5278,7 @@ mod tests {
             .map(|id| {
                 let entity = world.find_entity(*id).expect("spawned entity");
                 (
+                    entity.id,
                     entity.transform.position,
                     entity.actor,
                     entity.interactable.is_some(),
@@ -5218,28 +5287,57 @@ mod tests {
             .collect::<Vec<_>>();
         let chaser = spawned
             .iter()
-            .find(|(pos, _, _)| (pos.x - 10.0).abs() < 0.001)
+            .find(|(_, pos, _, _)| (pos.x - 10.0).abs() < 0.001)
             .expect("chaser spawn");
-        assert!(chaser.1);
-        assert!(!chaser.2);
+        assert!(chaser.2);
+        assert!(!chaser.3);
         let dummy = spawned
             .iter()
-            .find(|(pos, _, _)| (pos.x - 11.0).abs() < 0.001)
+            .find(|(_, pos, _, _)| (pos.x - 11.0).abs() < 0.001)
             .expect("dummy spawn");
-        assert!(dummy.1);
-        assert!(!dummy.2);
+        assert!(dummy.2);
+        assert!(!dummy.3);
         let stockpile = spawned
             .iter()
-            .find(|(pos, _, _)| (pos.x - 12.0).abs() < 0.001)
+            .find(|(_, pos, _, _)| (pos.x - 12.0).abs() < 0.001)
             .expect("stockpile spawn");
-        assert!(!stockpile.1);
-        assert!(stockpile.2);
+        assert!(!stockpile.2);
+        assert!(stockpile.3);
         let door = spawned
             .iter()
-            .find(|(pos, _, _)| (pos.x - 13.0).abs() < 0.001)
+            .find(|(_, pos, _, _)| (pos.x - 13.0).abs() < 0.001)
             .expect("door spawn");
-        assert!(!door.1);
-        assert!(door.2);
+        assert!(!door.2);
+        assert!(door.3);
+
+        let chaser_id = chaser.0;
+        let dummy_id = dummy.0;
+        let chaser_health = scene
+            .health_by_entity
+            .get(&chaser_id)
+            .expect("chaser health");
+        assert_eq!(chaser_health.max, 200);
+        assert_eq!(chaser_health.current, 200);
+        assert_eq!(scene.damage_by_entity.get(&chaser_id).copied(), Some(40));
+        let chaser_ai = scene
+            .ai_agents_by_entity
+            .get(&chaser_id)
+            .expect("chaser ai");
+        assert!((chaser_ai.aggro_radius - 10.0).abs() < 0.001);
+        assert!((chaser_ai.attack_range - 1.2).abs() < 0.001);
+        assert!((chaser_ai.cooldown_seconds - 0.6).abs() < 0.001);
+
+        let dummy_health = scene.health_by_entity.get(&dummy_id).expect("dummy health");
+        assert_eq!(dummy_health.max, DEFAULT_MAX_HEALTH);
+        assert_eq!(dummy_health.current, DEFAULT_MAX_HEALTH);
+        assert_eq!(
+            scene.damage_by_entity.get(&dummy_id).copied(),
+            Some(ATTACK_DAMAGE_PER_HIT)
+        );
+        let dummy_ai = scene.ai_agents_by_entity.get(&dummy_id).expect("dummy ai");
+        assert!((dummy_ai.aggro_radius - AI_AGGRO_RADIUS_UNITS).abs() < 0.001);
+        assert!((dummy_ai.attack_range - AI_ATTACK_RANGE_UNITS).abs() < 0.001);
+        assert!((dummy_ai.cooldown_seconds - AI_ATTACK_COOLDOWN_SECONDS).abs() < 0.001);
     }
 
     #[test]
@@ -5985,7 +6083,10 @@ mod tests {
         scene.ai_agents_by_entity.clear();
         scene.ai_agents_by_entity.insert(
             npc_id,
-            AiAgent::from_home_position(world.find_entity(npc_id).expect("npc").transform.position),
+            AiAgent::from_home_position(
+                world.find_entity(npc_id).expect("npc").transform.position,
+                GameplayScene::effective_combat_ai_params(None),
+            ),
         );
 
         world
@@ -6089,6 +6190,7 @@ mod tests {
                     .expect("spawned npc")
                     .transform
                     .position,
+                GameplayScene::effective_combat_ai_params(None),
             ),
         );
 
@@ -6132,7 +6234,10 @@ mod tests {
         scene.ai_agents_by_entity.clear();
         scene.ai_agents_by_entity.insert(
             npc_id,
-            AiAgent::from_home_position(world.find_entity(npc_id).expect("npc").transform.position),
+            AiAgent::from_home_position(
+                world.find_entity(npc_id).expect("npc").transform.position,
+                GameplayScene::effective_combat_ai_params(None),
+            ),
         );
         world
             .find_entity_mut(npc_id)

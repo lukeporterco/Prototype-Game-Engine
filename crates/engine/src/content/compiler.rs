@@ -76,6 +76,11 @@ pub struct CompiledEntityDef {
     pub label: Option<String>,
     pub renderable: Option<RenderableKind>,
     pub move_speed: Option<f32>,
+    pub health_max: Option<u32>,
+    pub base_damage: Option<u32>,
+    pub aggro_radius: Option<f32>,
+    pub attack_range: Option<f32>,
+    pub attack_cooldown_seconds: Option<f32>,
     pub tags: Option<Vec<String>>,
     pub source_mod_id: String,
     pub source_file_path: PathBuf,
@@ -87,6 +92,11 @@ struct MergedEntityDef {
     label: Option<String>,
     renderable: Option<RenderableKind>,
     move_speed: Option<f32>,
+    health_max: Option<u32>,
+    base_damage: Option<u32>,
+    aggro_radius: Option<f32>,
+    attack_range: Option<f32>,
+    attack_cooldown_seconds: Option<f32>,
     tags: Option<Vec<String>>,
 }
 
@@ -173,6 +183,21 @@ fn apply_patch(target: &mut MergedEntityDef, patch: &CompiledEntityDef) {
     if let Some(move_speed) = patch.move_speed {
         target.move_speed = Some(move_speed);
     }
+    if let Some(health_max) = patch.health_max {
+        target.health_max = Some(health_max);
+    }
+    if let Some(base_damage) = patch.base_damage {
+        target.base_damage = Some(base_damage);
+    }
+    if let Some(aggro_radius) = patch.aggro_radius {
+        target.aggro_radius = Some(aggro_radius);
+    }
+    if let Some(attack_range) = patch.attack_range {
+        target.attack_range = Some(attack_range);
+    }
+    if let Some(attack_cooldown_seconds) = patch.attack_cooldown_seconds {
+        target.attack_cooldown_seconds = Some(attack_cooldown_seconds);
+    }
     if let Some(tags) = &patch.tags {
         target.tags = Some(tags.clone());
     }
@@ -191,6 +216,11 @@ fn materialize_database(merged: BTreeMap<String, MergedEntityDef>) -> DefDatabas
                 .renderable
                 .expect("merged defs always include renderable after validation"),
             move_speed: merged.move_speed.unwrap_or(5.0),
+            health_max: merged.health_max,
+            base_damage: merged.base_damage,
+            aggro_radius: merged.aggro_radius,
+            attack_range: merged.attack_range,
+            attack_cooldown_seconds: merged.attack_cooldown_seconds,
             tags: merged.tags.unwrap_or_default(),
         })
         .collect::<Vec<_>>();
@@ -270,6 +300,11 @@ fn parse_entity_def(
     let mut label = None::<String>;
     let mut renderable = None::<RenderableKind>;
     let mut move_speed = None::<f32>;
+    let mut health_max = None::<u32>;
+    let mut base_damage = None::<u32>;
+    let mut aggro_radius = None::<f32>;
+    let mut attack_range = None::<f32>;
+    let mut attack_cooldown_seconds = None::<f32>;
     let mut tags = None::<Vec<String>>;
 
     for field in node.children().filter(|child| child.is_element()) {
@@ -316,6 +351,34 @@ fn parse_entity_def(
                 }
                 move_speed = Some(parsed);
             }
+            "health_max" => {
+                let parsed = parse_u32_field(mod_id, file_path, doc, field, "health_max", true)?;
+                health_max = Some(parsed);
+            }
+            "base_damage" => {
+                let parsed = parse_u32_field(mod_id, file_path, doc, field, "base_damage", false)?;
+                base_damage = Some(parsed);
+            }
+            "aggro_radius" => {
+                let parsed =
+                    parse_non_negative_f32_field(mod_id, file_path, doc, field, "aggro_radius")?;
+                aggro_radius = Some(parsed);
+            }
+            "attack_range" => {
+                let parsed =
+                    parse_non_negative_f32_field(mod_id, file_path, doc, field, "attack_range")?;
+                attack_range = Some(parsed);
+            }
+            "attack_cooldown_seconds" => {
+                let parsed = parse_non_negative_f32_field(
+                    mod_id,
+                    file_path,
+                    doc,
+                    field,
+                    "attack_cooldown_seconds",
+                )?;
+                attack_cooldown_seconds = Some(parsed);
+            }
             "tags" => tags = Some(parse_tags(mod_id, file_path, doc, field)?),
             _ => {
                 return Err(error_at_node(
@@ -346,6 +409,11 @@ fn parse_entity_def(
         label,
         renderable,
         move_speed,
+        health_max,
+        base_damage,
+        aggro_radius,
+        attack_range,
+        attack_cooldown_seconds,
         tags,
         source_mod_id: mod_id.to_string(),
         source_file_path: file_path.to_path_buf(),
@@ -534,6 +602,69 @@ fn required_text(
         ));
     }
     Ok(value)
+}
+
+fn parse_u32_field(
+    mod_id: &str,
+    file_path: &Path,
+    doc: &Document<'_>,
+    node: Node<'_, '_>,
+    field_name: &str,
+    strictly_positive: bool,
+) -> Result<u32, ContentCompileError> {
+    let value = required_text(mod_id, file_path, doc, node, field_name)?;
+    let parsed = value.parse::<u32>().map_err(|_| {
+        error_at_node(
+            ContentErrorCode::InvalidValue,
+            format!("{field_name} '{value}' is not a valid u32"),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        )
+    })?;
+    if strictly_positive && parsed == 0 {
+        return Err(error_at_node(
+            ContentErrorCode::InvalidValue,
+            format!("{field_name} must be > 0"),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        ));
+    }
+    Ok(parsed)
+}
+
+fn parse_non_negative_f32_field(
+    mod_id: &str,
+    file_path: &Path,
+    doc: &Document<'_>,
+    node: Node<'_, '_>,
+    field_name: &str,
+) -> Result<f32, ContentCompileError> {
+    let value = required_text(mod_id, file_path, doc, node, field_name)?;
+    let parsed = value.parse::<f32>().map_err(|_| {
+        error_at_node(
+            ContentErrorCode::InvalidValue,
+            format!("{field_name} '{value}' is not a valid number"),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        )
+    })?;
+    if !parsed.is_finite() || parsed < 0.0 {
+        return Err(error_at_node(
+            ContentErrorCode::InvalidValue,
+            format!("{field_name} must be finite and >= 0"),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        ));
+    }
+    Ok(parsed)
 }
 
 fn error_at_node(
@@ -958,6 +1089,80 @@ mod tests {
         let id = db.entity_def_id_by_name("a").expect("id");
         let def = db.entity_def(id).expect("def");
         assert!((def.move_speed - 5.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn gameplay_fields_parse_as_optional_values_when_present() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable>Placeholder</renderable><health_max>200</health_max><base_damage>40</base_damage><aggro_radius>10.0</aggro_radius><attack_range>1.5</attack_range><attack_cooldown_seconds>0.25</attack_cooldown_seconds></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("a").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(def.health_max, Some(200));
+        assert_eq!(def.base_damage, Some(40));
+        assert_eq!(def.aggro_radius, Some(10.0));
+        assert_eq!(def.attack_range, Some(1.5));
+        assert_eq!(def.attack_cooldown_seconds, Some(0.25));
+    }
+
+    #[test]
+    fn gameplay_fields_are_none_when_omitted() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable>Placeholder</renderable></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("a").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(def.health_max, None);
+        assert_eq!(def.base_damage, None);
+        assert_eq!(def.aggro_radius, None);
+        assert_eq!(def.attack_range, None);
+        assert_eq!(def.attack_cooldown_seconds, None);
+    }
+
+    #[test]
+    fn gameplay_fields_validate_and_override_last_writer_wins() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        fs::create_dir_all(app.mods_dir.join("moda")).expect("mkdir");
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>proto.player</defName><label>Base</label><renderable>Placeholder</renderable><health_max>100</health_max><base_damage>25</base_damage><aggro_radius>6.0</aggro_radius><attack_range>0.9</attack_range><attack_cooldown_seconds>1.0</attack_cooldown_seconds></EntityDef></Defs>"#,
+        );
+        write_file(
+            &app.mods_dir.join("moda").join("defs.xml"),
+            r#"<Defs><EntityDef><defName>proto.player</defName><health_max>300</health_max><base_damage>60</base_damage><aggro_radius>12.0</aggro_radius><attack_range>2.5</attack_range><attack_cooldown_seconds>0.2</attack_cooldown_seconds></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(
+            &app,
+            &ContentPlanRequest {
+                enabled_mods: vec!["moda".to_string()],
+                compiler_version: "dev".to_string(),
+                game_version: "dev".to_string(),
+            },
+        )
+        .expect("compile");
+        let id = db.entity_def_id_by_name("proto.player").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(def.health_max, Some(300));
+        assert_eq!(def.base_damage, Some(60));
+        assert_eq!(def.aggro_radius, Some(12.0));
+        assert_eq!(def.attack_range, Some(2.5));
+        assert_eq!(def.attack_cooldown_seconds, Some(0.2));
+
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable>Placeholder</renderable><health_max>0</health_max></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("error");
+        assert_eq!(err.code, ContentErrorCode::InvalidValue);
     }
 
     #[test]

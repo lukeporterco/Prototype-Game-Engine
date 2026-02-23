@@ -74,3 +74,37 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Detailed Ticket 31-32.3 notes were moved to CODEXNOTES_ARCHIVE.md on 2026-02-20.
 
 - Deprecated in-place detailed notes (Module Boundaries + Tickets 33-47) were moved to `CODEXNOTES_ARCHIVE.md` on 2026-02-23.
+
+- Ticket 48 (2026-02-23): `EntityDef` now carries optional gameplay knobs in content runtime data (`health_max`, `base_damage`, `aggro_radius`, `attack_range`, `attack_cooldown_seconds`) through compile/pack/database/archetype as `Option`.
+- Ticket 48: gameplay runtime defaults for those knobs are centralized in `GameplayScene::effective_combat_ai_params` in `crates/game/src/app/gameplay.rs` to preserve legacy behavior when fields are omitted.
+- Ticket 48: attacker damage source is `GameplayScene.damage_by_entity: HashMap<EntityId, u32>`; populated during `SpawnByArchetypeId`, consumed by `CombatResolution`, and cleaned on sync/reset/despawn.
+- Status model reminder: statuses use `StatusId(&'static str)` and shipping slow status id is `status.slow`.
+
+## Module Boundaries and Ownership
+### A. Module map
+#### Core
+- Core primitives and IDs shared across engine/game crates.
+#### App/Loop
+- Frame loop, fixed timestep cadence, runtime metrics, and scene tick orchestration.
+#### SceneMachine and Scene
+- Active/inactive scene ownership, scene switching, load/reset boundaries.
+#### World (SceneWorld and runtime state)
+- Entity storage, transforms, runtime tags/components, spawn/despawn application.
+#### Rendering
+- Camera transforms, world-to-screen math, sprite/placeholder draw path.
+#### Assets and Content Pipeline
+- XML discovery/compile, cached content packs, runtime `DefDatabase`.
+#### Input
+- Per-frame input sampling and action mapping.
+#### Tools (Overlay, Console)
+- Debug overlay text, console command routing, diagnostics surfaces.
+#### Placeholders (Physics, Audio, Scripting seam)
+- Reserved seams only; no heavy implementation yet.
+### B. Ownership rules
+- Engine owns generic runtime/data flow; game crate owns gameplay rules/defs consumption.
+- Runtime sim does not parse XML; content is consumed via compiled `DefDatabase`.
+- Keep systems deterministic and avoid broad cross-module coupling.
+### C. Seam invariants
+- Scene/game logic may read defs but must not mutate content database contracts.
+- Def defaults for Ticket 48 gameplay knobs are centralized in `GameplayScene` helper.
+- Simulation intent ordering remains `InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup`.

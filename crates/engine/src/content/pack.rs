@@ -29,6 +29,11 @@ pub struct PackedEntityDef {
     pub label: Option<String>,
     pub renderable: Option<RenderableKind>,
     pub move_speed: Option<f32>,
+    pub health_max: Option<u32>,
+    pub base_damage: Option<u32>,
+    pub aggro_radius: Option<f32>,
+    pub attack_range: Option<f32>,
+    pub attack_cooldown_seconds: Option<f32>,
     pub tags: Option<Vec<String>>,
 }
 
@@ -149,7 +154,29 @@ fn encode_payload(records: &[CompiledEntityDef]) -> Result<Vec<u8>, ContentPackE
         if record.tags.is_some() {
             flags |= 1 << 3;
         }
+        let mut ext_flags = 0u8;
+        if record.health_max.is_some() {
+            ext_flags |= 1 << 0;
+        }
+        if record.base_damage.is_some() {
+            ext_flags |= 1 << 1;
+        }
+        if record.aggro_radius.is_some() {
+            ext_flags |= 1 << 2;
+        }
+        if record.attack_range.is_some() {
+            ext_flags |= 1 << 3;
+        }
+        if record.attack_cooldown_seconds.is_some() {
+            ext_flags |= 1 << 4;
+        }
+        if ext_flags != 0 {
+            flags |= 1 << 7;
+        }
         payload.push(flags);
+        if ext_flags != 0 {
+            payload.push(ext_flags);
+        }
 
         if let Some(label) = &record.label {
             write_string(&mut payload, label, Path::new("<payload>"))?;
@@ -166,6 +193,21 @@ fn encode_payload(records: &[CompiledEntityDef]) -> Result<Vec<u8>, ContentPackE
         }
         if let Some(move_speed) = record.move_speed {
             payload.extend_from_slice(&move_speed.to_le_bytes());
+        }
+        if let Some(health_max) = record.health_max {
+            payload.extend_from_slice(&health_max.to_le_bytes());
+        }
+        if let Some(base_damage) = record.base_damage {
+            payload.extend_from_slice(&base_damage.to_le_bytes());
+        }
+        if let Some(aggro_radius) = record.aggro_radius {
+            payload.extend_from_slice(&aggro_radius.to_le_bytes());
+        }
+        if let Some(attack_range) = record.attack_range {
+            payload.extend_from_slice(&attack_range.to_le_bytes());
+        }
+        if let Some(attack_cooldown_seconds) = record.attack_cooldown_seconds {
+            payload.extend_from_slice(&attack_cooldown_seconds.to_le_bytes());
         }
         if let Some(tags) = &record.tags {
             if tags.len() > u16::MAX as usize {
@@ -192,6 +234,13 @@ fn decode_payload(
         let flags = *read_exact(payload, &mut cursor, 1, path)?
             .first()
             .ok_or_else(|| invalid_format(path, "missing field flags"))?;
+        let ext_flags = if flags & (1 << 7) != 0 {
+            *read_exact(payload, &mut cursor, 1, path)?
+                .first()
+                .ok_or_else(|| invalid_format(path, "missing extension field flags"))?
+        } else {
+            0
+        };
 
         let label = if flags & (1 << 0) != 0 {
             Some(read_string(payload, &mut cursor, path)?)
@@ -219,6 +268,43 @@ fn decode_payload(
         } else {
             None
         };
+        let health_max = if ext_flags & (1 << 0) != 0 {
+            Some(read_u32(payload, &mut cursor, path)?)
+        } else {
+            None
+        };
+        let base_damage = if ext_flags & (1 << 1) != 0 {
+            Some(read_u32(payload, &mut cursor, path)?)
+        } else {
+            None
+        };
+        let aggro_radius = if ext_flags & (1 << 2) != 0 {
+            Some(f32::from_le_bytes(
+                read_exact(payload, &mut cursor, 4, path)?
+                    .try_into()
+                    .map_err(|_| invalid_format(path, "invalid f32 encoding"))?,
+            ))
+        } else {
+            None
+        };
+        let attack_range = if ext_flags & (1 << 3) != 0 {
+            Some(f32::from_le_bytes(
+                read_exact(payload, &mut cursor, 4, path)?
+                    .try_into()
+                    .map_err(|_| invalid_format(path, "invalid f32 encoding"))?,
+            ))
+        } else {
+            None
+        };
+        let attack_cooldown_seconds = if ext_flags & (1 << 4) != 0 {
+            Some(f32::from_le_bytes(
+                read_exact(payload, &mut cursor, 4, path)?
+                    .try_into()
+                    .map_err(|_| invalid_format(path, "invalid f32 encoding"))?,
+            ))
+        } else {
+            None
+        };
         let tags = if flags & (1 << 3) != 0 {
             let count = read_u16(payload, &mut cursor, path)? as usize;
             let mut out = Vec::<String>::with_capacity(count);
@@ -235,6 +321,11 @@ fn decode_payload(
             label,
             renderable,
             move_speed,
+            health_max,
+            base_damage,
+            aggro_radius,
+            attack_range,
+            attack_cooldown_seconds,
             tags,
         });
     }
@@ -366,6 +457,11 @@ pub fn compiled_from_packed(
         label: packed.label,
         renderable: packed.renderable,
         move_speed: packed.move_speed,
+        health_max: packed.health_max,
+        base_damage: packed.base_damage,
+        aggro_radius: packed.aggro_radius,
+        attack_range: packed.attack_range,
+        attack_cooldown_seconds: packed.attack_cooldown_seconds,
         tags: packed.tags,
         source_mod_id: mod_id.to_string(),
         source_file_path: source_path.to_path_buf(),
@@ -398,6 +494,11 @@ mod tests {
             label: Some("Player".to_string()),
             renderable: Some(RenderableKind::Sprite("player".to_string())),
             move_speed: Some(5.0),
+            health_max: Some(100),
+            base_damage: Some(25),
+            aggro_radius: Some(6.0),
+            attack_range: Some(0.9),
+            attack_cooldown_seconds: Some(1.0),
             tags: Some(vec!["colonist".to_string()]),
             source_mod_id: "base".to_string(),
             source_file_path: Path::new("defs.xml").to_path_buf(),
@@ -412,6 +513,47 @@ mod tests {
             loaded.records[0].renderable,
             Some(RenderableKind::Sprite("player".to_string()))
         );
+        assert_eq!(loaded.records[0].health_max, Some(100));
+        assert_eq!(loaded.records[0].base_damage, Some(25));
         assert_eq!(loaded.records[0].tags, Some(vec!["colonist".to_string()]));
+    }
+
+    #[test]
+    fn pack_roundtrip_without_extension_flags_keeps_optional_gameplay_fields_none() {
+        let temp = TempDir::new().expect("temp");
+        let path = temp.path().join("legacy_like.pack");
+        let meta = ContentPackMeta {
+            pack_format_version: CONTENT_PACK_FORMAT_VERSION,
+            compiler_version: "1".to_string(),
+            game_version: "1".to_string(),
+            mod_id: "base".to_string(),
+            mod_load_index: 0,
+            enabled_mods_hash_sha256_hex: "00".repeat(32),
+            input_hash_sha256_hex: "11".repeat(32),
+        };
+        let records = vec![CompiledEntityDef {
+            def_name: "proto.legacy".to_string(),
+            label: Some("Legacy".to_string()),
+            renderable: Some(RenderableKind::Placeholder),
+            move_speed: Some(5.0),
+            health_max: None,
+            base_damage: None,
+            aggro_radius: None,
+            attack_range: None,
+            attack_cooldown_seconds: None,
+            tags: None,
+            source_mod_id: "base".to_string(),
+            source_file_path: Path::new("defs.xml").to_path_buf(),
+            source_location: None,
+        }];
+
+        write_content_pack_v1(&path, &meta, &records).expect("write");
+        let loaded = read_content_pack_v1(&path).expect("read");
+        let record = &loaded.records[0];
+        assert_eq!(record.health_max, None);
+        assert_eq!(record.base_damage, None);
+        assert_eq!(record.aggro_radius, None);
+        assert_eq!(record.attack_range, None);
+        assert_eq!(record.attack_cooldown_seconds, None);
     }
 }

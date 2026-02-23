@@ -22,6 +22,11 @@
     <label>NpcChaser</label>
     <renderable kind="Sprite" spriteKey="player" />
     <moveSpeed>5.0</moveSpeed>
+    <health_max>200</health_max>
+    <base_damage>40</base_damage>
+    <aggro_radius>10.0</aggro_radius>
+    <attack_range>1.2</attack_range>
+    <attack_cooldown_seconds>0.6</attack_cooldown_seconds>
     <tags>
       <li>actor</li>
       <li>npc</li>
