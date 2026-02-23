@@ -418,4 +418,26 @@ mod tests {
         assert_eq!(err.field_name.as_deref(), Some("attack_cooldown_seconds"));
         assert!(err.message.contains("attack_cooldown_seconds"));
     }
+
+    #[test]
+    fn base_defs_load_proto_npc_chaser_with_expected_tuning_fields() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        let source_defs = workspace_root.join("assets").join("base").join("defs.xml");
+        fs::copy(&source_defs, app.base_content_dir.join("defs.xml")).expect("copy defs");
+
+        let db = build_or_load_def_database(&app, &ContentPlanRequest::default()).expect("load");
+        let chaser_id = db
+            .entity_def_id_by_name("proto.npc_chaser")
+            .expect("proto.npc_chaser");
+        let chaser = db.entity_def(chaser_id).expect("chaser def");
+        assert_eq!(chaser.health_max, Some(200));
+        assert_eq!(chaser.base_damage, Some(40));
+        assert_eq!(chaser.aggro_radius, Some(10.0));
+        assert_eq!(chaser.attack_range, Some(1.2));
+        assert_eq!(chaser.attack_cooldown_seconds, Some(0.6));
+    }
 }

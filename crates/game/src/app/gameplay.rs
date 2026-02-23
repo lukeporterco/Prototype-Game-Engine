@@ -4872,6 +4872,82 @@ mod tests {
     }
 
     #[test]
+    fn proto_npc_chaser_attack_applies_slow_then_slow_expires() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let player_id =
+            spawn_authoritative_player_via_console(&mut scene, &mut world, Vec2 { x: 0.0, y: 0.0 });
+        let chaser_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.npc_chaser",
+            Vec2 { x: 0.5, y: 0.0 },
+        );
+        world
+            .find_entity_mut(player_id)
+            .expect("player")
+            .transform
+            .position = Vec2 { x: 0.0, y: 0.0 };
+        world
+            .find_entity_mut(chaser_id)
+            .expect("chaser")
+            .transform
+            .position = Vec2 { x: 0.5, y: 0.0 };
+
+        let player_health_before = scene
+            .health_by_entity
+            .get(&player_id)
+            .expect("player health")
+            .current;
+        let mut slow_applied = false;
+        for _ in 0..80 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let has_slow = scene
+                .status_sets_by_entity
+                .get(&player_id)
+                .map(|set| set.active.iter().any(|status| status.status_id == STATUS_SLOW))
+                .unwrap_or(false);
+            if has_slow {
+                slow_applied = true;
+                break;
+            }
+        }
+        assert!(slow_applied, "expected proto.npc_chaser to apply status.slow");
+        let player_health_after_hit = scene
+            .health_by_entity
+            .get(&player_id)
+            .expect("player health")
+            .current;
+        assert!(player_health_after_hit < player_health_before);
+
+        world
+            .find_entity_mut(chaser_id)
+            .expect("chaser")
+            .transform
+            .position = Vec2 { x: 100.0, y: 0.0 };
+        let mut slow_expired = false;
+        for _ in 0..80 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let has_slow = scene
+                .status_sets_by_entity
+                .get(&player_id)
+                .map(|set| set.active.iter().any(|status| status.status_id == STATUS_SLOW))
+                .unwrap_or(false);
+            if !has_slow {
+                slow_expired = true;
+                break;
+            }
+        }
+        assert!(slow_expired, "expected status.slow to expire");
+    }
+
+    #[test]
     fn debug_spawn_and_despawn_are_queued_intents() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();

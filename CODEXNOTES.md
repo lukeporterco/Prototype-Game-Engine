@@ -111,3 +111,5 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 
 - Ticket 49 (2026-02-23): `ContentCompileError` now includes optional structured context fields `def_name` and `field_name` so gameplay tuning validation failures are deterministic and testable.
 - Ticket 49: gameplay tuning validation fixture added at `docs/fixtures/content_pipeline_v1/fail_09_invalid_gameplay_field/badgameplay/defs.xml`; pipeline tests assert `InvalidValue` plus `mod_id`/`def_name`/`field_name`.
+- Ticket 50 (2026-02-23): regression coverage for knobbed sample content is anchored in `crates/engine/src/content/pipeline.rs` test `base_defs_load_proto_npc_chaser_with_expected_tuning_fields` (loads base defs and asserts parsed tuning values for `proto.npc_chaser`).
+- Ticket 50: gameplay smoke coverage for tuned chaser + shipping slow lifecycle is in `crates/game/src/app/gameplay.rs` test `proto_npc_chaser_attack_applies_slow_then_slow_expires`.
