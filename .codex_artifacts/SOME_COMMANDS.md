@@ -1,60 +1,159 @@
-## Tried and true commands:
-### Open game through thruport
-$ErrorActionPreference='Stop';
-$cwd='c:\Users\lukep\source\repos\Prototype Game Engine'; $port=46001;
-$oldThr=$env:PROTOGE_THRUPORT; $oldPort=$env:PROTOGE_THRUPORT_PORT; $oldTel=$env:PROTOGE_THRUPORT_TELEMETRY;
-$env:PROTOGE_THRUPORT='1'; $env:PROTOGE_THRUPORT_PORT="$port"; $env:PROTOGE_THRUPORT_TELEMETRY='1';
-$proc=Start-Process -FilePath cargo -ArgumentList 'run -p game' -WorkingDirectory $cwd -PassThru -WindowStyle Hidden;
-Start-Sleep -Seconds 6;
+# Purpose
+This is the canonical quick-start for opening a fresh game process with thruport enabled, waiting for readiness, and running deterministic `thruport_cli` command sessions.
 
-$client=New-Object System.Net.Sockets.TcpClient; $client.Connect('127.0.0.1',$port);
-$stream=$client.GetStream(); $writer=New-Object System.IO.StreamWriter($stream); $writer.AutoFlush=$true; $reader=New-Object System.IO.StreamReader($stream);
-function DrainAll(){ $lines=@(); while($stream.DataAvailable){ $lines += $reader.ReadLine() }; return $lines }
-function Send([string]$cmd,[int]$wait=600){ $writer.WriteLine($cmd); Start-Sleep -Milliseconds $wait; return (DrainAll) }
+# What thruport is
+Thruport is the TCP remote console path for this project. The game process listens on localhost when enabled, emits control (`C `) and telemetry (`T `) lines, and supports deterministic automation through console commands like `sync`, `scenario.setup`, `dump.state`, and `thruport.telemetry`.
 
-# setup controllable player
-$null=Send 'pause_sim' 400
-$null=Send 'reset_scene' 500
-$null=Send 'tick 1' 500
-$null=Send 'spawn proto.player 0 0' 500
-$null=Send 'tick 2' 500
+# Activation (env vars and what each does)
+- `PROTOGE_THRUPORT`
+  - Enables thruport listener when set to `1`.
+  - Any other value (or unset) means disabled.
+- `PROTOGE_THRUPORT_PORT`
+  - Listener port as `u16`.
+  - If unset or invalid, default is `46001`.
+- `PROTOGE_THRUPORT_TELEMETRY`
+  - Initial telemetry streaming toggle at startup when set to `1`.
+  - Any other value (or unset) means telemetry starts off.
 
-# telemetry exactness + sync
-$null=Send 'pause_sim' 400
-$null=DrainAll
-$writer.WriteLine('tick 10')
-$all=@();
-for($i=0;$i -lt 12;$i++){ Start-Sleep -Milliseconds 300; $all += DrainAll }
-$frames=$all | Where-Object { $_ -like 'thruport.frame v1 *' }
-$syncOut = Send 'sync' 400
+Authoritative code anchors:
+- `crates/game/src/app/dev_thruport.rs` (`PROTOGE_THRUPORT`, `PROTOGE_THRUPORT_PORT`, default `46001`, ready line)
+- `crates/engine/src/app/loop_runner.rs` (`PROTOGE_THRUPORT_TELEMETRY`, `ok: sync`, `ok: thruport.telemetry ...`)
 
-# disconnect-reset check
-$preDump = Send 'dump.state' 500 | Where-Object { $_ -like 'ok: dump.state v1 | *' } | Select-Object -Last 1
-$null=Send 'input.key_down w' 300
-$client.Close(); Start-Sleep -Milliseconds 400;
+# Start the game with thruport enabled (PowerShell + bash/zsh examples)
+PowerShell (terminal 1):
+```powershell
+$env:PROTOGE_THRUPORT='1'
+$env:PROTOGE_THRUPORT_PORT='46001'
+$env:PROTOGE_THRUPORT_TELEMETRY='1'
+cargo run -p game
+```
 
-$client2=New-Object System.Net.Sockets.TcpClient; $client2.Connect('127.0.0.1',$port);
-$stream2=$client2.GetStream(); $writer2=New-Object System.IO.StreamWriter($stream2); $writer2.AutoFlush=$true; $reader2=New-Object System.IO.StreamReader($stream2);
-function Drain2(){ $lines=@(); while($stream2.DataAvailable){ $lines += $reader2.ReadLine() }; return $lines }
-function Send2([string]$cmd,[int]$wait=600){ $writer2.WriteLine($cmd); Start-Sleep -Milliseconds $wait; return (Drain2) }
-$null=Send2 'tick 1' 500
-$postDump = Send2 'dump.state' 500 | Where-Object { $_ -like 'ok: dump.state v1 | *' } | Select-Object -Last 1
-$null=Send2 'quit' 300
-$client2.Close()
-if(-not $proc.HasExited){ Stop-Process -Id $proc.Id -Force }
-$env:PROTOGE_THRUPORT=$oldThr; $env:PROTOGE_THRUPORT_PORT=$oldPort; $env:PROTOGE_THRUPORT_TELEMETRY=$oldTel;
+bash/zsh (terminal 1):
+```bash
+export PROTOGE_THRUPORT=1
+export PROTOGE_THRUPORT_PORT=46001
+export PROTOGE_THRUPORT_TELEMETRY=1
+cargo run -p game
+```
 
-# summarize
-"FRAME_LINES=$($frames.Count)"
-if($frames.Count -gt 0){
-  $ticks=@(); $qt=@();
-  foreach($f in $frames){ if($f -match 'tick:(\d+)'){ $ticks += [int]$matches[1] }; if($f -match 'qtick:(\d+)'){ $qt += [int]$matches[1] } }
-  $mono=$true; for($i=1;$i -lt $ticks.Count;$i++){ if($ticks[$i] -ne ($ticks[$i-1]+1)){ $mono=$false; break } }
-  "FIRST_FRAME=$($frames[0])"
-  "LAST_FRAME=$($frames[$frames.Count-1])"
-  "TICK_MONOTONIC=$mono"
-  "QTICK_SERIES=$([string]::Join(',', $qt))"
-}
-"SYNC_LINES=$([string]::Join(' || ', $syncOut))"
-"PRE_DUMP=$preDump"
-"POST_DUMP=$postDump"
+# Connect and verify readiness (use `thruport_cli wait-ready`)
+Always gate on readiness before sending commands.
+
+PowerShell (terminal 2):
+```powershell
+thruport_cli --port 46001 wait-ready
+```
+
+bash/zsh (terminal 2):
+```bash
+thruport_cli --port 46001 wait-ready
+```
+
+Expected success payload:
+- `thruport.ready v1 port:46001`
+
+# Deterministic command execution model (explain `sync` barrier and that CLI uses deterministic completion, not quiet windows)
+- `thruport_cli send <command...>` uses deterministic completion by issuing an internal `sync` barrier and waiting for control payload `ok: sync`.
+- The internal barrier ack is not printed by default.
+- `thruport_cli barrier` is the explicit barrier path when you need a visible sync boundary between steps.
+- `thruport_cli script <file> --barrier` keeps script behavior deterministic with one explicit final barrier.
+- Quiet-window behavior (`--quiet-ms`) is fallback only if `sync` is unavailable.
+
+# Common workflows (examples)
+Smoke sequence (deterministic):
+
+PowerShell:
+```powershell
+thruport_cli --port 46001 wait-ready
+thruport_cli --port 46001 send pause_sim
+thruport_cli --port 46001 send reset_scene
+thruport_cli --port 46001 send scenario.setup combat_chaser
+thruport_cli --port 46001 send dump.state
+thruport_cli --port 46001 send dump.ai
+thruport_cli --port 46001 barrier
+```
+
+bash/zsh:
+```bash
+thruport_cli --port 46001 wait-ready
+thruport_cli --port 46001 send pause_sim
+thruport_cli --port 46001 send reset_scene
+thruport_cli --port 46001 send scenario.setup combat_chaser
+thruport_cli --port 46001 send dump.state
+thruport_cli --port 46001 send dump.ai
+thruport_cli --port 46001 barrier
+```
+
+Telemetry gating (off, tick, barrier, on, tick, barrier):
+
+PowerShell:
+```powershell
+thruport_cli --port 46001 wait-ready
+thruport_cli --port 46001 send thruport.telemetry off
+thruport_cli --port 46001 --include-telemetry send tick 3
+thruport_cli --port 46001 barrier
+thruport_cli --port 46001 send thruport.telemetry on
+thruport_cli --port 46001 --include-telemetry send tick 3
+thruport_cli --port 46001 barrier
+```
+
+bash/zsh:
+```bash
+thruport_cli --port 46001 wait-ready
+thruport_cli --port 46001 send "thruport.telemetry off"
+thruport_cli --port 46001 --include-telemetry send "tick 3"
+thruport_cli --port 46001 barrier
+thruport_cli --port 46001 send "thruport.telemetry on"
+thruport_cli --port 46001 --include-telemetry send "tick 3"
+thruport_cli --port 46001 barrier
+```
+
+Multi-client pattern (one telemetry reader, one control sender):
+
+PowerShell:
+```powershell
+# terminal A (telemetry reader)
+thruport_cli --port 46001 wait-ready
+thruport_cli --port 46001 --include-telemetry send thruport.telemetry on
+thruport_cli --port 46001 --include-telemetry send tick 100
+thruport_cli --port 46001 barrier
+
+# terminal B (control sender)
+thruport_cli --port 46001 wait-ready
+thruport_cli --port 46001 send thruport.status
+thruport_cli --port 46001 send dump.ai
+thruport_cli --port 46001 barrier
+```
+
+bash/zsh:
+```bash
+# terminal A (telemetry reader)
+thruport_cli --port 46001 wait-ready
+thruport_cli --port 46001 --include-telemetry send "thruport.telemetry on"
+thruport_cli --port 46001 --include-telemetry send "tick 100"
+thruport_cli --port 46001 barrier
+
+# terminal B (control sender)
+thruport_cli --port 46001 wait-ready
+thruport_cli --port 46001 send thruport.status
+thruport_cli --port 46001 send dump.ai
+thruport_cli --port 46001 barrier
+```
+
+# Troubleshooting and retries
+- Connection refused after launch:
+  - Keep the game running and retry readiness.
+  - Command: `thruport_cli --port 46001 --timeout-ms 10000 wait-ready`
+- Host aborts long-lived sockets:
+  - Prefer reconnect-per-invocation (`thruport_cli send ...`) and short script runs.
+  - If a section fails due to disconnect, restart game and re-run only that section.
+- Telemetry mixing in outputs:
+  - Default CLI output is control-only.
+  - Enable telemetry only when needed via `--include-telemetry` and/or `thruport.telemetry on`.
+  - Use barriers between phases to keep transcript boundaries clear.
+
+# Appendix: command reference pointers
+- Thruport CLI contract and options: `docs/thruport_cli.md`
+- Console command syntax and schemas: `CONSOLE_COMMANDS.md`
+- If anything appears out of date, discover via grep:
+  - `rg -n "PROTOGE_THRUPORT|PROTOGE_THRUPORT_PORT|PROTOGE_THRUPORT_TELEMETRY|thruport.ready|thruport.telemetry|wait-ready|ok: sync|\\bsync\\b" -S .`
