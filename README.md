@@ -18,6 +18,28 @@ cargo run
 
 Canonical baseline: `docs/PROTOGE_INFRASTRUCTURE_REFERENCE.md`.
 
+## Thruport quick start (default port 46001)
+
+Use thruport when you want live remote control via `thruport_cli`.
+
+```powershell
+$env:PROTOGE_THRUPORT='1'
+$env:PROTOGE_THRUPORT_PORT='46001'
+$env:PROTOGE_THRUPORT_TELEMETRY='1'
+cargo run -p game
+```
+
+In a second terminal, verify and control:
+
+```powershell
+thruport_cli --port 46001 wait-ready
+thruport_cli --port 46001 send thruport.status
+```
+
+Authoritative details:
+- CLI contract/options: `docs/thruport_cli.md`
+- Console command schemas: `CONSOLE_COMMANDS.md`
+
 ## Current baseline
 - Fixed-step loop with decoupled render cadence.
 - Persistent dual-scene runtime with deterministic switching/reset semantics.
