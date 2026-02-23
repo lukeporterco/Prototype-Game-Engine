@@ -2,6 +2,7 @@
 members = [
     "crates/engine",
     "crates/game",
+    "crates/thruport_cli",
 ]
 default-members = ["crates/game"]
 resolver = "2"
