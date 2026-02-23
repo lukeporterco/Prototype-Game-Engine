@@ -4,6 +4,7 @@ Living, structured notes for Codex and humans to keep consistent context across 
 Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Historical ticket logs were moved to `CODEXNOTES_ARCHIVE.md` on 2026-02-20.
 - Use `CODEXNOTES.md` for active context only; use `CODEXNOTES_ARCHIVE.md` for historical detail.
+- Canonical thruport startup/session runbook lives at `.codex_artifacts/SOME_COMMANDS.md`.
 ---
 ## Decisions (Locked)
 - Language/runtime: Rust

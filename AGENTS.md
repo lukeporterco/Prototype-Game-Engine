@@ -45,6 +45,7 @@ Inspect first, in this order:
 1) Rules and overview
 - AGENTS.md
 - CODEXNOTES.md
+- `.codex_artifacts/SOME_COMMANDS.md` (canonical thruport start-session workflow)
 - README.md and docs/ (if present)
 
 2) Build, dependency, and run commands
