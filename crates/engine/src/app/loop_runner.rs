@@ -394,27 +394,16 @@ fn run_app_with_metrics_and_hooks(
                                 );
                             }
                             metrics_accumulator.record_tick();
-
-                            if thruport_telemetry_enabled {
-                                let (ev, intents, in_bad) = telemetry_counters_from_debug_snapshot(
-                                    scenes.debug_info_snapshot_active(),
-                                );
-                                tick_counter = tick_counter.saturating_add(1);
-                                let paused_value = if sim_paused { 1 } else { 0 };
-                                let qtick_value = telemetry_qtick_after_current_tick(
-                                    sim_paused,
-                                    queued_manual_ticks,
-                                    tick_plan,
-                                    tick_index,
-                                );
-                                let line = format!(
-                                    "thruport.frame v1 tick:{} paused:{} qtick:{} ev:{} in:{} in_bad:{}",
-                                    tick_counter, paused_value, qtick_value, ev, intents, in_bad
-                                );
-                                if let Some(pump) = runtime_hooks.remote_console_pump.as_mut() {
-                                    pump.send_thruport_frame(&line);
-                                }
-                            }
+                            emit_thruport_tick_telemetry_if_enabled(
+                                thruport_telemetry_enabled,
+                                &mut tick_counter,
+                                sim_paused,
+                                queued_manual_ticks,
+                                tick_plan,
+                                tick_index,
+                                scenes.debug_info_snapshot_active(),
+                                &mut runtime_hooks,
+                            );
                         }
 
                         if tick_plan.dropped_backlog > Duration::ZERO {
@@ -1530,6 +1519,34 @@ fn telemetry_qtick_after_current_tick(
     }
 }
 
+fn emit_thruport_tick_telemetry_if_enabled(
+    telemetry_enabled: bool,
+    tick_counter: &mut u64,
+    sim_paused: bool,
+    queued_manual_ticks: u32,
+    tick_plan: TickExecutionPlan,
+    tick_index: u32,
+    snapshot: Option<super::DebugInfoSnapshot>,
+    runtime_hooks: &mut LoopRuntimeHooks,
+) {
+    *tick_counter = tick_counter.saturating_add(1);
+    if !telemetry_enabled {
+        return;
+    }
+
+    let (ev, intents, in_bad) = telemetry_counters_from_debug_snapshot(snapshot);
+    let paused_value = if sim_paused { 1 } else { 0 };
+    let qtick_value =
+        telemetry_qtick_after_current_tick(sim_paused, queued_manual_ticks, tick_plan, tick_index);
+    let line = format!(
+        "thruport.frame v1 tick:{} paused:{} qtick:{} ev:{} in:{} in_bad:{}",
+        *tick_counter, paused_value, qtick_value, ev, intents, in_bad
+    );
+    if let Some(pump) = runtime_hooks.remote_console_pump.as_mut() {
+        pump.send_thruport_frame(&line);
+    }
+}
+
 fn telemetry_counters_from_debug_snapshot(
     snapshot: Option<super::DebugInfoSnapshot>,
 ) -> (u32, u32, u32) {
@@ -2022,6 +2039,39 @@ mod tests {
             assert_eq!(ticks[i], ticks[i - 1] + 1);
         }
         assert_eq!(qticks, vec![9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn telemetry_emits_for_manual_ticks_while_paused_when_enabled() {
+        let frames = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut hooks = LoopRuntimeHooks {
+            remote_console_pump: Some(Box::new(FrameCapturePump {
+                frames: Arc::clone(&frames),
+            })),
+        };
+        let tick_plan = TickExecutionPlan {
+            ticks_to_run: 5,
+            remaining_accumulator: Duration::ZERO,
+            dropped_backlog: Duration::ZERO,
+            remaining_manual_ticks: 0,
+        };
+
+        let mut tick_counter = 0u64;
+        for tick_index in 0..tick_plan.ticks_to_run {
+            emit_thruport_tick_telemetry_if_enabled(
+                true,
+                &mut tick_counter,
+                true,
+                0,
+                tick_plan,
+                tick_index,
+                None,
+                &mut hooks,
+            );
+        }
+
+        let captured = frames.lock().expect("lock");
+        assert_eq!(captured.len(), 5);
     }
 
     #[test]

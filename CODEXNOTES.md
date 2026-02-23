@@ -130,3 +130,19 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 53 (2026-02-23): `thruport_cli send` now uses an internal `sync` completion boundary in `crates/thruport_cli/src/lib.rs` and suppresses the internal `ok: sync` line from default output.
 - Ticket 53: `thruport_cli` fallback behavior uses quiet-window completion only when internal sync is unavailable; CLI now exposes `--quiet-ms` (default `250`) in `crates/thruport_cli/src/main.rs` and `docs/thruport_cli.md`.
 - Ticket 53: `script --barrier` contract remains one explicit end-of-script barrier (no added per-command barriers).
+- Ticket 54 (2026-02-23): thruport telemetry emission in `crates/engine/src/app/loop_runner.rs` is now driven by executed fixed ticks via `emit_thruport_tick_telemetry_if_enabled`, covering both accumulator-driven and paused manual queued ticks without changing the `thruport.frame v1` schema or channel tagging.
+- Ticket 54: engine coverage added in `crates/engine/src/app/loop_runner.rs` test `telemetry_emits_for_manual_ticks_while_paused_when_enabled` to assert manual tick execution emits non-zero telemetry frames when enabled.
+
+## Single-shot stress test doc update (2026-02-23)
+- Preconditions/reporting update: `cargo fmt --all -- --check` is non-gating and should be reported as `WARN` when it fails (do not fail the single-shot run on fmt alone).
+- Subtest 08 (revised deterministic script path):
+  1) Create `tick_telemetry_probe.txt` with lines:
+     - `pause_sim`
+     - `thruport.telemetry on`
+     - `tick 5`
+     - `sync`
+  2) Run:
+     - `thruport_cli --port 46001 --include-telemetry --quiet-ms 1000 script .\tick_telemetry_probe.txt --barrier`
+  3) PASS criteria:
+     - Control acks include `ok: sim paused`, `ok: thruport.telemetry v1 enabled:1`, `ok: queued tick 5`, and `ok: sync`.
+     - Telemetry output includes exactly 5 lines matching `thruport.frame v1 ... paused:1 ...` for the queued manual ticks.
