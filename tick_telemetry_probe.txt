@@ -1,0 +1,4 @@
+pause_sim
+thruport.telemetry on
+tick 5
+sync
