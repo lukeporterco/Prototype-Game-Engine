@@ -1,4 +1,4 @@
-This style is a “crisp pixel accent” look built for a dense colony sim. It is not trying to look like old hardware and it is not trying to look painterly. The goal is modern readability first, with a restrained pixel structure that gives character without ever turning into blur, smear, or noisy mush.
+﻿This style is a "crisp pixel accent" look built for a dense colony sim. It is not trying to look like old hardware and it is not trying to look painterly. The goal is modern readability first, with a restrained pixel structure that gives character without ever turning into blur, smear, or noisy mush.
 
 Overall read and priorities  
 At the most common zoom level, the player must instantly parse: walkable ground vs blocked, room boundaries, doors, interactable machines, items, pawns, and threats. The art must support gameplay clarity over decoration. At closer zoom, the player should notice pleasing pixel clusters and material motifs. If you have to zoom in to understand what something is, the sprite is wrong.
@@ -7,17 +7,17 @@ The signature look in one sentence
 Clean silhouettes and banded shading, with interior detail expressed as deliberate pixel clusters, rendered with crisp sampling and zero blur.
 
 Camera and perspective language  
-Use a consistent top-down or very slight “tilt” perspective. Do not mix viewpoints between assets. Objects should feel like they live in the same projection: if walls show a little thickness, everything that has height should show it the same way. Avoid strong isometric angles. The world should read like a plan view with just enough depth cues to feel physical, not like a 3D render.
+Use a consistent top-down or very slight "tilt" perspective. Do not mix viewpoints between assets. Objects should feel like they live in the same projection: if walls show a little thickness, everything that has height should show it the same way. Avoid strong isometric angles. The world should read like a plan view with just enough depth cues to feel physical, not like a 3D render.
 
 Pixel treatment and rendering assumptions  
-World art is designed to be displayed with nearest-neighbor sampling. That means every pixel edge is sacred. Never rely on anti-aliasing or blur to “fix” edges. If an edge looks jagged in a bad way, redesign the contour or adjust the pixel clusters. Do not add blur to low resolution textures. Do not paint with soft airbrush gradients that depend on filtering to look smooth.
+World art is designed to be displayed with nearest-neighbor sampling. That means every pixel edge is sacred. Never rely on anti-aliasing or blur to "fix" edges. If an edge looks jagged in a bad way, redesign the contour or adjust the pixel clusters. Do not add blur to low resolution textures. Do not paint with soft airbrush gradients that depend on filtering to look smooth.
 
-The “pixel accent” idea means you are not making chunky 8-bit sprites. You are making clean, modern shapes, then simplifying and quantizing the interior detail into visible pixel clusters. Think “controlled blockiness” inside a clean form.
+The "pixel accent" idea means you are not making chunky 8-bit sprites. You are making clean, modern shapes, then simplifying and quantizing the interior detail into visible pixel clusters. Think "controlled blockiness" inside a clean form.
 
 Line and edge rules  
 Pick one edge policy and apply it consistently across the entire game.
 
-Preferred policy for colony sim readability: “interactable outline.”  
+Preferred policy for colony sim readability: "interactable outline."  
 Interactable objects and pawns get a thin, consistent outline. Terrain does not. This makes dense scenes readable without noisy textures.
 
 Outline specifics:  
@@ -41,7 +41,7 @@ Color palette rules
 The palette is constrained but not crushed. You can have a limited set of hues, but you must have enough value steps to keep materials distinct.
 
 General palette guidance:  
-Use moderate saturation for most surfaces. Save high saturation for signals: selection states, warnings, faction color accents, special resources. Neutrals are clean, not brown-muddy. Avoid the “everything is beige-gray” look.
+Use moderate saturation for most surfaces. Save high saturation for signals: selection states, warnings, faction color accents, special resources. Neutrals are clean, not brown-muddy. Avoid the "everything is beige-gray" look.
 
 Avoid dithering as default:  
 Dithering tends to create vibration and noise in a crisp-sampled game. Only use dithering as a rare, intentional effect for something like fog, a magical field, or a special biome texture. Even then, keep it subtle and low contrast.
@@ -49,7 +49,7 @@ Dithering tends to create vibration and noise in a crisp-sampled game. Only use 
 Texture and detail rules  
 This is where the style becomes unique and where many artists accidentally break it.
 
-No micro-noise. No speckle. No “photographic” texture.  
+No micro-noise. No speckle. No "photographic" texture.  
 If you add random noise to suggest texture, it will shimmer and look dirty when the camera moves or when zoom changes. Texture must be organized into clusters and motifs.
 
 Texture must be low-frequency and patterned:  
@@ -59,7 +59,7 @@ Interior detail is allowed, but it is subordinate:
 The silhouette and the big shading bands always win. Interior details must never break the outer read. If interior detail starts to compete with the silhouette, delete it.
 
 Material motif library (shared visual vocabulary)  
-To keep multiple artists consistent, you want a small “motif library” that everyone uses. These motifs should be repeated across assets so the world feels cohesive.
+To keep multiple artists consistent, you want a small "motif library" that everyone uses. These motifs should be repeated across assets so the world feels cohesive.
 
 Examples of motifs, described conceptually:  
 Wood: broad grain bands or plank segmentation, not scribbly grain.  
@@ -71,7 +71,7 @@ Soil/sand: gentle clusters and occasional stones, but stones are grouped, not sp
 Water: large repeating wave clusters or calm gradient bands, no tiny checker noise.
 
 Terrain rules (critical for colony sims)  
-Terrain must be calm. Terrain is the “background layer” that supports readability. It cannot compete with buildings or items.
+Terrain must be calm. Terrain is the "background layer" that supports readability. It cannot compete with buildings or items.
 
 Terrain texture frequency must be lower than object texture frequency:  
 Terrain should be large clusters and gentle patterns. Objects can have slightly more detail, but still controlled. The moment your terrain has high contrast micro detail, your world becomes busy and tiring.
@@ -83,9 +83,9 @@ Object design rules (buildings, machines, furniture)
 Objects should be icon-clear. Imagine each object as a pictogram first, then decorate it.
 
 Silhouette first:  
-Every interactable has a primary shape that is recognizable. Avoid overly complex outlines. “Big shape plus one secondary protrusion” reads better than “many little nubs.”
+Every interactable has a primary shape that is recognizable. Avoid overly complex outlines. "Big shape plus one secondary protrusion" reads better than "many little nubs."
 
-Use “feature grouping”:  
+Use "feature grouping":  
 Details come in grouped clusters: a control panel cluster, a pipe cluster, a vent cluster. Avoid scattering tiny details all over the sprite.
 
 Use consistent exaggerations:  
@@ -110,7 +110,7 @@ Use a limited icon shading model:
 One highlight band, one shadow band. Minimal internal lines. Strong silhouette. If you have stacks, make stacks readable with simple repetition, not messy piling.
 
 State and feedback visuals  
-This style benefits from clean “state layers” instead of baking states into sprites.
+This style benefits from clean "state layers" instead of baking states into sprites.
 
 Use overlay accents for states:  
 Damage, selection, forbidden, owned, powered, etc. should primarily be communicated by crisp overlays, outlines, badges, and small icons. Do not repaint base sprites into dozens of variants early.
@@ -118,7 +118,7 @@ Damage, selection, forbidden, owned, powered, etc. should primarily be communica
 Animation and motion look  
 Movement can be smooth, but sprite placement must look stable. Avoid sub-pixel crawling. If the camera moves, sprites should remain crisp and not shimmer. Particles should be chunky and consistent, not blurry. Smoke and dust can be stylized with cluster shapes and limited alpha steps, not soft blur.
 
-Common failure modes to avoid (what makes it look like “mud”)
+Common failure modes to avoid (what makes it look like "mud")
 
 1. Airbrushed gradients that depend on filtering.  
 2. Tiny noisy textures on terrain or large surfaces.  
@@ -141,7 +141,8 @@ Keep a shared reference sheet: palette ramps, outline color, shadow color, and e
 Deliverable standards (what an artist hands off)  
 For each asset, the artist should deliver:  
 A base sprite that reads cleanly at target size with crisp edges.  
-A palette ramp used for that asset’s primary materials.  
+A palette ramp used for that asset's primary materials.  
 Confirmation of which motif rules were used (wood motif, metal motif, stone motif).  
-A quick “zoom test” screenshot on typical terrain with neighboring objects.
+A quick "zoom test" screenshot on typical terrain with neighboring objects.
+
 
