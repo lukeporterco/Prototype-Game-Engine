@@ -186,7 +186,7 @@ impl Renderer {
                             cx,
                             cy,
                             sprite,
-                            *pixel_scale,
+                            *pixel_scale as f32 * world.camera().effective_zoom(),
                         );
                     } else {
                         draw_square(
@@ -510,7 +510,15 @@ fn draw_tilemap(
                 if let Some(sprite) =
                     resolve_cached_sprite(sprite_cache, warned_missing_sprite_keys, asset_root, key)
                 {
-                    draw_sprite_centered_scaled(frame, width, height, cx, cy, sprite, 1);
+                    draw_sprite_centered_scaled(
+                        frame,
+                        width,
+                        height,
+                        cx,
+                        cy,
+                        sprite,
+                        world.camera().effective_zoom(),
+                    );
                     continue;
                 }
             }
@@ -857,12 +865,19 @@ fn draw_cross(
     }
 }
 
-fn scaled_sprite_dimensions(sprite: &LoadedSprite, pixel_scale: u8) -> (u32, u32) {
-    let scale = pixel_scale.max(1) as u32;
-    (
-        sprite.width.saturating_mul(scale),
-        sprite.height.saturating_mul(scale),
-    )
+fn normalized_sprite_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+fn scaled_sprite_dimensions(sprite: &LoadedSprite, scale: f32) -> (u32, u32) {
+    let scale = normalized_sprite_scale(scale);
+    let width = (sprite.width as f32 * scale).round().max(1.0) as u32;
+    let height = (sprite.height as f32 * scale).round().max(1.0) as u32;
+    (width, height)
 }
 
 fn draw_sprite_centered_scaled(
@@ -872,46 +887,42 @@ fn draw_sprite_centered_scaled(
     center_x: i32,
     center_y: i32,
     sprite: &LoadedSprite,
-    pixel_scale: u8,
+    scale: f32,
 ) {
     if sprite.width == 0 || sprite.height == 0 {
         return;
     }
-    let (scaled_w, scaled_h) = scaled_sprite_dimensions(sprite, pixel_scale);
+    let scale = normalized_sprite_scale(scale);
+    let (scaled_w, scaled_h) = scaled_sprite_dimensions(sprite, scale);
     let left = center_x - (scaled_w as i32 / 2);
     let top = center_y - (scaled_h as i32 / 2);
-    let scale = pixel_scale.max(1) as i32;
 
-    for sy in 0..sprite.height as i32 {
-        for sx in 0..sprite.width as i32 {
+    for dy in 0..scaled_h as i32 {
+        let sy = ((dy as f32) / scale).floor() as u32;
+        let sy = sy.min(sprite.height - 1);
+        for dx in 0..scaled_w as i32 {
+            let sx = ((dx as f32) / scale).floor() as u32;
+            let sx = sx.min(sprite.width - 1);
             let src_offset = ((sy as usize * sprite.width as usize) + sx as usize) * 4;
             if src_offset + 3 >= sprite.rgba.len() {
                 continue;
             }
-
             let alpha = sprite.rgba[src_offset + 3];
             if alpha == 0 {
                 continue;
             }
-
             let color = [
                 sprite.rgba[src_offset],
                 sprite.rgba[src_offset + 1],
                 sprite.rgba[src_offset + 2],
                 alpha,
             ];
-            let pixel_left = left + sx * scale;
-            let pixel_top = top + sy * scale;
-            for oy in 0..scale {
-                for ox in 0..scale {
-                    let dx = pixel_left + ox;
-                    let dy = pixel_top + oy;
-                    if dx < 0 || dy < 0 || dx >= width as i32 || dy >= height as i32 {
-                        continue;
-                    }
-                    write_pixel_rgba_clipped(frame, width as usize, dx, dy, color);
-                }
+            let out_x = left + dx;
+            let out_y = top + dy;
+            if out_x < 0 || out_y < 0 || out_x >= width as i32 || out_y >= height as i32 {
+                continue;
             }
+            write_pixel_rgba_clipped(frame, width as usize, out_x, out_y, color);
         }
     }
 }
@@ -1045,8 +1056,8 @@ mod tests {
             height: 6,
             rgba: vec![255; 4 * 6 * 4],
         };
-        assert_eq!(scaled_sprite_dimensions(&sprite, 1), (4, 6));
-        assert_eq!(scaled_sprite_dimensions(&sprite, 2), (8, 12));
+        assert_eq!(scaled_sprite_dimensions(&sprite, 1.0), (4, 6));
+        assert_eq!(scaled_sprite_dimensions(&sprite, 2.0), (8, 12));
     }
 
     #[test]
