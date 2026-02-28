@@ -17,9 +17,8 @@ use crate::content::DefDatabase;
 use crate::sprite_keys::validate_sprite_key;
 
 use super::transform::camera_pixels_per_world;
-use super::{
-    screen_to_world_px, world_to_screen_px, Viewport, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX,
-};
+use super::{world_to_screen_px, Viewport, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX};
+use std::f32::consts::TAU;
 
 const CLEAR_COLOR_ROOFTOP: [u8; 4] = [24, 26, 33, 255];
 const CLEAR_COLOR_MAIN: [u8; 4] = [20, 22, 28, 255];
@@ -43,6 +42,15 @@ const ORDER_MARKER_HALF_SIZE_PX: i32 = 6;
 const VIEW_CULL_PADDING_PX: f32 = 16.0;
 const ENTITY_CULL_RADIUS_WORLD_TILES: f32 = 0.5;
 const MICRO_GRID_RESOLUTION_PX: i32 = 1;
+const IDLE_BOB_AMPLITUDE_PX: f32 = 0.35;
+const IDLE_BOB_CYCLES_PER_TICK: f32 = 0.0125;
+const WALK_BOB_AMPLITUDE_PX: f32 = 1.0;
+const WALK_BOB_X_AMPLITUDE_PX: f32 = 0.45;
+const WALK_BOB_CYCLES_PER_TICK: f32 = 0.08;
+const WALK_SPRING_ALPHA_PER_TICK: f32 = 0.25;
+const HIT_KICK_MAX_PX: f32 = 2.5;
+const HIT_KICK_ROTATION_SCALE: f32 = 0.02;
+const PROCEDURAL_ENTITY_PHASE_SEED: f32 = 0.173;
 
 #[derive(Debug, Clone, Copy)]
 struct WorldBounds {
@@ -81,6 +89,19 @@ struct CachedCarrySprite {
     anchors: SpriteAnchors,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ProceduralVisualOffset {
+    offset_px: Vec2,
+    #[allow(dead_code)]
+    rotation_radians: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct WalkSpringState {
+    amplitude: f32,
+    last_tick: u64,
+}
+
 pub struct Renderer {
     window: Arc<Window>,
     pixels: Pixels<'static>,
@@ -91,6 +112,7 @@ pub struct Renderer {
     visible_entity_draw_indices: Vec<usize>,
     carry_sprite_cache: HashMap<String, Option<CachedCarrySprite>>,
     last_def_db_identity: Option<usize>,
+    walk_spring_by_entity: HashMap<crate::app::EntityId, WalkSpringState>,
 }
 
 impl Renderer {
@@ -110,6 +132,7 @@ impl Renderer {
             visible_entity_draw_indices: Vec::new(),
             carry_sprite_cache: HashMap::new(),
             last_def_db_identity: None,
+            walk_spring_by_entity: HashMap::new(),
         })
     }
 
@@ -134,6 +157,7 @@ impl Renderer {
     pub(crate) fn render_world(
         &mut self,
         world: &SceneWorld,
+        sim_tick_counter: u64,
         overlay_data: Option<&OverlayData>,
         console_state: Option<&ConsoleState>,
         command_palette: Option<&CommandPaletteRenderData>,
@@ -147,11 +171,13 @@ impl Renderer {
         let warned_missing_sprite_keys = &mut self.warned_missing_sprite_keys;
         let visible_entity_draw_indices = &mut self.visible_entity_draw_indices;
         let carry_sprite_cache = &mut self.carry_sprite_cache;
+        let walk_spring_by_entity = &mut self.walk_spring_by_entity;
         let frame = self.pixels.frame_mut();
         let def_db = world.def_database();
         let def_db_identity = def_db.map(|db| db as *const DefDatabase as usize);
         if self.last_def_db_identity != def_db_identity {
             carry_sprite_cache.clear();
+            walk_spring_by_entity.clear();
             self.last_def_db_identity = def_db_identity;
         }
         let active_floor = world.active_floor();
@@ -189,12 +215,19 @@ impl Renderer {
             let action_visual = world
                 .entity_action_visual_ref(entity.id)
                 .unwrap_or(&default_action_visual);
+            let procedural_offset = compute_procedural_offset(
+                walk_spring_by_entity,
+                entity.id,
+                action_visual,
+                sim_tick_counter,
+            );
             draw_renderable_at_world_position(
                 frame,
                 self.viewport.width,
                 self.viewport.height,
                 world.camera(),
                 entity.transform.position,
+                procedural_offset.offset_px,
                 &entity.renderable.kind,
                 sprite_cache,
                 warned_missing_sprite_keys,
@@ -213,18 +246,20 @@ impl Renderer {
             else {
                 continue;
             };
-            let carry_world = entity_carry_anchor_world_position(
+            let (carry_x, carry_y) = entity_carry_anchor_screen_position_px(
                 world.camera(),
                 (self.viewport.width, self.viewport.height),
                 entity,
                 action_visual.action_params.facing,
+                procedural_offset.offset_px,
             );
-            draw_cached_carry_sprite_at_world_position(
+            draw_cached_carry_sprite_at_screen_position(
                 frame,
                 self.viewport.width,
                 self.viewport.height,
                 world.camera(),
-                carry_world,
+                carry_x,
+                carry_y,
                 carry_sprite,
                 sprite_cache,
                 warned_missing_sprite_keys,
@@ -260,13 +295,19 @@ fn draw_renderable_at_world_position(
     height: u32,
     camera: &Camera2D,
     world_position: Vec2,
+    visual_offset_px: Vec2,
     renderable: &RenderableKind,
     sprite_cache: &mut HashMap<String, Option<LoadedSprite>>,
     warned_missing_sprite_keys: &mut HashSet<String>,
     asset_root: &Path,
     draw_placeholder_on_missing_sprite: bool,
 ) {
-    let (cx, cy) = snapped_world_to_screen_px(camera, (width, height), world_position);
+    let (cx, cy) = world_to_snapped_screen_px_with_offset(
+        camera,
+        (width, height),
+        world_position,
+        visual_offset_px,
+    );
     match renderable {
         RenderableKind::Placeholder => {
             draw_square(
@@ -335,18 +376,18 @@ fn resolve_cached_carry_sprite<'a>(
     cache.get(held_visual_def_name).and_then(Option::as_ref)
 }
 
-fn draw_cached_carry_sprite_at_world_position(
+fn draw_cached_carry_sprite_at_screen_position(
     frame: &mut [u8],
     width: u32,
     height: u32,
     camera: &Camera2D,
-    world_position: Vec2,
+    cx: i32,
+    cy: i32,
     cached_carry_sprite: &CachedCarrySprite,
     sprite_cache: &mut HashMap<String, Option<LoadedSprite>>,
     warned_missing_sprite_keys: &mut HashSet<String>,
     asset_root: &Path,
 ) {
-    let (cx, cy) = snapped_world_to_screen_px(camera, (width, height), world_position);
     let Some(sprite) = resolve_cached_sprite(
         sprite_cache,
         warned_missing_sprite_keys,
@@ -366,34 +407,132 @@ fn draw_cached_carry_sprite_at_world_position(
     );
 }
 
-fn entity_carry_anchor_world_position(
+fn entity_carry_anchor_screen_position_px(
     camera: &Camera2D,
     window_size: (u32, u32),
     entity: &Entity,
     facing: Option<CardinalFacing>,
-) -> Vec2 {
+    visual_offset_px: Vec2,
+) -> (i32, i32) {
     let RenderableKind::Sprite {
         pixel_scale,
         anchors,
         ..
     } = &entity.renderable.kind
     else {
-        return entity.transform.position;
+        return world_to_snapped_screen_px_with_offset(
+            camera,
+            window_size,
+            entity.transform.position,
+            visual_offset_px,
+        );
     };
     let anchor = sprite_anchor_or_origin(*anchors, SpriteAnchorName::Carry);
     let transformed_anchor = transform_anchor_for_facing(anchor, facing);
     let anchor_scale = *pixel_scale as f32 * camera.effective_zoom();
     let (offset_x, offset_y) = anchor_screen_delta_px(transformed_anchor, anchor_scale);
-    let (base_x, base_y) =
-        snapped_world_to_screen_px(camera, window_size, entity.transform.position);
-    screen_to_world_px(
+    let (base_x, base_y) = world_to_snapped_screen_px_with_offset(
         camera,
         window_size,
-        Vec2 {
-            x: (base_x + offset_x) as f32,
-            y: (base_y + offset_y) as f32,
-        },
+        entity.transform.position,
+        visual_offset_px,
+    );
+    (
+        snap_screen_coordinate_px(base_x + offset_x, MICRO_GRID_RESOLUTION_PX),
+        snap_screen_coordinate_px(base_y + offset_y, MICRO_GRID_RESOLUTION_PX),
     )
+}
+
+fn world_to_snapped_screen_px_with_offset(
+    camera: &Camera2D,
+    window_size: (u32, u32),
+    world_pos: Vec2,
+    visual_offset_px: Vec2,
+) -> (i32, i32) {
+    let (base_x, base_y) = world_to_screen_px(camera, window_size, world_pos);
+    let x = base_x + visual_offset_px.x.round() as i32;
+    let y = base_y + visual_offset_px.y.round() as i32;
+    (
+        snap_screen_coordinate_px(x, MICRO_GRID_RESOLUTION_PX),
+        snap_screen_coordinate_px(y, MICRO_GRID_RESOLUTION_PX),
+    )
+}
+
+fn compute_procedural_offset(
+    walk_spring_by_entity: &mut HashMap<crate::app::EntityId, WalkSpringState>,
+    entity_id: crate::app::EntityId,
+    action_visual: &EntityActionVisual,
+    sim_tick_counter: u64,
+) -> ProceduralVisualOffset {
+    let phase_seed = entity_id.0 as f32 * PROCEDURAL_ENTITY_PHASE_SEED;
+    let phase = action_visual.action_params.phase + phase_seed;
+    match action_visual.action_state {
+        ActionState::Idle => {
+            let theta = TAU * (sim_tick_counter as f32 * IDLE_BOB_CYCLES_PER_TICK + phase);
+            let y = theta.sin() * IDLE_BOB_AMPLITUDE_PX;
+            ProceduralVisualOffset {
+                offset_px: Vec2 { x: 0.0, y },
+                rotation_radians: y * 0.01,
+            }
+        }
+        ActionState::Walk => {
+            let smoothed_speed01 = update_walk_spring_amplitude(
+                walk_spring_by_entity,
+                entity_id,
+                action_visual.action_params.speed01.clamp(0.0, 1.0),
+                sim_tick_counter,
+            );
+            let theta = TAU * (sim_tick_counter as f32 * WALK_BOB_CYCLES_PER_TICK + phase);
+            let y = theta.sin() * WALK_BOB_AMPLITUDE_PX * smoothed_speed01;
+            let x = (theta * 2.0).cos() * WALK_BOB_X_AMPLITUDE_PX * smoothed_speed01;
+            ProceduralVisualOffset {
+                offset_px: Vec2 { x, y },
+                rotation_radians: x * 0.01,
+            }
+        }
+        ActionState::Hit => {
+            let phase01 = action_visual.action_params.phase.clamp(0.0, 1.0);
+            let envelope = if phase01 < 0.2 {
+                phase01 / 0.2
+            } else if phase01 < 0.6 {
+                1.0 - ((phase01 - 0.2) / 0.4)
+            } else {
+                0.0
+            };
+            let magnitude01 = action_visual
+                .action_params
+                .intensity
+                .max(action_visual.action_params.speed01)
+                .clamp(0.0, 1.0);
+            let x = envelope * magnitude01 * HIT_KICK_MAX_PX;
+            ProceduralVisualOffset {
+                offset_px: Vec2 { x, y: 0.0 },
+                rotation_radians: x * HIT_KICK_ROTATION_SCALE,
+            }
+        }
+        _ => ProceduralVisualOffset::default(),
+    }
+}
+
+fn update_walk_spring_amplitude(
+    walk_spring_by_entity: &mut HashMap<crate::app::EntityId, WalkSpringState>,
+    entity_id: crate::app::EntityId,
+    target: f32,
+    sim_tick_counter: u64,
+) -> f32 {
+    let entry = walk_spring_by_entity
+        .entry(entity_id)
+        .or_insert(WalkSpringState {
+            amplitude: target,
+            last_tick: sim_tick_counter,
+        });
+    if sim_tick_counter > entry.last_tick {
+        let ticks_elapsed = sim_tick_counter.saturating_sub(entry.last_tick);
+        let decay = (1.0 - WALK_SPRING_ALPHA_PER_TICK).powf(ticks_elapsed as f32);
+        entry.amplitude = target + (entry.amplitude - target) * decay;
+        entry.last_tick = sim_tick_counter;
+    }
+    entry.amplitude.clamp(0.0, 1.0)
 }
 
 fn sprite_anchor_or_origin(anchors: SpriteAnchors, name: SpriteAnchorName) -> SpriteAnchorPx {
@@ -1166,7 +1305,7 @@ fn draw_sprite_centered_scaled(
 mod tests {
     use super::*;
     use crate::app::{
-        Camera2D, CardinalFacing, DebugMarker, DebugMarkerKind, EntityId, FloorId,
+        ActionParams, Camera2D, CardinalFacing, DebugMarker, DebugMarkerKind, EntityId, FloorId,
         SpriteAnchorName, SpriteAnchorPx, SpriteAnchors, Tilemap,
     };
     use crate::content::{DefDatabase, EntityArchetype, EntityDefId};
@@ -1370,6 +1509,151 @@ mod tests {
         for _ in 0..128 {
             assert_eq!(snap_screen_coordinate_px(-37, 6), expected);
         }
+    }
+
+    fn approx_eq_f32(a: f32, b: f32) -> bool {
+        (a - b).abs() <= 0.0001
+    }
+
+    fn approx_eq_vec2(a: Vec2, b: Vec2) -> bool {
+        approx_eq_f32(a.x, b.x) && approx_eq_f32(a.y, b.y)
+    }
+
+    #[test]
+    fn procedural_offset_is_deterministic_for_same_tick_and_input() {
+        let mut spring = HashMap::new();
+        let visual = EntityActionVisual {
+            action_state: ActionState::Walk,
+            action_params: ActionParams {
+                phase: 0.2,
+                speed01: 0.6,
+                intensity: 0.6,
+                ..ActionParams::default()
+            },
+            held_visual: None,
+        };
+        let first = compute_procedural_offset(&mut spring, EntityId(11), &visual, 100);
+        let second = compute_procedural_offset(&mut spring, EntityId(11), &visual, 100);
+        assert!(approx_eq_vec2(first.offset_px, second.offset_px));
+        assert!(approx_eq_f32(
+            first.rotation_radians,
+            second.rotation_radians
+        ));
+    }
+
+    #[test]
+    fn idle_and_walk_offsets_differ_and_walk_scales_with_speed01() {
+        let mut spring = HashMap::new();
+        let idle = EntityActionVisual {
+            action_state: ActionState::Idle,
+            action_params: ActionParams::default(),
+            held_visual: None,
+        };
+        let walk_slow = EntityActionVisual {
+            action_state: ActionState::Walk,
+            action_params: ActionParams {
+                speed01: 0.2,
+                phase: 0.15,
+                ..ActionParams::default()
+            },
+            held_visual: None,
+        };
+        let walk_fast = EntityActionVisual {
+            action_state: ActionState::Walk,
+            action_params: ActionParams {
+                speed01: 1.0,
+                phase: 0.15,
+                ..ActionParams::default()
+            },
+            held_visual: None,
+        };
+        let idle_offset = compute_procedural_offset(&mut spring, EntityId(1), &idle, 23);
+        let walk_slow_offset = compute_procedural_offset(&mut spring, EntityId(2), &walk_slow, 23);
+        let walk_fast_offset = compute_procedural_offset(&mut spring, EntityId(3), &walk_fast, 23);
+
+        assert!(!approx_eq_vec2(
+            idle_offset.offset_px,
+            walk_slow_offset.offset_px
+        ));
+        let slow_mag_sq = walk_slow_offset.offset_px.x * walk_slow_offset.offset_px.x
+            + walk_slow_offset.offset_px.y * walk_slow_offset.offset_px.y;
+        let fast_mag_sq = walk_fast_offset.offset_px.x * walk_fast_offset.offset_px.x
+            + walk_fast_offset.offset_px.y * walk_fast_offset.offset_px.y;
+        assert!(fast_mag_sq > slow_mag_sq);
+    }
+
+    #[test]
+    fn hit_impulse_curve_is_bounded_and_decays() {
+        let mut spring = HashMap::new();
+        let early = EntityActionVisual {
+            action_state: ActionState::Hit,
+            action_params: ActionParams {
+                phase: 0.2,
+                intensity: 1.0,
+                ..ActionParams::default()
+            },
+            held_visual: None,
+        };
+        let late = EntityActionVisual {
+            action_state: ActionState::Hit,
+            action_params: ActionParams {
+                phase: 0.8,
+                intensity: 1.0,
+                ..ActionParams::default()
+            },
+            held_visual: None,
+        };
+        let early_offset = compute_procedural_offset(&mut spring, EntityId(9), &early, 80);
+        let late_offset = compute_procedural_offset(&mut spring, EntityId(9), &late, 81);
+
+        assert!(early_offset.offset_px.x >= 0.0);
+        assert!(early_offset.offset_px.x <= HIT_KICK_MAX_PX + 0.001);
+        assert!(late_offset.offset_px.x <= early_offset.offset_px.x);
+    }
+
+    #[test]
+    fn final_position_with_procedural_offset_still_respects_microgrid_snap() {
+        let camera = Camera2D::default();
+        let world_pos = Vec2 { x: 0.33, y: -0.42 };
+        let visual_offset = Vec2 { x: 0.7, y: -1.2 };
+        let (x, y) =
+            world_to_snapped_screen_px_with_offset(&camera, (1280, 720), world_pos, visual_offset);
+
+        let (base_x, base_y) = world_to_screen_px(&camera, (1280, 720), world_pos);
+        let expected_x = snap_screen_coordinate_px(
+            base_x + visual_offset.x.round() as i32,
+            MICRO_GRID_RESOLUTION_PX,
+        );
+        let expected_y = snap_screen_coordinate_px(
+            base_y + visual_offset.y.round() as i32,
+            MICRO_GRID_RESOLUTION_PX,
+        );
+        assert_eq!(x, expected_x);
+        assert_eq!(y, expected_y);
+    }
+
+    #[test]
+    fn offset_changes_only_when_tick_counter_changes() {
+        let mut spring = HashMap::new();
+        let visual = EntityActionVisual {
+            action_state: ActionState::Walk,
+            action_params: ActionParams {
+                phase: 0.4,
+                speed01: 0.8,
+                ..ActionParams::default()
+            },
+            held_visual: None,
+        };
+        let first = compute_procedural_offset(&mut spring, EntityId(15), &visual, 200);
+        let second = compute_procedural_offset(&mut spring, EntityId(15), &visual, 200);
+        let third = compute_procedural_offset(&mut spring, EntityId(15), &visual, 201);
+
+        assert!(approx_eq_vec2(first.offset_px, second.offset_px));
+        assert!(approx_eq_f32(
+            first.rotation_radians,
+            second.rotation_radians
+        ));
+        assert!(!approx_eq_vec2(second.offset_px, third.offset_px));
     }
 
     #[test]

@@ -465,6 +465,7 @@ fn run_app_with_metrics_and_hooks(
                         scenes.render_active();
                         let render_result = renderer.render_world(
                             scenes.active_world(),
+                            tick_counter,
                             overlay.as_ref(),
                             Some(&console),
                             palette_render_data,

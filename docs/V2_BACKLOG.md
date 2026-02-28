@@ -48,6 +48,26 @@ How to use this doc:
 - Risks: Anchor naming/authoring drift across sprite sets can cause visual misalignment.
 - Cut: No IK, bone rigs, blend trees, or per-pixel deformation systems.
 
+### Procedural recoil from deterministic seeds
+- Date: 2026-02-28
+- Source: Ticket 62.3
+- Area: Rendering
+- Summary: Add renderer-only recoil offsets driven by deterministic per-entity seeds and fixed-tick phase.
+- Rationale: Improve action feedback while preserving simulation authority and FPS-independent visual determinism.
+- Dependencies: Stable per-entity action-state/action-params visual payload and fixed-tick phase source.
+- Risks: Overtuned amplitudes can reduce readability or create perceived jitter near micro-grid boundaries.
+- Cut: No simulation-side recoil forces, IK, or skeletal animation systems.
+
+### Deterministic light flicker polish
+- Date: 2026-02-28
+- Source: Ticket 62.3
+- Area: Rendering
+- Summary: Add renderer-only light flicker modulation using deterministic per-entity seeds.
+- Rationale: Increase scene liveliness with repeatable visual variation that stays independent from simulation logic.
+- Dependencies: Existing renderer-only procedural layer and deterministic tick-derived phase.
+- Risks: Excessive modulation can become distracting and conflict with clarity on low-end displays.
+- Cut: No dynamic lighting pipeline rewrite, no physics-driven effects, and no gameplay visibility logic changes.
+
 ## Assets
 
 ## Input
