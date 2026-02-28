@@ -2367,6 +2367,125 @@
     }
 
     #[test]
+    fn floor_set_changes_active_floor_and_selection_filter() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+
+        world.set_active_floor(engine::FloorId::Main);
+        let main_id = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "main_selectable",
+            },
+        );
+        world.set_active_floor(engine::FloorId::Basement);
+        let basement_id = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "basement_selectable",
+            },
+        );
+        world.apply_pending();
+
+        let click = click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &click, &mut world);
+        assert_eq!(scene.debug_selected_entity(), Some(main_id));
+
+        let floor_result = scene.execute_debug_command(
+            SceneDebugCommand::FloorSet {
+                floor: engine::FloorId::Basement,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert_eq!(
+            floor_result,
+            SceneDebugCommandResult::Success("floor.set v1 active:basement".to_string())
+        );
+
+        scene.update(1.0 / 60.0, &click, &mut world);
+        assert_eq!(scene.debug_selected_entity(), Some(basement_id));
+    }
+
+    #[test]
+    fn debug_order_interact_rejects_target_on_inactive_floor() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+
+        world.set_active_floor(engine::FloorId::Main);
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.selected_entity = Some(actor);
+
+        world.set_active_floor(engine::FloorId::Basement);
+        let basement_target = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 1);
+        world.set_active_floor(engine::FloorId::Main);
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: basement_target.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(
+            result,
+            SceneDebugCommandResult::Error(message)
+                if message.contains("not on active floor")
+        ));
+    }
+
+    #[test]
+    fn spawn_uses_active_floor_after_floor_set() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let floor_result = scene.execute_debug_command(
+            SceneDebugCommand::FloorSet {
+                floor: engine::FloorId::Basement,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert_eq!(
+            floor_result,
+            SceneDebugCommandResult::Success("floor.set v1 active:basement".to_string())
+        );
+
+        let spawned = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.npc_dummy",
+            Vec2 { x: 1.0, y: 0.0 },
+        );
+        assert_eq!(
+            world.find_entity(spawned).expect("spawned").floor,
+            engine::FloorId::Basement
+        );
+    }
+
+    #[test]
     fn step_toward_moves_by_speed_times_dt_without_overshoot() {
         let (next, arrived) = step_toward(
             Vec2 { x: 0.0, y: 0.0 },

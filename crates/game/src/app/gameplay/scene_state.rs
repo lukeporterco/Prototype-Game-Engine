@@ -4,6 +4,7 @@ struct GameplayScene {
     player_spawn: Vec2,
     player_id: Option<EntityId>,
     selected_entity: Option<EntityId>,
+    active_floor: ActiveFloor,
     player_move_speed: f32,
     resource_count: u32,
     interactable_cache: Vec<(EntityId, Vec2, f32)>,
@@ -42,6 +43,7 @@ impl GameplayScene {
             player_spawn,
             player_id: None,
             selected_entity: None,
+            active_floor: ActiveFloor::Main,
             player_move_speed: 5.0,
             resource_count: 0,
             interactable_cache: Vec::new(),
@@ -72,6 +74,14 @@ impl GameplayScene {
             SceneKey::A => SceneKey::B,
             SceneKey::B => SceneKey::A,
         }
+    }
+
+    fn active_floor_engine(&self) -> FloorId {
+        self.active_floor.to_engine_floor()
+    }
+
+    fn entity_is_on_active_floor(&self, entity: &engine::Entity) -> bool {
+        entity.floor == self.active_floor_engine()
     }
 
     fn alloc_next_save_id(&mut self) -> SaveLoadResult<u64> {
@@ -1005,7 +1015,7 @@ impl GameplayScene {
         self.selected_completion_enqueued_this_tick = false;
         self.systems_host.run_once_per_tick(
             fixed_dt_seconds,
-            WorldView::new(world),
+            WorldView::new(world, self.active_floor),
             input,
             self.player_id,
             self.selected_entity,
@@ -1426,12 +1436,27 @@ impl GameplayScene {
             .apply_zoom_steps(input.zoom_delta_steps());
         world.tick_debug_markers(fixed_dt_seconds);
         let hovered_interactable = input.cursor_position_px().and_then(|cursor_px| {
-            world.pick_topmost_interactable_at_cursor(cursor_px, input.window_size())
+            world.pick_topmost_interactable_at_cursor(
+                cursor_px,
+                input.window_size(),
+                Some(self.active_floor.to_engine_floor()),
+            )
         });
+        let active_floor = self.active_floor_engine();
+        if self.selected_entity.is_some_and(|selected_id| match world.find_entity(selected_id) {
+            Some(entity) => entity.floor != active_floor,
+            None => true,
+        }) {
+            self.selected_entity = None;
+        }
 
         if input.left_click_pressed() {
             self.selected_entity = input.cursor_position_px().and_then(|cursor_px| {
-                world.pick_topmost_selectable_at_cursor(cursor_px, input.window_size())
+                world.pick_topmost_selectable_at_cursor(
+                    cursor_px,
+                    input.window_size(),
+                    Some(self.active_floor.to_engine_floor()),
+                )
             });
         }
 
@@ -1478,7 +1503,7 @@ impl GameplayScene {
 
         if let Some(current_selected) = world.visual_state().selected_actor {
             let stale_or_non_actor = match world.find_entity(current_selected) {
-                Some(entity) => !entity.actor,
+                Some(entity) => !entity.actor || entity.floor != active_floor,
                 None => true,
             };
             if stale_or_non_actor {
@@ -1488,7 +1513,7 @@ impl GameplayScene {
         let selected_actor_visual = self.selected_entity.and_then(|id| {
             world
                 .find_entity(id)
-                .filter(|entity| entity.actor)
+                .filter(|entity| entity.actor && entity.floor == active_floor)
                 .map(|_| id)
         });
         world.set_selected_actor_visual(selected_actor_visual);

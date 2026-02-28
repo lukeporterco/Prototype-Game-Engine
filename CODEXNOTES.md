@@ -81,3 +81,33 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Deprecated in-place detailed notes (Module Boundaries + Tickets 48-54 + single-shot stress update) were moved to `CODEXNOTES_ARCHIVE.md` on 2026-02-28.
 
 - Ticket 55 (2026-02-28): renderer now owns a micro-grid snap policy for world-space draw placement (`crates/engine/src/app/rendering/renderer.rs`), defaulting to `MICRO_GRID_RESOLUTION_PX = 1`; simulation transforms and picking logic remain unchanged.
+- Ticket 56 (2026-02-28): added floor-layer runtime contract with `FloorId` (Rooftop/Main/Basement), `Entity.floor`, and `SceneWorld.active_floor`; topmost pick functions now take optional floor filters (`None` keeps legacy behavior) and `floor.set` routes as an engine queueable command to scene-owned behavior.
+
+## Module Boundaries and Ownership
+### A. Module map
+#### Core
+- Shared IDs, value types, and cross-module contracts.
+#### App/Loop
+- Main loop, window/input pump, scene routing, and queueable command execution.
+#### SceneMachine and Scene
+- Scene lifecycle (`load/update/render/unload`) and debug-command seam.
+#### World (SceneWorld and runtime state)
+- Runtime entities, camera, tilemap, visuals, debug markers, and pick helpers.
+#### Rendering
+- Projection, world pass draw policy, sprite/tile draw, and overlay/console composition.
+#### Assets and Content Pipeline
+- XML discovery/compile, cache planning, and DefDatabase runtime load path.
+#### Input
+- Action snapshots and edge-trigger semantics for simulation-safe input use.
+#### Tools (Overlay, Console)
+- In-game console parsing/queueing and debug overlay text/perf presentation.
+#### Placeholders (Physics, Audio, Scripting seam)
+- Reserved seams only; no advanced subsystem ownership yet.
+### B. Ownership rules
+- Engine owns render policy, command parsing/routing, and scene machine orchestration.
+- Game owns gameplay rules/state transitions and scene debug command behavior.
+- Runtime simulation state mutates in gameplay safe points, not in rendering paths.
+### C. Seam invariants
+- Dependency direction remains engine -> game boundary-safe with scene trait seam.
+- Rendering/picking policies may read runtime state but must not mutate simulation transforms.
+- Console queueable outputs remain standardized as `ok:` or `error:` lines.

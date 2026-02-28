@@ -35,6 +35,9 @@ pub enum SceneDebugCommand {
     OrderInteract {
         target_entity_id: u64,
     },
+    FloorSet {
+        floor: FloorId,
+    },
     DumpState,
     DumpAi,
     ScenarioSetup {
@@ -186,6 +189,14 @@ impl InputSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntityId(pub u64);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum FloorId {
+    Rooftop,
+    #[default]
+    Main,
+    Basement,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Vec2 {
@@ -412,6 +423,7 @@ pub struct Entity {
     pub id: EntityId,
     pub transform: Transform,
     pub renderable: RenderableDesc,
+    pub floor: FloorId,
     pub selectable: bool,
     pub actor: bool,
     pub order_state: OrderState,
@@ -440,6 +452,7 @@ pub struct SceneWorld {
     pending_despawns: Vec<EntityId>,
     next_applied_spawn_order: u64,
     camera: Camera2D,
+    active_floor: FloorId,
     tilemap: Option<Tilemap>,
     visual_state: SceneVisualState,
     debug_markers: Vec<DebugMarker>,
@@ -475,6 +488,7 @@ impl SceneWorld {
             id,
             transform,
             renderable,
+            floor: self.active_floor,
             selectable,
             actor,
             order_state: OrderState::Idle,
@@ -522,6 +536,7 @@ impl SceneWorld {
         self.pending_despawns.clear();
         self.next_applied_spawn_order = 0;
         self.camera = Camera2D::default();
+        self.active_floor = FloorId::Main;
         self.visual_state = SceneVisualState::default();
         self.debug_markers.clear();
     }
@@ -597,10 +612,19 @@ impl SceneWorld {
         &mut self.camera
     }
 
+    pub fn active_floor(&self) -> FloorId {
+        self.active_floor
+    }
+
+    pub fn set_active_floor(&mut self, floor: FloorId) {
+        self.active_floor = floor;
+    }
+
     pub fn pick_topmost_selectable_at_cursor(
         &self,
         cursor_position_px: Vec2,
         window_size: (u32, u32),
+        floor_filter: Option<FloorId>,
     ) -> Option<EntityId> {
         let cursor_x = cursor_position_px.x.round() as i32;
         let cursor_y = cursor_position_px.y.round() as i32;
@@ -609,6 +633,11 @@ impl SceneWorld {
         for entity in &self.entities {
             if !entity.selectable {
                 continue;
+            }
+            if let Some(required_floor) = floor_filter {
+                if entity.floor != required_floor {
+                    continue;
+                }
             }
 
             let (cx, cy) =
@@ -634,6 +663,7 @@ impl SceneWorld {
         &self,
         cursor_position_px: Vec2,
         window_size: (u32, u32),
+        floor_filter: Option<FloorId>,
     ) -> Option<EntityId> {
         let cursor_x = cursor_position_px.x.round() as i32;
         let cursor_y = cursor_position_px.y.round() as i32;
@@ -642,6 +672,11 @@ impl SceneWorld {
         for entity in &self.entities {
             if entity.interactable.is_none() {
                 continue;
+            }
+            if let Some(required_floor) = floor_filter {
+                if entity.floor != required_floor {
+                    continue;
+                }
             }
 
             let (cx, cy) =
@@ -1019,6 +1054,7 @@ mod tests {
                 SceneDebugCommand::Select { .. }
                 | SceneDebugCommand::OrderMove { .. }
                 | SceneDebugCommand::OrderInteract { .. }
+                | SceneDebugCommand::FloorSet { .. }
                 | SceneDebugCommand::DumpState
                 | SceneDebugCommand::DumpAi
                 | SceneDebugCommand::ScenarioSetup { .. } => SceneDebugCommandResult::Unsupported,
@@ -1378,7 +1414,7 @@ mod tests {
         world.apply_pending();
 
         let picked =
-            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720), None);
         assert_eq!(picked, Some(second));
         assert_ne!(picked, Some(first));
     }
@@ -1419,7 +1455,7 @@ mod tests {
         world.apply_pending();
 
         let before =
-            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720), None);
         assert_eq!(before, Some(second_overlap));
         assert_ne!(before, Some(first_overlap));
 
@@ -1427,7 +1463,7 @@ mod tests {
         world.apply_pending();
 
         let after =
-            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720), None);
         assert_eq!(after, Some(second_overlap));
         assert_ne!(after, Some(first_overlap));
     }
@@ -1448,7 +1484,7 @@ mod tests {
         world.apply_pending();
 
         let picked =
-            world.pick_topmost_selectable_at_cursor(Vec2 { x: 20.0, y: 20.0 }, (1280, 720));
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 20.0, y: 20.0 }, (1280, 720), None);
         assert_eq!(picked, None);
     }
 
@@ -1468,7 +1504,7 @@ mod tests {
         world.apply_pending();
 
         let picked =
-            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720), None);
         assert_eq!(picked, None);
     }
 
@@ -1488,7 +1524,7 @@ mod tests {
         world.apply_pending();
 
         let picked =
-            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+            world.pick_topmost_selectable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720), None);
         assert_eq!(picked, Some(sprite_entity));
     }
 
@@ -1509,6 +1545,83 @@ mod tests {
         assert!(!actor.selectable);
         assert_eq!(actor.order_state, OrderState::Idle);
         assert!(actor.interactable.is_none());
+    }
+
+    #[test]
+    fn spawn_defaults_to_main_floor() {
+        let mut world = SceneWorld::default();
+        let entity_id = world.spawn(
+            Transform::default(),
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "main_default",
+            },
+        );
+        world.apply_pending();
+        assert_eq!(
+            world.find_entity(entity_id).expect("entity").floor,
+            FloorId::Main
+        );
+    }
+
+    #[test]
+    fn spawn_uses_active_floor_for_new_entities() {
+        let mut world = SceneWorld::default();
+        world.set_active_floor(FloorId::Basement);
+        let entity_id = world.spawn(
+            Transform::default(),
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "basement_spawn",
+            },
+        );
+        world.apply_pending();
+        assert_eq!(
+            world.find_entity(entity_id).expect("entity").floor,
+            FloorId::Basement
+        );
+    }
+
+    #[test]
+    fn pick_topmost_selectable_optional_floor_filter_is_deterministic() {
+        let mut world = SceneWorld::default();
+        world.set_active_floor(FloorId::Main);
+        let main = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "main_selectable",
+            },
+        );
+        world.set_active_floor(FloorId::Rooftop);
+        let rooftop = world.spawn_selectable(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "rooftop_selectable",
+            },
+        );
+        world.apply_pending();
+
+        let cursor = Vec2 { x: 640.0, y: 360.0 };
+        assert_eq!(
+            world.pick_topmost_selectable_at_cursor(cursor, (1280, 720), None),
+            Some(rooftop)
+        );
+        assert_eq!(
+            world.pick_topmost_selectable_at_cursor(cursor, (1280, 720), Some(FloorId::Main)),
+            Some(main)
+        );
+        assert_eq!(
+            world.pick_topmost_selectable_at_cursor(cursor, (1280, 720), Some(FloorId::Basement)),
+            None
+        );
     }
 
     #[test]
@@ -1534,8 +1647,11 @@ mod tests {
             remaining_uses: 3,
         });
 
-        let picked =
-            world.pick_topmost_interactable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        let picked = world.pick_topmost_interactable_at_cursor(
+            Vec2 { x: 640.0, y: 360.0 },
+            (1280, 720),
+            None,
+        );
         assert_eq!(picked, Some(interactable_id));
     }
 
@@ -1574,8 +1690,11 @@ mod tests {
             remaining_uses: 3,
         });
 
-        let picked =
-            world.pick_topmost_interactable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        let picked = world.pick_topmost_interactable_at_cursor(
+            Vec2 { x: 640.0, y: 360.0 },
+            (1280, 720),
+            None,
+        );
         assert_eq!(picked, Some(second));
     }
 
@@ -1602,9 +1721,67 @@ mod tests {
             remaining_uses: 3,
         });
 
-        let picked =
-            world.pick_topmost_interactable_at_cursor(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
+        let picked = world.pick_topmost_interactable_at_cursor(
+            Vec2 { x: 640.0, y: 360.0 },
+            (1280, 720),
+            None,
+        );
         assert_eq!(picked, Some(sprite_interactable));
+    }
+
+    #[test]
+    fn pick_topmost_interactable_optional_floor_filter_is_deterministic() {
+        let mut world = SceneWorld::default();
+        world.set_active_floor(FloorId::Main);
+        let main = world.spawn(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "main_interactable",
+            },
+        );
+        world.set_active_floor(FloorId::Basement);
+        let basement = world.spawn(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "basement_interactable",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(main).expect("main").interactable = Some(Interactable {
+            kind: InteractableKind::ResourcePile,
+            interaction_radius: 0.75,
+            remaining_uses: 3,
+        });
+        world
+            .find_entity_mut(basement)
+            .expect("basement")
+            .interactable = Some(Interactable {
+            kind: InteractableKind::ResourcePile,
+            interaction_radius: 0.75,
+            remaining_uses: 3,
+        });
+
+        let cursor = Vec2 { x: 640.0, y: 360.0 };
+        assert_eq!(
+            world.pick_topmost_interactable_at_cursor(cursor, (1280, 720), None),
+            Some(basement)
+        );
+        assert_eq!(
+            world.pick_topmost_interactable_at_cursor(cursor, (1280, 720), Some(FloorId::Main)),
+            Some(main)
+        );
+        assert_eq!(
+            world.pick_topmost_interactable_at_cursor(cursor, (1280, 720), Some(FloorId::Rooftop)),
+            None
+        );
     }
 
     #[test]

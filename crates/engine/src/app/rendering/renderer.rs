@@ -8,15 +8,17 @@ use winit::window::Window;
 
 use crate::app::{
     tools::{draw_console, draw_overlay},
-    Camera2D, ConsoleState, DebugMarkerKind, OverlayData, RenderableKind, SceneWorld, Tilemap,
-    Vec2,
+    Camera2D, ConsoleState, DebugMarkerKind, Entity, FloorId, OverlayData, RenderableKind,
+    SceneWorld, Tilemap, Vec2,
 };
 use crate::sprite_keys::validate_sprite_key;
 
 use super::transform::camera_pixels_per_world;
 use super::{world_to_screen_px, Viewport, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX};
 
-const CLEAR_COLOR: [u8; 4] = [20, 22, 28, 255];
+const CLEAR_COLOR_ROOFTOP: [u8; 4] = [24, 26, 33, 255];
+const CLEAR_COLOR_MAIN: [u8; 4] = [20, 22, 28, 255];
+const CLEAR_COLOR_BASEMENT: [u8; 4] = [16, 18, 24, 255];
 const PLACEHOLDER_COLOR: [u8; 4] = [220, 220, 240, 255];
 const GRID_CELL_WORLD: f32 = 1.0;
 const GRID_MAJOR_EVERY: i32 = 5;
@@ -112,8 +114,10 @@ impl Renderer {
         let asset_root = self.asset_root.as_path();
         let sprite_cache = &mut self.sprite_cache;
         let frame = self.pixels.frame_mut();
+        let active_floor = world.active_floor();
+        let clear_color = clear_color_for_floor(active_floor);
         for chunk in frame.chunks_exact_mut(4) {
-            chunk.copy_from_slice(&CLEAR_COLOR);
+            chunk.copy_from_slice(&clear_color);
         }
         let view_bounds = view_bounds_world(
             world.camera(),
@@ -133,11 +137,7 @@ impl Renderer {
         draw_world_grid(frame, self.viewport.width, self.viewport.height, world);
 
         for entity in world.entities() {
-            if !bounds_intersects_point_radius(
-                &view_bounds,
-                entity.transform.position,
-                ENTITY_CULL_RADIUS_WORLD_TILES,
-            ) {
+            if !entity_visible_on_active_floor(entity, active_floor, &view_bounds) {
                 continue;
             }
             let (cx, cy) = snapped_world_to_screen_px(
@@ -201,6 +201,27 @@ impl Renderer {
     }
 }
 
+fn clear_color_for_floor(floor: FloorId) -> [u8; 4] {
+    match floor {
+        FloorId::Rooftop => CLEAR_COLOR_ROOFTOP,
+        FloorId::Main => CLEAR_COLOR_MAIN,
+        FloorId::Basement => CLEAR_COLOR_BASEMENT,
+    }
+}
+
+fn entity_visible_on_active_floor(
+    entity: &Entity,
+    active_floor: FloorId,
+    view_bounds: &WorldBounds,
+) -> bool {
+    entity.floor == active_floor
+        && bounds_intersects_point_radius(
+            view_bounds,
+            entity.transform.position,
+            ENTITY_CULL_RADIUS_WORLD_TILES,
+        )
+}
+
 fn snap_screen_coordinate_px(coord_px: i32, micro_grid_px: i32) -> i32 {
     let step = micro_grid_px.max(1);
     let remainder = coord_px.rem_euclid(step);
@@ -244,10 +265,11 @@ fn draw_affordances(
     view_bounds: &WorldBounds,
 ) {
     let visuals = world.visual_state();
+    let active_floor = world.active_floor();
 
     if let Some(selected_id) = visuals.selected_actor {
         if let Some(entity) = world.find_entity(selected_id) {
-            if entity.actor {
+            if entity.actor && entity.floor == active_floor {
                 if bounds_intersects_point_radius(
                     view_bounds,
                     entity.transform.position,
@@ -274,7 +296,7 @@ fn draw_affordances(
 
     if let Some(hovered_id) = visuals.hovered_interactable {
         if let Some(entity) = world.find_entity(hovered_id) {
-            if entity.interactable.is_some() {
+            if entity.interactable.is_some() && entity.floor == active_floor {
                 if bounds_intersects_point_radius(
                     view_bounds,
                     entity.transform.position,
@@ -713,12 +735,97 @@ fn draw_sprite_centered(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Camera2D, DebugMarker, DebugMarkerKind, EntityId, Tilemap};
+    use crate::app::{Camera2D, DebugMarker, DebugMarkerKind, EntityId, FloorId, Tilemap};
     use tempfile::TempDir;
+
+    fn collect_visible_entity_ids_for_active_floor(
+        world: &SceneWorld,
+        view_bounds: &WorldBounds,
+    ) -> Vec<EntityId> {
+        let active_floor = world.active_floor();
+        world
+            .entities()
+            .iter()
+            .filter(|entity| entity_visible_on_active_floor(entity, active_floor, view_bounds))
+            .map(|entity| entity.id)
+            .collect()
+    }
 
     #[test]
     fn renderer_type_is_non_generic() {
         let _renderer: Option<Renderer> = None;
+    }
+
+    #[test]
+    fn clear_color_varies_by_active_floor() {
+        assert_eq!(clear_color_for_floor(FloorId::Main), CLEAR_COLOR_MAIN);
+        assert_eq!(clear_color_for_floor(FloorId::Rooftop), CLEAR_COLOR_ROOFTOP);
+        assert_eq!(
+            clear_color_for_floor(FloorId::Basement),
+            CLEAR_COLOR_BASEMENT
+        );
+        assert_ne!(CLEAR_COLOR_MAIN, CLEAR_COLOR_ROOFTOP);
+        assert_ne!(CLEAR_COLOR_MAIN, CLEAR_COLOR_BASEMENT);
+    }
+
+    #[test]
+    fn render_list_selection_filters_to_active_floor_deterministically() {
+        let mut world = SceneWorld::default();
+
+        world.set_active_floor(FloorId::Main);
+        let main_visible = world.spawn(
+            crate::app::Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            crate::app::RenderableDesc {
+                kind: crate::app::RenderableKind::Placeholder,
+                debug_name: "main_visible",
+            },
+        );
+
+        world.set_active_floor(FloorId::Basement);
+        let basement_visible = world.spawn(
+            crate::app::Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            crate::app::RenderableDesc {
+                kind: crate::app::RenderableKind::Placeholder,
+                debug_name: "basement_visible",
+            },
+        );
+
+        world.set_active_floor(FloorId::Main);
+        world.spawn(
+            crate::app::Transform {
+                position: Vec2 { x: 200.0, y: 200.0 },
+                rotation_radians: None,
+            },
+            crate::app::RenderableDesc {
+                kind: crate::app::RenderableKind::Placeholder,
+                debug_name: "main_out_of_view",
+            },
+        );
+        world.apply_pending();
+
+        let bounds = WorldBounds {
+            min_x: -1.0,
+            max_x: 1.0,
+            min_y: -1.0,
+            max_y: 1.0,
+        };
+
+        let first_main = collect_visible_entity_ids_for_active_floor(&world, &bounds);
+        let second_main = collect_visible_entity_ids_for_active_floor(&world, &bounds);
+        assert_eq!(first_main, vec![main_visible]);
+        assert_eq!(second_main, first_main);
+
+        world.set_active_floor(FloorId::Basement);
+        assert_eq!(
+            collect_visible_entity_ids_for_active_floor(&world, &bounds),
+            vec![basement_visible]
+        );
     }
 
     #[test]

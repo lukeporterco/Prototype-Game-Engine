@@ -1118,6 +1118,15 @@ fn execute_drained_debug_commands(
                 append_scene_debug_result(console, result);
                 should_apply_after_batch = true;
             }
+            DebugCommand::FloorSet { floor } => {
+                let context = SceneDebugContext {
+                    cursor_world: cursor_world_from_input(scenes, input_collector),
+                };
+                let result = scenes
+                    .execute_debug_command_active(SceneDebugCommand::FloorSet { floor }, context);
+                append_scene_debug_result(console, result);
+                should_apply_after_batch = true;
+            }
             DebugCommand::SwitchScene { scene } => {
                 if scenes.switch_to(scene) {
                     scenes.apply_pending_active();
@@ -1213,6 +1222,7 @@ fn debug_command_token(command: &DebugCommand) -> &'static str {
         DebugCommand::DumpState => "dump.state",
         DebugCommand::DumpAi => "dump.ai",
         DebugCommand::ScenarioSetup { .. } => "scenario.setup",
+        DebugCommand::FloorSet { .. } => "floor.set",
         DebugCommand::SwitchScene { .. } => "switch_scene",
         DebugCommand::Spawn { .. } => "spawn",
         DebugCommand::Despawn { .. } => "despawn",
@@ -1755,6 +1765,7 @@ mod tests {
                 SceneDebugCommand::Select { .. }
                 | SceneDebugCommand::OrderMove { .. }
                 | SceneDebugCommand::OrderInteract { .. }
+                | SceneDebugCommand::FloorSet { .. }
                 | SceneDebugCommand::DumpState
                 | SceneDebugCommand::DumpAi
                 | SceneDebugCommand::ScenarioSetup { .. } => SceneDebugCommandResult::Unsupported,
@@ -2179,6 +2190,9 @@ mod tests {
             DebugCommand::OrderInteract {
                 target_entity_id: 2,
             },
+            DebugCommand::FloorSet {
+                floor: super::super::FloorId::Basement,
+            },
             DebugCommand::ScenarioSetup {
                 scenario_id: "combat_chaser".to_string(),
             },
@@ -2200,6 +2214,7 @@ mod tests {
         assert_eq!(
             console.output_lines().collect::<Vec<_>>(),
             vec![
+                "error: active scene does not support this command",
                 "error: active scene does not support this command",
                 "error: active scene does not support this command",
                 "error: active scene does not support this command",

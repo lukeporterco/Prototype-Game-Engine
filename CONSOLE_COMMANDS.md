@@ -1,5 +1,5 @@
 # Console Commands (Developer Reference)
-Last updated: 2026-02-23. Covers: Tickets 0-52.
+Last updated: 2026-02-28. Covers: Tickets 0-56.
 
 Status: `Ticket 32.3` implements routing/execution for queueable commands.
 
@@ -31,6 +31,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `dump.state`
 - `dump.ai`
 - `scenario.setup`
+- `floor.set`
 - `pause_sim`
 - `resume_sim`
 - `tick`
@@ -239,6 +240,19 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `error: unknown scenario 'foo'`
 - `error: active scene does not support this command`
 
+### floor.set
+- Layer: Engine queueable -> active scene debug hook (scene-owned implementation)
+- Description: Sets the gameplay active floor filter used for rendering, picking, and interaction targeting.
+- Syntax: `floor.set <rooftop|main|basement>`
+- Examples:
+- `floor.set rooftop`
+- `floor.set main`
+- `floor.set basement`
+- Result examples:
+- `ok: floor.set v1 active:basement`
+- `error: invalid floor 'attic' (expected rooftop|main|basement)`
+- `error: active scene does not support this command`
+
 ### input.key_down
 - Layer: Engine loop input bridge
 - Description: Enqueues a synthetic key-down event for next tick input snapshot merge.
@@ -292,7 +306,9 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 
 - Queueable commands are still parsed in tools, then routed for execution in the loop.
 - `spawn`/`despawn` enqueue gameplay intents and world mutation occurs once per tick at the gameplay safe apply point.
+- `spawn` uses the current gameplay active floor; switch floors first with `floor.set` if needed.
 - `select` updates scene selection immediately; `order.move` and `order.interact` enqueue gameplay intents and apply at gameplay safe points.
+- `floor.set` immediately changes active floor visibility/interaction filters via the scene debug-command seam.
 - `pause_sim` affects only simulation stepping; rendering/frame pacing continues normally.
 - `tick <steps>` advances the same fixed update path used by normal gameplay; no alternate loop exists.
 - `thruport.status` prints exactly one status line with schema `thruport.status v1 enabled:<0|1> telemetry:<0|1> clients:<u32>`.

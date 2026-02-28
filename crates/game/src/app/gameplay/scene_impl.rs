@@ -9,6 +9,8 @@ impl Scene for GameplayScene {
         self.player_move_speed = player_archetype.move_speed;
         self.player_id = None;
         self.selected_entity = None;
+        self.active_floor = ActiveFloor::Main;
+        world.set_active_floor(self.active_floor_engine());
         self.resource_count = 0;
         self.interactable_cache.clear();
         self.interactable_lookup_by_save_id.clear();
@@ -76,6 +78,7 @@ impl Scene for GameplayScene {
             return SceneCommand::SwitchTo(self.switch_target);
         }
 
+        world.set_active_floor(self.active_floor_engine());
         self.run_gameplay_systems_once(fixed_dt_seconds, input, world);
         self.apply_system_outputs(fixed_dt_seconds, input, world);
 
@@ -139,6 +142,11 @@ impl Scene for GameplayScene {
                 let Some(entity) = world.find_entity(runtime_id) else {
                     return SceneDebugCommandResult::Error(format!("entity {entity_id} not found"));
                 };
+                if !self.entity_is_on_active_floor(entity) {
+                    return SceneDebugCommandResult::Error(format!(
+                        "entity {entity_id} is not on active floor"
+                    ));
+                }
                 if !entity.selectable {
                     return SceneDebugCommandResult::Error(format!(
                         "entity {entity_id} is not selectable"
@@ -157,6 +165,13 @@ impl Scene for GameplayScene {
                         actor_id.0
                     ));
                 };
+                if !self.entity_is_on_active_floor(actor) {
+                    self.selected_entity = None;
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} is not on active floor",
+                        actor_id.0
+                    ));
+                }
                 if !actor.actor {
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} is not an actor",
@@ -186,6 +201,13 @@ impl Scene for GameplayScene {
                         actor_id.0
                     ));
                 };
+                if !self.entity_is_on_active_floor(actor) {
+                    self.selected_entity = None;
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} is not on active floor",
+                        actor_id.0
+                    ));
+                }
                 if !actor.actor {
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} is not an actor",
@@ -201,6 +223,11 @@ impl Scene for GameplayScene {
                         "target entity {target_entity_id} not found"
                     ));
                 };
+                if !self.entity_is_on_active_floor(target) {
+                    return SceneDebugCommandResult::Error(format!(
+                        "target entity {target_entity_id} is not on active floor"
+                    ));
+                }
                 if target.interactable.is_none() {
                     return SceneDebugCommandResult::Error(format!(
                         "target entity {target_entity_id} is not interactable"
@@ -247,6 +274,27 @@ impl Scene for GameplayScene {
                     actor_id.0, target_entity_id
                 ))
             }
+            SceneDebugCommand::FloorSet { floor } => {
+                self.active_floor = ActiveFloor::from_engine_floor(floor);
+                world.set_active_floor(self.active_floor_engine());
+                world.set_hovered_interactable_visual(None);
+                world.set_selected_actor_visual(None);
+                world.clear_debug_markers();
+
+                if self.selected_entity.is_some_and(|selected_id| {
+                    match world.find_entity(selected_id) {
+                        Some(entity) => !self.entity_is_on_active_floor(entity),
+                        None => true,
+                    }
+                }) {
+                    self.selected_entity = None;
+                }
+
+                SceneDebugCommandResult::Success(format!(
+                    "floor.set v1 active:{}",
+                    self.active_floor.as_token()
+                ))
+            }
             SceneDebugCommand::DumpState => {
                 SceneDebugCommandResult::Success(self.format_dump_state(world))
             }
@@ -282,6 +330,8 @@ impl Scene for GameplayScene {
         );
         self.player_id = None;
         self.selected_entity = None;
+        self.active_floor = ActiveFloor::Main;
+        world.set_active_floor(self.active_floor_engine());
         self.resource_count = 0;
         self.interactable_cache.clear();
         self.interactable_lookup_by_save_id.clear();
@@ -319,7 +369,7 @@ impl Scene for GameplayScene {
     fn debug_selected_target(&self, world: &SceneWorld) -> Option<Vec2> {
         let selected = self.selected_entity?;
         let entity = world.find_entity(selected)?;
-        if !entity.actor {
+        if !entity.actor || !self.entity_is_on_active_floor(entity) {
             return None;
         }
         match entity.order_state {

@@ -118,23 +118,22 @@ pub fn run<W: Write>(kind: CommandKind, opts: CommonOptions, stdout: &mut W) -> 
 
     match kind {
         CommandKind::WaitReady => Ok(()),
-        CommandKind::Send { command } => {
-            send_with_internal_sync_boundary(&mut session, &command, timeout, quiet_window, |line| {
-                emit_line(stdout, line, opts.include_telemetry)
-            })
-        }
+        CommandKind::Send { command } => send_with_internal_sync_boundary(
+            &mut session,
+            &command,
+            timeout,
+            quiet_window,
+            |line| emit_line(stdout, line, opts.include_telemetry),
+        ),
         CommandKind::Script { path, barrier } => {
             let content = fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read script file '{path}': {error}"))?;
             let commands = parse_script_commands(&content);
             for command in commands {
                 send_line(&mut session.writer, &command)?;
-                read_until_quiet(
-                    &mut session.reader,
-                    timeout,
-                    quiet_window,
-                    |line| emit_line(stdout, line, opts.include_telemetry),
-                )?;
+                read_until_quiet(&mut session.reader, timeout, quiet_window, |line| {
+                    emit_line(stdout, line, opts.include_telemetry)
+                })?;
             }
             if barrier {
                 send_barrier_and_wait_ack(&mut session, timeout, |line| {
@@ -173,12 +172,9 @@ where
                 if parsed.channel == LineChannel::Control
                     && is_sync_unavailable_payload(&parsed.payload)
                 {
-                    return read_until_quiet(
-                        &mut session.reader,
-                        timeout,
-                        quiet_window,
-                        |line| on_line(line),
-                    );
+                    return read_until_quiet(&mut session.reader, timeout, quiet_window, |line| {
+                        on_line(line)
+                    });
                 }
                 on_line(&parsed);
             }

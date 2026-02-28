@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use engine::ContentPlanRequest;
 use engine::{
     resolve_app_paths, screen_to_world_px, DebugInfoSnapshot, DebugJobState, DebugMarker,
-    DebugMarkerKind, EntityArchetype, EntityDefId, EntityId, InputAction, InputSnapshot,
+    DebugMarkerKind, EntityArchetype, EntityDefId, EntityId, FloorId, InputAction, InputSnapshot,
     Interactable, InteractableKind, OrderState, RenderableDesc, RenderableKind, Scene,
     SceneCommand, SceneDebugCommand, SceneDebugCommandResult, SceneDebugContext, SceneKey,
     SceneWorld, Tilemap, Transform, Vec2,

@@ -35,6 +35,40 @@ impl SavedVec2 {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+enum ActiveFloor {
+    Rooftop,
+    #[default]
+    Main,
+    Basement,
+}
+
+impl ActiveFloor {
+    fn from_engine_floor(value: engine::FloorId) -> Self {
+        match value {
+            engine::FloorId::Rooftop => Self::Rooftop,
+            engine::FloorId::Main => Self::Main,
+            engine::FloorId::Basement => Self::Basement,
+        }
+    }
+
+    fn to_engine_floor(self) -> engine::FloorId {
+        match self {
+            Self::Rooftop => engine::FloorId::Rooftop,
+            Self::Main => engine::FloorId::Main,
+            Self::Basement => engine::FloorId::Basement,
+        }
+    }
+
+    fn as_token(self) -> &'static str {
+        match self {
+            Self::Rooftop => "rooftop",
+            Self::Main => "main",
+            Self::Basement => "basement",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum SavedInteractableKind {
     ResourcePile,
@@ -87,11 +121,12 @@ type SaveLoadResult<T> = Result<T, String>;
 #[derive(Clone, Copy)]
 struct WorldView<'a> {
     world: &'a SceneWorld,
+    active_floor: ActiveFloor,
 }
 
 impl<'a> WorldView<'a> {
-    fn new(world: &'a SceneWorld) -> Self {
-        Self { world }
+    fn new(world: &'a SceneWorld, active_floor: ActiveFloor) -> Self {
+        Self { world, active_floor }
     }
 
     fn camera(&self) -> &engine::Camera2D {
@@ -108,7 +143,11 @@ impl<'a> WorldView<'a> {
         window_size: (u32, u32),
     ) -> Option<EntityId> {
         self.world
-            .pick_topmost_interactable_at_cursor(cursor_position_px, window_size)
+            .pick_topmost_interactable_at_cursor(
+                cursor_position_px,
+                window_size,
+                Some(self.active_floor.to_engine_floor()),
+            )
     }
 
     fn pick_topmost_selectable_at_cursor(
@@ -117,7 +156,11 @@ impl<'a> WorldView<'a> {
         window_size: (u32, u32),
     ) -> Option<EntityId> {
         self.world
-            .pick_topmost_selectable_at_cursor(cursor_position_px, window_size)
+            .pick_topmost_selectable_at_cursor(
+                cursor_position_px,
+                window_size,
+                Some(self.active_floor.to_engine_floor()),
+            )
     }
 }
 

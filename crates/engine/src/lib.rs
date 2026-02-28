@@ -12,7 +12,7 @@ mod sprite_keys;
 pub use app::{
     run_app, run_app_with_hooks, run_app_with_metrics, screen_to_world_px, world_to_screen_px,
     AppError, Camera2D, DebugInfoSnapshot, DebugJobState, DebugMarker, DebugMarkerKind, Entity,
-    EntityId, InputAction, InputSnapshot, Interactable, InteractableKind, LoopConfig,
+    EntityId, FloorId, InputAction, InputSnapshot, Interactable, InteractableKind, LoopConfig,
     LoopMetricsSnapshot, LoopRuntimeHooks, MetricsHandle, OrderState, RemoteConsoleLinePump,
     RenderableDesc, RenderableKind, Renderer, Scene, SceneCommand, SceneDebugCommand,
     SceneDebugCommandResult, SceneDebugContext, SceneKey, SceneVisualState, SceneWorld, Tilemap,

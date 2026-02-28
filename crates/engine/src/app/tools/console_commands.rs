@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::app::SceneKey;
+use crate::app::{FloorId, SceneKey};
 
 use super::ConsoleState;
 
@@ -23,6 +23,9 @@ pub(crate) enum DebugCommand {
     DumpAi,
     ScenarioSetup {
         scenario_id: String,
+    },
+    FloorSet {
+        floor: FloorId,
     },
     SwitchScene {
         scene: SceneKey,
@@ -216,6 +219,14 @@ impl ConsoleCommandRegistry {
                 "Setup deterministic gameplay scenario",
                 "<scenario_id:string>",
                 parse_scenario_setup_command,
+            )
+            .expect("built-in command registration should not fail");
+        registry
+            .register(
+                "floor.set",
+                "Set active floor",
+                "<rooftop|main|basement>",
+                parse_floor_set_command,
             )
             .expect("built-in command registration should not fail");
         registry
@@ -621,6 +632,32 @@ fn parse_scenario_setup_command(args: &[String]) -> Result<ParsedCommand, Comman
     }))
 }
 
+fn parse_floor_set_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
+    if args.len() != 1 {
+        return Err(CommandParseError {
+            reason: "expected exactly one argument <rooftop|main|basement>".to_string(),
+            usage: "floor.set <rooftop|main|basement>".to_string(),
+        });
+    }
+
+    let floor = match args[0].to_ascii_lowercase().as_str() {
+        "rooftop" => FloorId::Rooftop,
+        "main" => FloorId::Main,
+        "basement" => FloorId::Basement,
+        _ => {
+            return Err(CommandParseError {
+                reason: format!(
+                    "invalid floor '{}' (expected rooftop|main|basement)",
+                    args[0]
+                ),
+                usage: "floor.set <rooftop|main|basement>".to_string(),
+            });
+        }
+    };
+
+    Ok(ParsedCommand::Queueable(DebugCommand::FloorSet { floor }))
+}
+
 fn parse_switch_scene_command(args: &[String]) -> Result<ParsedCommand, CommandParseError> {
     if args.len() != 1 {
         return Err(CommandParseError {
@@ -925,41 +962,45 @@ mod tests {
         );
         assert_eq!(
             lines[13],
+            "floor.set <rooftop|main|basement> - Set active floor"
+        );
+        assert_eq!(
+            lines[14],
             "switch_scene <scene_id:a|b> - Switch active scene"
         );
-        assert_eq!(lines[14], "quit - Quit app");
-        assert_eq!(lines[15], "despawn <entity_id:u64> - Despawn entity by id");
+        assert_eq!(lines[15], "quit - Quit app");
+        assert_eq!(lines[16], "despawn <entity_id:u64> - Despawn entity by id");
         assert_eq!(
-            lines[16],
+            lines[17],
             "spawn <def_name:string> [x:f32 y:f32] - Spawn entity by def name"
         );
-        assert_eq!(lines[17], "select <entity_id:u64> - Select entity by id");
+        assert_eq!(lines[18], "select <entity_id:u64> - Select entity by id");
         assert_eq!(
-            lines[18],
+            lines[19],
             "order.move <x:f32> <y:f32> - Queue move order for selected actor"
         );
         assert_eq!(
-            lines[19],
+            lines[20],
             "order.interact <target_entity_id:u64> - Queue interaction order for selected actor"
         );
         assert_eq!(
-            lines[20],
+            lines[21],
             "input.key_down <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key down"
         );
         assert_eq!(
-            lines[21],
+            lines[22],
             "input.key_up <key:w|a|s|d|up|down|left|right|i|j|k|l> - Inject key up"
         );
         assert_eq!(
-            lines[22],
+            lines[23],
             "input.mouse_move <x:f32> <y:f32> - Inject mouse move (px)"
         );
         assert_eq!(
-            lines[23],
+            lines[24],
             "input.mouse_down <button:left|right> - Inject mouse down"
         );
         assert_eq!(
-            lines[24],
+            lines[25],
             "input.mouse_up <button:left|right> - Inject mouse up"
         );
     }
@@ -1023,6 +1064,7 @@ mod tests {
         console.push_pending_line_for_test("dump.state");
         console.push_pending_line_for_test("dump.ai");
         console.push_pending_line_for_test("scenario.setup combat_chaser");
+        console.push_pending_line_for_test("floor.set basement");
         console.push_pending_line_for_test("switch_scene a");
         console.push_pending_line_for_test("quit");
         console.push_pending_line_for_test("despawn 42");
@@ -1055,6 +1097,9 @@ mod tests {
                 DebugCommand::DumpAi,
                 DebugCommand::ScenarioSetup {
                     scenario_id: "combat_chaser".to_string(),
+                },
+                DebugCommand::FloorSet {
+                    floor: FloorId::Basement,
                 },
                 DebugCommand::SwitchScene { scene: SceneKey::A },
                 DebugCommand::Quit,
@@ -1178,6 +1223,9 @@ mod tests {
         console.push_pending_line_for_test("dump.ai now");
         console.push_pending_line_for_test("scenario.setup");
         console.push_pending_line_for_test("scenario.setup combat chaser");
+        console.push_pending_line_for_test("floor.set");
+        console.push_pending_line_for_test("floor.set attic");
+        console.push_pending_line_for_test("floor.set main extra");
 
         processor.process_pending_lines(&mut console);
 
@@ -1188,6 +1236,9 @@ mod tests {
                 "error: unexpected extra arguments. usage: dump.ai",
                 "error: expected exactly one argument <scenario_id>. usage: scenario.setup <scenario_id>",
                 "error: expected exactly one argument <scenario_id>. usage: scenario.setup <scenario_id>",
+                "error: expected exactly one argument <rooftop|main|basement>. usage: floor.set <rooftop|main|basement>",
+                "error: invalid floor 'attic' (expected rooftop|main|basement). usage: floor.set <rooftop|main|basement>",
+                "error: expected exactly one argument <rooftop|main|basement>. usage: floor.set <rooftop|main|basement>",
             ]
         );
     }
