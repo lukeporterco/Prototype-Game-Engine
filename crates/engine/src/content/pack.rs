@@ -184,11 +184,12 @@ fn encode_payload(records: &[CompiledEntityDef]) -> Result<Vec<u8>, ContentPackE
         if let Some(renderable) = record.renderable.clone() {
             let kind = match renderable {
                 RenderableKind::Placeholder => 0u8,
-                RenderableKind::Sprite(_) => 1u8,
+                RenderableKind::Sprite { .. } => 1u8,
             };
             payload.push(kind);
-            if let RenderableKind::Sprite(key) = renderable {
+            if let RenderableKind::Sprite { key, pixel_scale } = renderable {
                 write_string(&mut payload, &key, path_for_payload())?;
+                payload.push(pixel_scale);
             }
         }
         if let Some(move_speed) = record.move_speed {
@@ -253,7 +254,19 @@ fn decode_payload(
                 .ok_or_else(|| invalid_format(path, "missing renderable kind"))?;
             Some(match kind {
                 0 => RenderableKind::Placeholder,
-                1 => RenderableKind::Sprite(read_string(payload, &mut cursor, path)?),
+                1 => {
+                    let key = read_string(payload, &mut cursor, path)?;
+                    let pixel_scale = *read_exact(payload, &mut cursor, 1, path)?
+                        .first()
+                        .ok_or_else(|| invalid_format(path, "missing sprite pixel_scale"))?;
+                    if !(1..=16).contains(&pixel_scale) {
+                        return Err(invalid_format(
+                            path,
+                            "invalid sprite pixel_scale (expected 1..=16)",
+                        ));
+                    }
+                    RenderableKind::Sprite { key, pixel_scale }
+                }
                 _ => return Err(invalid_format(path, "invalid renderable kind")),
             })
         } else {
@@ -492,7 +505,10 @@ mod tests {
         let records = vec![CompiledEntityDef {
             def_name: "proto.player".to_string(),
             label: Some("Player".to_string()),
-            renderable: Some(RenderableKind::Sprite("player".to_string())),
+            renderable: Some(RenderableKind::Sprite {
+                key: "player".to_string(),
+                pixel_scale: 2,
+            }),
             move_speed: Some(5.0),
             health_max: Some(100),
             base_damage: Some(25),
@@ -511,7 +527,10 @@ mod tests {
         assert_eq!(loaded.records[0].def_name, "proto.player");
         assert_eq!(
             loaded.records[0].renderable,
-            Some(RenderableKind::Sprite("player".to_string()))
+            Some(RenderableKind::Sprite {
+                key: "player".to_string(),
+                pixel_scale: 2
+            })
         );
         assert_eq!(loaded.records[0].health_max, Some(100));
         assert_eq!(loaded.records[0].base_damage, Some(25));

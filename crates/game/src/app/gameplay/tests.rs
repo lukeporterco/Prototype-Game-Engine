@@ -1774,15 +1774,15 @@
         let dummy = world.find_entity(EntityId(dummy_raw)).expect("dummy");
 
         let player_key = match &player.renderable.kind {
-            RenderableKind::Sprite(key) => key.as_str(),
+            RenderableKind::Sprite { key, .. } => key.as_str(),
             other => panic!("expected player sprite renderable, got {other:?}"),
         };
         let chaser_key = match &chaser.renderable.kind {
-            RenderableKind::Sprite(key) => key.as_str(),
+            RenderableKind::Sprite { key, .. } => key.as_str(),
             other => panic!("expected chaser sprite renderable, got {other:?}"),
         };
         let dummy_key = match &dummy.renderable.kind {
-            RenderableKind::Sprite(key) => key.as_str(),
+            RenderableKind::Sprite { key, .. } => key.as_str(),
             other => panic!("expected dummy sprite renderable, got {other:?}"),
         };
 

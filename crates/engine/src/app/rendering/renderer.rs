@@ -172,20 +172,21 @@ impl Renderer {
                         PLACEHOLDER_COLOR,
                     );
                 }
-                RenderableKind::Sprite(key) => {
+                RenderableKind::Sprite { key, pixel_scale } => {
                     if let Some(sprite) = resolve_cached_sprite(
                         sprite_cache,
                         warned_missing_sprite_keys,
                         asset_root,
                         key,
                     ) {
-                        draw_sprite_centered(
+                        draw_sprite_centered_scaled(
                             frame,
                             self.viewport.width,
                             self.viewport.height,
                             cx,
                             cy,
                             sprite,
+                            *pixel_scale,
                         );
                     } else {
                         draw_square(
@@ -509,7 +510,7 @@ fn draw_tilemap(
                 if let Some(sprite) =
                     resolve_cached_sprite(sprite_cache, warned_missing_sprite_keys, asset_root, key)
                 {
-                    draw_sprite_centered(frame, width, height, cx, cy, sprite);
+                    draw_sprite_centered_scaled(frame, width, height, cx, cy, sprite, 1);
                     continue;
                 }
             }
@@ -856,28 +857,33 @@ fn draw_cross(
     }
 }
 
-fn draw_sprite_centered(
+fn scaled_sprite_dimensions(sprite: &LoadedSprite, pixel_scale: u8) -> (u32, u32) {
+    let scale = pixel_scale.max(1) as u32;
+    (
+        sprite.width.saturating_mul(scale),
+        sprite.height.saturating_mul(scale),
+    )
+}
+
+fn draw_sprite_centered_scaled(
     frame: &mut [u8],
     width: u32,
     height: u32,
     center_x: i32,
     center_y: i32,
     sprite: &LoadedSprite,
+    pixel_scale: u8,
 ) {
     if sprite.width == 0 || sprite.height == 0 {
         return;
     }
-    let left = center_x - (sprite.width as i32 / 2);
-    let top = center_y - (sprite.height as i32 / 2);
+    let (scaled_w, scaled_h) = scaled_sprite_dimensions(sprite, pixel_scale);
+    let left = center_x - (scaled_w as i32 / 2);
+    let top = center_y - (scaled_h as i32 / 2);
+    let scale = pixel_scale.max(1) as i32;
 
     for sy in 0..sprite.height as i32 {
         for sx in 0..sprite.width as i32 {
-            let dx = left + sx;
-            let dy = top + sy;
-            if dx < 0 || dy < 0 || dx >= width as i32 || dy >= height as i32 {
-                continue;
-            }
-
             let src_offset = ((sy as usize * sprite.width as usize) + sx as usize) * 4;
             if src_offset + 3 >= sprite.rgba.len() {
                 continue;
@@ -888,18 +894,24 @@ fn draw_sprite_centered(
                 continue;
             }
 
-            write_pixel_rgba_clipped(
-                frame,
-                width as usize,
-                dx,
-                dy,
-                [
-                    sprite.rgba[src_offset],
-                    sprite.rgba[src_offset + 1],
-                    sprite.rgba[src_offset + 2],
-                    alpha,
-                ],
-            );
+            let color = [
+                sprite.rgba[src_offset],
+                sprite.rgba[src_offset + 1],
+                sprite.rgba[src_offset + 2],
+                alpha,
+            ];
+            let pixel_left = left + sx * scale;
+            let pixel_top = top + sy * scale;
+            for oy in 0..scale {
+                for ox in 0..scale {
+                    let dx = pixel_left + ox;
+                    let dy = pixel_top + oy;
+                    if dx < 0 || dy < 0 || dx >= width as i32 || dy >= height as i32 {
+                        continue;
+                    }
+                    write_pixel_rgba_clipped(frame, width as usize, dx, dy, color);
+                }
+            }
         }
     }
 }
@@ -1024,6 +1036,17 @@ mod tests {
         for _ in 0..128 {
             assert_eq!(snap_screen_coordinate_px(-37, 6), expected);
         }
+    }
+
+    #[test]
+    fn scaled_sprite_dimensions_multiplies_native_size() {
+        let sprite = LoadedSprite {
+            width: 4,
+            height: 6,
+            rgba: vec![255; 4 * 6 * 4],
+        };
+        assert_eq!(scaled_sprite_dimensions(&sprite, 1), (4, 6));
+        assert_eq!(scaled_sprite_dimensions(&sprite, 2), (8, 12));
     }
 
     #[test]

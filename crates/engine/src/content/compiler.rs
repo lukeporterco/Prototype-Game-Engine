@@ -520,11 +520,11 @@ fn parse_renderable(
     node: Node<'_, '_>,
 ) -> Result<RenderableKind, ContentCompileError> {
     for attr in node.attributes() {
-        if attr.name() != "kind" && attr.name() != "spriteKey" {
+        if attr.name() != "kind" && attr.name() != "spriteKey" && attr.name() != "pixelScale" {
             return Err(error_at_node(
                 ContentErrorCode::UnknownField,
                 format!(
-                    "unknown attribute '{}' on <renderable>; allowed attributes: kind, spriteKey",
+                    "unknown attribute '{}' on <renderable>; allowed attributes: kind, spriteKey, pixelScale",
                     attr.name()
                 ),
                 mod_id,
@@ -537,6 +537,7 @@ fn parse_renderable(
 
     let kind_attr = node.attribute("kind");
     let sprite_key_attr = node.attribute("spriteKey");
+    let pixel_scale_attr = node.attribute("pixelScale");
     let text_value = node.text().map(str::trim).unwrap_or_default();
 
     if let Some(kind) = kind_attr {
@@ -554,10 +555,11 @@ fn parse_renderable(
 
         return match kind {
             "Placeholder" => {
-                if sprite_key_attr.is_some() {
+                if sprite_key_attr.is_some() || pixel_scale_attr.is_some() {
                     Err(error_at_node(
                         ContentErrorCode::InvalidValue,
-                        "renderable kind='Placeholder' must not include spriteKey".to_string(),
+                        "renderable kind='Placeholder' must not include spriteKey or pixelScale"
+                            .to_string(),
                         mod_id,
                         file_path,
                         doc,
@@ -588,7 +590,12 @@ fn parse_renderable(
                         node,
                     )
                 })?;
-                Ok(RenderableKind::Sprite(key.to_string()))
+                let pixel_scale =
+                    parse_sprite_pixel_scale(mod_id, file_path, doc, node, pixel_scale_attr)?;
+                Ok(RenderableKind::Sprite {
+                    key: key.to_string(),
+                    pixel_scale,
+                })
             }
             _ => Err(error_at_node(
                 ContentErrorCode::InvalidValue,
@@ -604,10 +611,10 @@ fn parse_renderable(
         };
     }
 
-    if sprite_key_attr.is_some() {
+    if sprite_key_attr.is_some() || pixel_scale_attr.is_some() {
         return Err(error_at_node(
             ContentErrorCode::InvalidValue,
-            "renderable attribute spriteKey requires kind".to_string(),
+            "renderable attributes spriteKey/pixelScale require kind".to_string(),
             mod_id,
             file_path,
             doc,
@@ -630,7 +637,10 @@ fn parse_renderable(
                     node,
                 )
             })?;
-            Ok(RenderableKind::Sprite(key.to_string()))
+            Ok(RenderableKind::Sprite {
+                key: key.to_string(),
+                pixel_scale: 1,
+            })
         }
         _ => Err(error_at_node(
             ContentErrorCode::InvalidValue,
@@ -644,6 +654,39 @@ fn parse_renderable(
             node,
         )),
     }
+}
+
+fn parse_sprite_pixel_scale(
+    mod_id: &str,
+    file_path: &Path,
+    doc: &Document<'_>,
+    node: Node<'_, '_>,
+    value: Option<&str>,
+) -> Result<u8, ContentCompileError> {
+    let Some(value) = value else {
+        return Ok(1);
+    };
+    let parsed = value.parse::<u8>().map_err(|_| {
+        error_at_node(
+            ContentErrorCode::InvalidValue,
+            format!("invalid pixelScale '{value}': expected integer in range 1..=16"),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        )
+    })?;
+    if !(1..=16).contains(&parsed) {
+        return Err(error_at_node(
+            ContentErrorCode::InvalidValue,
+            format!("invalid pixelScale '{value}': expected integer in range 1..=16"),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        ));
+    }
+    Ok(parsed)
 }
 
 fn required_text(
@@ -1003,7 +1046,13 @@ mod tests {
         let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
         let id = db.entity_def_id_by_name("a").expect("id");
         let def = db.entity_def(id).expect("def");
-        assert_eq!(def.renderable, RenderableKind::Sprite("player".to_string()));
+        assert_eq!(
+            def.renderable,
+            RenderableKind::Sprite {
+                key: "player".to_string(),
+                pixel_scale: 1
+            }
+        );
     }
 
     #[test]
@@ -1029,7 +1078,84 @@ mod tests {
         let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
         let id = db.entity_def_id_by_name("a").expect("id");
         let def = db.entity_def(id).expect("def");
-        assert_eq!(def.renderable, RenderableKind::Sprite("player".to_string()));
+        assert_eq!(
+            def.renderable,
+            RenderableKind::Sprite {
+                key: "player".to_string(),
+                pixel_scale: 1
+            }
+        );
+    }
+
+    #[test]
+    fn renderable_sprite_pixel_scale_attribute_parses_when_valid() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Sprite" spriteKey="player" pixelScale="2"/></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("a").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(
+            def.renderable,
+            RenderableKind::Sprite {
+                key: "player".to_string(),
+                pixel_scale: 2
+            }
+        );
+    }
+
+    #[test]
+    fn renderable_sprite_pixel_scale_defaults_to_one() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Sprite" spriteKey="player"/></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("a").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(
+            def.renderable,
+            RenderableKind::Sprite {
+                key: "player".to_string(),
+                pixel_scale: 1
+            }
+        );
+    }
+
+    #[test]
+    fn renderable_sprite_pixel_scale_rejects_out_of_range_or_non_integer() {
+        for bad in ["0", "17", "abc"] {
+            let temp = TempDir::new().expect("temp");
+            let app = setup_app_paths(temp.path());
+            write_file(
+                &app.base_content_dir.join("defs.xml"),
+                &format!(
+                    "<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind=\"Sprite\" spriteKey=\"player\" pixelScale=\"{bad}\"/></EntityDef></Defs>"
+                ),
+            );
+            let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+            assert_eq!(err.code, ContentErrorCode::InvalidValue);
+            assert!(err.message.contains("pixelScale"));
+            assert!(err.message.contains("1..=16"));
+        }
+    }
+
+    #[test]
+    fn renderable_placeholder_rejects_pixel_scale_attribute() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Placeholder" pixelScale="2"/></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::InvalidValue);
+        assert!(err.message.contains("pixelScale"));
     }
 
     #[test]
@@ -1394,7 +1520,13 @@ mod tests {
         let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
         let id = db.entity_def_id_by_name("proto.worker_attr").expect("id");
         let def = db.entity_def(id).expect("def");
-        assert_eq!(def.renderable, RenderableKind::Sprite("player".to_string()));
+        assert_eq!(
+            def.renderable,
+            RenderableKind::Sprite {
+                key: "player".to_string(),
+                pixel_scale: 1
+            }
+        );
     }
 
     #[test]

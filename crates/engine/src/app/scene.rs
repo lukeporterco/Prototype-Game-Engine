@@ -337,7 +337,7 @@ impl Tilemap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderableKind {
     Placeholder,
-    Sprite(String),
+    Sprite { key: String, pixel_scale: u8 },
 }
 
 #[derive(Debug, Clone)]
@@ -1528,7 +1528,10 @@ mod tests {
                 rotation_radians: None,
             },
             RenderableDesc {
-                kind: RenderableKind::Sprite("ui/icons/worker_1".to_string()),
+                kind: RenderableKind::Sprite {
+                    key: "ui/icons/worker_1".to_string(),
+                    pixel_scale: 1,
+                },
                 debug_name: "sprite_selectable",
             },
         );
@@ -1718,7 +1721,10 @@ mod tests {
                 rotation_radians: None,
             },
             RenderableDesc {
-                kind: RenderableKind::Sprite("objects/resource_pile".to_string()),
+                kind: RenderableKind::Sprite {
+                    key: "objects/resource_pile".to_string(),
+                    pixel_scale: 1,
+                },
                 debug_name: "sprite_interactable",
             },
         );
