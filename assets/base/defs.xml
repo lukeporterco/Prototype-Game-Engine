@@ -5,6 +5,7 @@
     <renderable kind="Sprite" spriteKey="visual_test/pawn_blue" pixelScale="3">
       <anchors>
         <anchor name="carry" x="3" y="-2" />
+        <anchor name="tool" x="4" y="-1" />
       </anchors>
     </renderable>
     <moveSpeed>5.0</moveSpeed>
@@ -20,7 +21,7 @@
   <EntityDef>
     <defName>proto.resource_pile</defName>
     <label>ResourcePile</label>
-    <renderable kind="Placeholder" />
+    <renderable kind="Sprite" spriteKey="visual_test/resource_pile" pixelScale="3" />
     <tags>
       <li>interactable</li>
       <li>resource_pile</li>
@@ -54,7 +55,7 @@
   <EntityDef>
     <defName>proto.stockpile_small</defName>
     <label>StockpileSmall</label>
-    <renderable kind="Placeholder" />
+    <renderable kind="Sprite" spriteKey="visual_test/floor_plate" pixelScale="3" />
     <tags>
       <li>interactable</li>
       <li>resource_pile</li>
@@ -64,11 +65,20 @@
   <EntityDef>
     <defName>proto.door_dummy</defName>
     <label>DoorDummy</label>
-    <renderable kind="Placeholder" />
+    <renderable kind="Sprite" spriteKey="visual_test/wall_panel" pixelScale="3" />
     <tags>
       <li>interactable</li>
       <li>door_dummy</li>
       <li>immediate_use</li>
+    </tags>
+  </EntityDef>
+  <EntityDef>
+    <defName>proto.workbench_demo</defName>
+    <label>WorkbenchDemo</label>
+    <renderable kind="Sprite" spriteKey="visual_test/workbench_green" pixelScale="3" />
+    <tags>
+      <li>interactable</li>
+      <li>workbench_demo</li>
     </tags>
   </EntityDef>
 </Defs>

@@ -98,6 +98,9 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 62.2 (2026-02-28): carry attachment remains visual-only: when action visual is `Carry` with `held_visual`, renderer resolves the def and draws its sprite at the entity carry anchor (missing anchor/def safely falls back or skips without per-frame log spam).
 - Ticket 62.3 (2026-02-28): renderer now applies a visual-only procedural offset layer for `Idle`/`Walk`/`Hit` derived from the fixed-step loop tick counter (not frame-dt), so motion remains deterministic across FPS and does not mutate simulation transforms/picking state.
 - Ticket 62.3 (2026-02-28): procedural offsets are applied before the existing micro-grid snap path for both base entity draw and carry attachment draw; `rotation_radians` is computed internally but intentionally unused by current sprite draw routines.
+- Ticket 62.4 (2026-02-28): renderer sprite-variant fallback is scoped to `visual_test/` keys only, with deterministic lookup order `{base}__{state}_{facing}` -> `{base}__{state}` -> `{base}`; non-`visual_test/` keys bypass variant probing entirely.
+- Ticket 62.4 (2026-02-28): `visual_sandbox` keeps the role-stable success payload schema (`player/prop/wall/floor`) and role semantics, while additional demo interactables may spawn outside payload for deterministic showcase coverage.
+- Ticket 62.4 (2026-02-28): sandbox-only player action forcing uses deterministic rules (interaction target tags -> `Interact`/`UseTool`, carry-lane x-threshold -> `Carry`, otherwise movement `Idle`/`Walk`) with no progression/unlock state.
 
 ## Module Boundaries and Ownership
 ### A. Module map

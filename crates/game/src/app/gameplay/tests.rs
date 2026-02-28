@@ -138,6 +138,24 @@
             .count()
     }
 
+    fn archetype_def_name_for_entity(
+        scene: &GameplayScene,
+        world: &SceneWorld,
+        entity_id: EntityId,
+    ) -> String {
+        let archetype_id = scene
+            .entity_archetype_id_by_entity
+            .get(&entity_id)
+            .copied()
+            .expect("archetype id");
+        let def_db = world.def_database().expect("def db");
+        def_db
+            .entity_def(archetype_id)
+            .expect("archetype")
+            .def_name
+            .clone()
+    }
+
     fn missing_entity_id_from_world(world: &SceneWorld) -> EntityId {
         let max_id = world
             .entities()
@@ -2504,7 +2522,7 @@
         let first_wall_id = EntityId(first_wall_raw);
         let first_floor_id = EntityId(first_floor_raw);
 
-        assert_eq!(world.entity_count(), 4);
+        assert_eq!(world.entity_count(), 5);
         assert_eq!(scene.player_id, Some(first_player_id));
         assert_eq!(scene.selected_entity, Some(first_player_id));
 
@@ -2523,6 +2541,27 @@
         assert!(!prop.actor && prop.interactable.is_some());
         assert!(!wall.actor && wall.interactable.is_some());
         assert!(!floor.actor && floor.interactable.is_some());
+        assert_eq!(
+            archetype_def_name_for_entity(&scene, &world, first_prop_id),
+            "proto.resource_pile"
+        );
+        assert_eq!(
+            archetype_def_name_for_entity(&scene, &world, first_wall_id),
+            "proto.door_dummy"
+        );
+        assert_eq!(
+            archetype_def_name_for_entity(&scene, &world, first_floor_id),
+            "proto.stockpile_small"
+        );
+        let first_bench_count = world
+            .entities()
+            .iter()
+            .filter(|entity| {
+                archetype_def_name_for_entity(&scene, &world, entity.id)
+                    == VISUAL_SANDBOX_EXTRA_INTERACTABLE_DEF
+            })
+            .count();
+        assert_eq!(first_bench_count, 1);
 
         let second = scene.execute_debug_command(
             SceneDebugCommand::ScenarioSetup {
@@ -2543,7 +2582,7 @@
         let second_wall_id = EntityId(second_wall_raw);
         let second_floor_id = EntityId(second_floor_raw);
 
-        assert_eq!(world.entity_count(), 4);
+        assert_eq!(world.entity_count(), 5);
         assert_eq!(scene.player_id, Some(second_player_id));
         assert_eq!(scene.selected_entity, Some(second_player_id));
 
@@ -2579,6 +2618,15 @@
                 .position,
             VISUAL_SANDBOX_FLOOR_POS
         );
+        let second_bench_count = world
+            .entities()
+            .iter()
+            .filter(|entity| {
+                archetype_def_name_for_entity(&scene, &world, entity.id)
+                    == VISUAL_SANDBOX_EXTRA_INTERACTABLE_DEF
+            })
+            .count();
+        assert_eq!(second_bench_count, 1);
 
         if first_player_raw != second_player_raw {
             assert!(world.find_entity(first_player_id).is_none());
@@ -2595,7 +2643,7 @@
     }
 
     #[test]
-    fn visual_sandbox_emits_carry_visual_with_held_def_and_facing_updates() {
+    fn visual_sandbox_forces_demo_action_states_deterministically() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
         seed_def_database(&mut world);
@@ -2610,11 +2658,17 @@
             &mut world,
         );
         assert!(matches!(setup_result, SceneDebugCommandResult::Success(_)));
+        let setup_message = match setup_result {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        let (_player_raw, _prop_raw, wall_raw, floor_raw) =
+            parse_visual_sandbox_setup_ids(&setup_message);
         let player_id = scene.player_id.expect("sandbox player");
 
         scene.update(0.1, &InputSnapshot::empty(), &mut world);
         let initial_visual = world.entity_action_visual(player_id);
-        assert_eq!(initial_visual.action_state, ActionState::Carry);
+        assert_eq!(initial_visual.action_state, ActionState::Idle);
         assert_eq!(
             initial_visual.held_visual.as_deref(),
             Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
@@ -2630,7 +2684,7 @@
         let east_input = snapshot_from_actions(&[InputAction::MoveRight]);
         scene.update(0.1, &east_input, &mut world);
         let east_visual = world.entity_action_visual(player_id);
-        assert_eq!(east_visual.action_state, ActionState::Carry);
+        assert_eq!(east_visual.action_state, ActionState::Walk);
         assert_eq!(east_visual.action_params.facing, Some(CardinalFacing::East));
         assert_eq!(
             east_visual.held_visual.as_deref(),
@@ -2645,7 +2699,9 @@
         assert!(east_x > initial_x);
 
         let west_input = snapshot_from_actions(&[InputAction::MoveLeft]);
-        scene.update(0.1, &west_input, &mut world);
+        for _ in 0..3 {
+            scene.update(0.1, &west_input, &mut world);
+        }
         let west_visual = world.entity_action_visual(player_id);
         assert_eq!(west_visual.action_state, ActionState::Carry);
         assert_eq!(west_visual.action_params.facing, Some(CardinalFacing::West));
@@ -2656,6 +2712,45 @@
             .position
             .x;
         assert!(west_x < east_x);
+        assert!(west_x <= VISUAL_SANDBOX_CARRY_LANE_X);
+
+        let interact_floor_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: floor_raw,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(
+            interact_floor_result,
+            SceneDebugCommandResult::Success(_)
+        ));
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        let interact_visual = world.entity_action_visual(player_id);
+        assert_eq!(interact_visual.action_state, ActionState::Interact);
+        assert_eq!(
+            interact_visual.held_visual.as_deref(),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
+
+        let interact_wall_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: wall_raw,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(
+            interact_wall_result,
+            SceneDebugCommandResult::Success(_)
+        ));
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        let tool_visual = world.entity_action_visual(player_id);
+        assert_eq!(tool_visual.action_state, ActionState::UseTool);
+        assert_eq!(
+            tool_visual.held_visual.as_deref(),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
     }
 
     #[test]

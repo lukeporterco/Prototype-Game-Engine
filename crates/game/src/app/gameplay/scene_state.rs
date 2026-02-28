@@ -25,7 +25,7 @@ struct GameplayScene {
     next_interaction_id: u64,
     reselect_player_on_respawn: bool,
     selected_completion_enqueued_this_tick: bool,
-    visual_sandbox_force_carry_visual: bool,
+    visual_sandbox_demo_active: bool,
     systems_host: GameplaySystemsHost,
     system_events: GameplayEventBus,
     system_intents: GameplayIntentQueue,
@@ -68,7 +68,7 @@ impl GameplayScene {
             next_interaction_id: 0,
             reselect_player_on_respawn: false,
             selected_completion_enqueued_this_tick: false,
-            visual_sandbox_force_carry_visual: false,
+            visual_sandbox_demo_active: false,
             systems_host: GameplaySystemsHost::default(),
             system_events: GameplayEventBus::default(),
             system_intents: GameplayIntentQueue::default(),
@@ -958,7 +958,7 @@ impl GameplayScene {
         self.player_id = None;
         self.selected_entity = None;
         self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
-        self.visual_sandbox_force_carry_visual = false;
+        self.visual_sandbox_demo_active = false;
 
         let player_id =
             self.apply_spawn_intent_now(world, "proto.player", COMBAT_CHASER_PLAYER_POS)?;
@@ -987,7 +987,7 @@ impl GameplayScene {
 
         self.player_id = None;
         self.selected_entity = None;
-        self.visual_sandbox_force_carry_visual = false;
+        self.visual_sandbox_demo_active = false;
 
         let player_id =
             self.apply_spawn_intent_now(world, "proto.player", VISUAL_SANDBOX_PLAYER_POS)?;
@@ -1000,9 +1000,14 @@ impl GameplayScene {
             "proto.stockpile_small",
             VISUAL_SANDBOX_FLOOR_POS,
         )?;
+        let _bench_id = self.apply_spawn_intent_now(
+            world,
+            VISUAL_SANDBOX_EXTRA_INTERACTABLE_DEF,
+            VISUAL_SANDBOX_BENCH_POS,
+        )?;
 
         self.selected_entity = Some(player_id);
-        self.visual_sandbox_force_carry_visual = true;
+        self.visual_sandbox_demo_active = true;
         world.set_entity_action_visual(
             player_id,
             EntityActionVisual {
@@ -1042,6 +1047,60 @@ impl GameplayScene {
 
     fn effective_move_speed_for_entity(&self, entity_id: EntityId, base_speed: f32) -> f32 {
         base_speed * self.movement_speed_multiplier_for_entity(entity_id)
+    }
+
+    fn resolve_player_action_state_for_visual_sandbox(
+        &self,
+        world: &SceneWorld,
+        player_id: EntityId,
+        movement_action_state: ActionState,
+    ) -> ActionState {
+        if !self.visual_sandbox_demo_active {
+            return movement_action_state;
+        }
+
+        let Some(player) = world.find_entity(player_id) else {
+            return movement_action_state;
+        };
+
+        let target_save_id = match player.order_state {
+            OrderState::Interact { target_save_id }
+            | OrderState::Working { target_save_id, .. } => Some(target_save_id),
+            _ => None,
+        };
+
+        if let Some(target_save_id) = target_save_id {
+            if self.visual_sandbox_target_has_immediate_use_tag(world, target_save_id) {
+                return ActionState::UseTool;
+            }
+            return ActionState::Interact;
+        }
+
+        if player.transform.position.x <= VISUAL_SANDBOX_CARRY_LANE_X {
+            ActionState::Carry
+        } else {
+            movement_action_state
+        }
+    }
+
+    fn visual_sandbox_target_has_immediate_use_tag(
+        &self,
+        world: &SceneWorld,
+        target_save_id: u64,
+    ) -> bool {
+        let Some(target_id) = self.resolve_runtime_target_id(target_save_id, world) else {
+            return false;
+        };
+        let Some(archetype_id) = self.entity_archetype_id_by_entity.get(&target_id).copied() else {
+            return false;
+        };
+        let Some(def_db) = world.def_database() else {
+            return false;
+        };
+        let Some(archetype) = def_db.entity_def(archetype_id) else {
+            return false;
+        };
+        archetype.tags.iter().any(|tag| tag == "immediate_use")
     }
 
     fn facing_from_movement_delta(delta: Vec2) -> Option<CardinalFacing> {
@@ -1702,11 +1761,8 @@ impl GameplayScene {
             } else {
                 ActionState::Idle
             };
-            let action_state = if self.visual_sandbox_force_carry_visual {
-                ActionState::Carry
-            } else {
-                movement_action_state
-            };
+            let action_state =
+                self.resolve_player_action_state_for_visual_sandbox(world, player_id, movement_action_state);
             world.update_entity_action_state_params(
                 player_id,
                 action_state,

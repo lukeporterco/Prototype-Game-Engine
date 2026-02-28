@@ -36,6 +36,26 @@ How to use this doc:
 - Risks: Visual-state drift if action emission is not aligned with deterministic gameplay tick boundaries.
 - Cut: No blend trees, IK, ragdolls, or physics-driven animation.
 
+### Visual sandbox second interactable lane
+- Date: 2026-02-28
+- Source: Ticket 62.4
+- Area: Scene
+- Summary: Add a second deterministic interactable lane in `visual_sandbox` with role-stable payload semantics.
+- Rationale: Expand demo coverage for interaction-state visuals without changing command schema or scenario id.
+- Dependencies: Stable visual-sandbox spawn ordering and interaction target resolution by save-id.
+- Risks: Scenario clutter can reduce readability if overlap/layout is not kept intentional.
+- Cut: No new console commands and no scenario payload schema changes.
+
+### Visual sandbox deterministic hit-kick trigger
+- Date: 2026-02-28
+- Source: Ticket 62.4
+- Area: Scene
+- Summary: Add a deterministic demo trigger path that forces `Hit` action visual state in `visual_sandbox`.
+- Rationale: Ensure hit-kick polish can be validated visually in a repeatable scene.
+- Dependencies: Existing renderer-side `Hit` procedural support and deterministic sandbox state rules.
+- Risks: Trigger timing may conflict with ongoing interaction states if priority rules are unclear.
+- Cut: No combat-system redesign and no non-deterministic/random trigger logic.
+
 ## Rendering
 
 ### Hand/tool anchor emission for UseTool visuals

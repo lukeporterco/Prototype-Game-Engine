@@ -228,6 +228,7 @@ impl Renderer {
                 world.camera(),
                 entity.transform.position,
                 procedural_offset.offset_px,
+                action_visual,
                 &entity.renderable.kind,
                 sprite_cache,
                 warned_missing_sprite_keys,
@@ -235,9 +236,9 @@ impl Renderer {
                 true,
             );
 
-            if action_visual.action_state != ActionState::Carry {
+            let Some(anchor_name) = held_attachment_anchor_name(action_visual.action_state) else {
                 continue;
-            }
+            };
             let Some(held_visual_def_name) = action_visual.held_visual.as_deref() else {
                 continue;
             };
@@ -252,6 +253,7 @@ impl Renderer {
                 entity,
                 action_visual.action_params.facing,
                 procedural_offset.offset_px,
+                anchor_name,
             );
             draw_cached_carry_sprite_at_screen_position(
                 frame,
@@ -296,6 +298,7 @@ fn draw_renderable_at_world_position(
     camera: &Camera2D,
     world_position: Vec2,
     visual_offset_px: Vec2,
+    action_visual: &EntityActionVisual,
     renderable: &RenderableKind,
     sprite_cache: &mut HashMap<String, Option<LoadedSprite>>,
     warned_missing_sprite_keys: &mut HashSet<String>,
@@ -323,9 +326,13 @@ fn draw_renderable_at_world_position(
         RenderableKind::Sprite {
             key, pixel_scale, ..
         } => {
-            if let Some(sprite) =
-                resolve_cached_sprite(sprite_cache, warned_missing_sprite_keys, asset_root, key)
-            {
+            if let Some(sprite) = resolve_sprite_for_action_visual(
+                sprite_cache,
+                warned_missing_sprite_keys,
+                asset_root,
+                key,
+                action_visual,
+            ) {
                 draw_sprite_centered_scaled(
                     frame,
                     width,
@@ -347,6 +354,103 @@ fn draw_renderable_at_world_position(
                 );
             }
         }
+    }
+}
+
+fn held_attachment_anchor_name(action_state: ActionState) -> Option<SpriteAnchorName> {
+    match action_state {
+        ActionState::Carry => Some(SpriteAnchorName::Carry),
+        ActionState::UseTool => Some(SpriteAnchorName::Tool),
+        _ => None,
+    }
+}
+
+fn resolve_sprite_for_action_visual<'a>(
+    sprite_cache: &'a mut HashMap<String, Option<LoadedSprite>>,
+    warned_missing_sprite_keys: &mut HashSet<String>,
+    asset_root: &Path,
+    base_key: &str,
+    action_visual: &EntityActionVisual,
+) -> Option<&'a LoadedSprite> {
+    let Some((state_and_facing_key, state_key)) =
+        visual_test_variant_candidate_keys(base_key, action_visual)
+    else {
+        return resolve_cached_sprite(
+            sprite_cache,
+            warned_missing_sprite_keys,
+            asset_root,
+            base_key,
+        );
+    };
+
+    if let Some(sprite_ptr) = resolve_cached_sprite_with_missing_policy(
+        sprite_cache,
+        warned_missing_sprite_keys,
+        asset_root,
+        &state_and_facing_key,
+        false,
+    )
+    .map(|sprite| sprite as *const LoadedSprite)
+    {
+        // SAFETY: pointer originates from `sprite_cache` and remains valid for the cache borrow.
+        return unsafe { sprite_ptr.as_ref() };
+    }
+
+    if let Some(sprite_ptr) = resolve_cached_sprite_with_missing_policy(
+        sprite_cache,
+        warned_missing_sprite_keys,
+        asset_root,
+        &state_key,
+        false,
+    )
+    .map(|sprite| sprite as *const LoadedSprite)
+    {
+        // SAFETY: pointer originates from `sprite_cache` and remains valid for the cache borrow.
+        return unsafe { sprite_ptr.as_ref() };
+    }
+
+    resolve_cached_sprite(
+        sprite_cache,
+        warned_missing_sprite_keys,
+        asset_root,
+        base_key,
+    )
+}
+
+fn visual_test_variant_candidate_keys(
+    base_key: &str,
+    action_visual: &EntityActionVisual,
+) -> Option<(String, String)> {
+    if !base_key.starts_with("visual_test/") {
+        return None;
+    }
+    let state_token = action_state_variant_token(action_visual.action_state)?;
+    let facing_token = facing_variant_token(action_visual.action_params.facing)?;
+    Some((
+        format!("{base_key}__{state_token}_{facing_token}"),
+        format!("{base_key}__{state_token}"),
+    ))
+}
+
+fn action_state_variant_token(action_state: ActionState) -> Option<&'static str> {
+    match action_state {
+        ActionState::Idle => Some("idle"),
+        ActionState::Walk => Some("walk"),
+        ActionState::Interact => Some("interact"),
+        ActionState::Carry => Some("carry"),
+        ActionState::UseTool => Some("usetool"),
+        ActionState::Hit => Some("hit"),
+        ActionState::Downed => Some("downed"),
+    }
+}
+
+fn facing_variant_token(facing: Option<CardinalFacing>) -> Option<&'static str> {
+    match facing {
+        Some(CardinalFacing::North) => Some("north"),
+        Some(CardinalFacing::South) => Some("south"),
+        Some(CardinalFacing::East) => Some("east"),
+        Some(CardinalFacing::West) => Some("west"),
+        None => Some("south"),
     }
 }
 
@@ -413,6 +517,7 @@ fn entity_carry_anchor_screen_position_px(
     entity: &Entity,
     facing: Option<CardinalFacing>,
     visual_offset_px: Vec2,
+    anchor_name: SpriteAnchorName,
 ) -> (i32, i32) {
     let RenderableKind::Sprite {
         pixel_scale,
@@ -427,7 +532,7 @@ fn entity_carry_anchor_screen_position_px(
             visual_offset_px,
         );
     };
-    let anchor = sprite_anchor_or_origin(*anchors, SpriteAnchorName::Carry);
+    let anchor = sprite_anchor_or_origin(*anchors, anchor_name);
     let transformed_anchor = transform_anchor_for_facing(anchor, facing);
     let anchor_scale = *pixel_scale as f32 * camera.effective_zoom();
     let (offset_x, offset_y) = anchor_screen_delta_px(transformed_anchor, anchor_scale);
@@ -987,6 +1092,22 @@ fn resolve_cached_sprite<'a>(
     asset_root: &Path,
     key: &str,
 ) -> Option<&'a LoadedSprite> {
+    resolve_cached_sprite_with_missing_policy(
+        cache,
+        warned_missing_sprite_keys,
+        asset_root,
+        key,
+        true,
+    )
+}
+
+fn resolve_cached_sprite_with_missing_policy<'a>(
+    cache: &'a mut HashMap<String, Option<LoadedSprite>>,
+    warned_missing_sprite_keys: &mut HashSet<String>,
+    asset_root: &Path,
+    key: &str,
+    warn_on_missing: bool,
+) -> Option<&'a LoadedSprite> {
     if let Some(cached) = cache.get(key) {
         let sprite_ptr = cached.as_ref().map(|sprite| sprite as *const LoadedSprite);
         // SAFETY: `sprite_ptr` is derived from an immutable reference into `cache`.
@@ -997,17 +1118,21 @@ fn resolve_cached_sprite<'a>(
         Ok(path) => match load_sprite_rgba(&path) {
             Ok(sprite) => Some(sprite),
             Err(reason) => {
-                warn_sprite_load_once(
-                    warned_missing_sprite_keys,
-                    key,
-                    Some(path.as_path()),
-                    reason.as_str(),
-                );
+                if warn_on_missing {
+                    warn_sprite_load_once(
+                        warned_missing_sprite_keys,
+                        key,
+                        Some(path.as_path()),
+                        reason.as_str(),
+                    );
+                }
                 None
             }
         },
         Err(reason) => {
-            warn_sprite_load_once(warned_missing_sprite_keys, key, None, reason.as_str());
+            if warn_on_missing {
+                warn_sprite_load_once(warned_missing_sprite_keys, key, None, reason.as_str());
+            }
             None
         }
     };
@@ -1509,6 +1634,49 @@ mod tests {
         for _ in 0..128 {
             assert_eq!(snap_screen_coordinate_px(-37, 6), expected);
         }
+    }
+
+    #[test]
+    fn visual_test_variant_candidates_include_state_and_facing_then_state() {
+        let visual = EntityActionVisual {
+            action_state: ActionState::Walk,
+            action_params: ActionParams {
+                facing: Some(CardinalFacing::West),
+                ..ActionParams::default()
+            },
+            held_visual: None,
+        };
+        let (state_facing, state_only) =
+            visual_test_variant_candidate_keys("visual_test/pawn_blue", &visual)
+                .expect("variant keys");
+        assert_eq!(state_facing, "visual_test/pawn_blue__walk_west");
+        assert_eq!(state_only, "visual_test/pawn_blue__walk");
+    }
+
+    #[test]
+    fn non_visual_test_keys_do_not_use_variant_candidates() {
+        let visual = EntityActionVisual {
+            action_state: ActionState::Interact,
+            action_params: ActionParams {
+                facing: Some(CardinalFacing::North),
+                ..ActionParams::default()
+            },
+            held_visual: None,
+        };
+        assert!(visual_test_variant_candidate_keys("npc/chaser_red", &visual).is_none());
+    }
+
+    #[test]
+    fn held_attachment_anchor_routes_carry_and_use_tool() {
+        assert_eq!(
+            held_attachment_anchor_name(ActionState::Carry),
+            Some(SpriteAnchorName::Carry)
+        );
+        assert_eq!(
+            held_attachment_anchor_name(ActionState::UseTool),
+            Some(SpriteAnchorName::Tool)
+        );
+        assert_eq!(held_attachment_anchor_name(ActionState::Idle), None);
     }
 
     fn approx_eq_f32(a: f32, b: f32) -> bool {

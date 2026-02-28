@@ -17,7 +17,7 @@ impl Scene for GameplayScene {
         self.interactable_lookup_by_save_id.clear();
         self.completed_target_ids.clear();
         self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
-        self.visual_sandbox_force_carry_visual = false;
+        self.visual_sandbox_demo_active = false;
         self.system_order_text = GAMEPLAY_SYSTEM_ORDER_TEXT.to_string();
         world.apply_pending();
         self.sync_save_id_map_with_world(world)
@@ -367,7 +367,7 @@ impl Scene for GameplayScene {
         self.system_intents = GameplayIntentQueue::default();
         self.system_order_text.clear();
         self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
-        self.visual_sandbox_force_carry_visual = false;
+        self.visual_sandbox_demo_active = false;
         self.selected_completion_enqueued_this_tick = false;
         self.reselect_player_on_respawn = false;
     }
