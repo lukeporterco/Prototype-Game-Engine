@@ -5,6 +5,7 @@ struct GameplayScene {
     player_id: Option<EntityId>,
     selected_entity: Option<EntityId>,
     active_floor: ActiveFloor,
+    last_player_facing: CardinalFacing,
     player_move_speed: f32,
     resource_count: u32,
     interactable_cache: Vec<(EntityId, Vec2, f32)>,
@@ -46,6 +47,7 @@ impl GameplayScene {
             player_id: None,
             selected_entity: None,
             active_floor: ActiveFloor::Main,
+            last_player_facing: CardinalFacing::South,
             player_move_speed: 5.0,
             resource_count: 0,
             interactable_cache: Vec::new(),
@@ -1022,6 +1024,23 @@ impl GameplayScene {
         base_speed * self.movement_speed_multiplier_for_entity(entity_id)
     }
 
+    fn facing_from_movement_delta(delta: Vec2) -> Option<CardinalFacing> {
+        if delta.x.abs() <= f32::EPSILON && delta.y.abs() <= f32::EPSILON {
+            return None;
+        }
+        if delta.x.abs() >= delta.y.abs() {
+            if delta.x >= 0.0 {
+                Some(CardinalFacing::East)
+            } else {
+                Some(CardinalFacing::West)
+            }
+        } else if delta.y >= 0.0 {
+            Some(CardinalFacing::North)
+        } else {
+            Some(CardinalFacing::South)
+        }
+    }
+
     fn upsert_status_with_refresh(
         status_set: &mut StatusSet,
         status_id: StatusId,
@@ -1641,13 +1660,42 @@ impl GameplayScene {
         world.set_targeted_interactable_visual(targeted_interactable_visual);
 
         if let Some(player_id) = self.player_id {
+            let move_speed = self.effective_move_speed_for_entity(player_id, self.player_move_speed);
+            let delta = movement_delta(input, fixed_dt_seconds, move_speed);
             if let Some(player) = world.find_entity_mut(player_id) {
-                let move_speed =
-                    self.effective_move_speed_for_entity(player_id, self.player_move_speed);
-                let delta = movement_delta(input, fixed_dt_seconds, move_speed);
                 player.transform.position.x += delta.x;
                 player.transform.position.y += delta.y;
             }
+
+            if let Some(facing) = Self::facing_from_movement_delta(delta) {
+                self.last_player_facing = facing;
+            }
+            let magnitude = (delta.x * delta.x + delta.y * delta.y).sqrt();
+            let speed_denominator = (move_speed * fixed_dt_seconds).abs();
+            let speed01 = if speed_denominator <= f32::EPSILON {
+                0.0
+            } else {
+                (magnitude / speed_denominator).clamp(0.0, 1.0)
+            };
+            let action_state = if speed01 > 0.0 {
+                ActionState::Walk
+            } else {
+                ActionState::Idle
+            };
+            world.set_entity_action_visual(
+                player_id,
+                EntityActionVisual {
+                    action_state,
+                    action_params: ActionParams {
+                        phase: 0.0,
+                        intensity: speed01,
+                        speed01,
+                        facing: Some(self.last_player_facing),
+                        target_hint: None,
+                        is_looping: true,
+                    },
+                },
+            );
         }
 
         self.interactable_cache.clear();

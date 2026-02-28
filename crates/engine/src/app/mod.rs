@@ -16,11 +16,12 @@ pub use rendering::{
     PLACEHOLDER_HALF_SIZE_PX,
 };
 pub use scene::{
-    Camera2D, DebugInfoSnapshot, DebugJobState, DebugMarker, DebugMarkerKind, Entity, EntityId,
-    FloorId, InputSnapshot, Interactable, InteractableKind, OrderState, RenderableDesc,
-    RenderableKind, Scene, SceneCommand, SceneDebugCommand, SceneDebugCommandResult,
-    SceneDebugContext, SceneKey, SceneVisualState, SceneWorld, Tilemap, TilemapError, Transform,
-    Vec2, CAMERA_ZOOM_DEFAULT, CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN, CAMERA_ZOOM_STEP,
+    ActionParams, ActionState, ActionTargetHint, Camera2D, CardinalFacing, DebugInfoSnapshot,
+    DebugJobState, DebugMarker, DebugMarkerKind, Entity, EntityActionVisual, EntityId, FloorId,
+    InputSnapshot, Interactable, InteractableKind, OrderState, RenderableDesc, RenderableKind,
+    Scene, SceneCommand, SceneDebugCommand, SceneDebugCommandResult, SceneDebugContext, SceneKey,
+    SceneVisualState, SceneWorld, Tilemap, TilemapError, Transform, Vec2, CAMERA_ZOOM_DEFAULT,
+    CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN, CAMERA_ZOOM_STEP,
 };
 pub(crate) use tools::{
     format_spawn_command, CommandPaletteButtonKind, CommandPaletteRenderData, CommandPaletteState,

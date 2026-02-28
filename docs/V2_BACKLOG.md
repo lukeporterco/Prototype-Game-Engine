@@ -26,6 +26,16 @@ How to use this doc:
 
 ## Scene
 
+### Action state interact/carry emission
+- Date: 2026-02-28
+- Source: Ticket 62.1
+- Area: Scene
+- Summary: Emit `Interact` and `Carry` action visuals for one interactable workflow.
+- Rationale: Extend the MVP Idle/Walk visual contract so renderer can reflect core interaction intent.
+- Dependencies: Stable interaction-state to action-state mapping for player workflow.
+- Risks: Visual-state drift if action emission is not aligned with deterministic gameplay tick boundaries.
+- Cut: No blend trees, IK, ragdolls, or physics-driven animation.
+
 ## Rendering
 
 ## Assets

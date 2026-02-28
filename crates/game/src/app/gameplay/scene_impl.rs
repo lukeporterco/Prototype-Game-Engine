@@ -10,6 +10,7 @@ impl Scene for GameplayScene {
         self.player_id = None;
         self.selected_entity = None;
         self.active_floor = ActiveFloor::Main;
+        self.last_player_facing = CardinalFacing::South;
         world.set_active_floor(self.active_floor_engine());
         self.resource_count = 0;
         self.interactable_cache.clear();
@@ -351,6 +352,7 @@ impl Scene for GameplayScene {
         self.player_id = None;
         self.selected_entity = None;
         self.active_floor = ActiveFloor::Main;
+        self.last_player_facing = CardinalFacing::South;
         world.set_active_floor(self.active_floor_engine());
         self.resource_count = 0;
         self.interactable_cache.clear();

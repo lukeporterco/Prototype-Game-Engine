@@ -163,6 +163,7 @@ impl Renderer {
 
         for entity_index in visible_entity_draw_indices.iter().copied() {
             let entity = &world.entities()[entity_index];
+            let _action_visual = world.entity_action_visual(entity.id);
             let (cx, cy) = snapped_world_to_screen_px(
                 world.camera(),
                 (self.viewport.width, self.viewport.height),

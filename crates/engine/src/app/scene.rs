@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::input::{ActionStates, InputAction};
 use super::rendering::{world_to_screen_px, PLACEHOLDER_HALF_SIZE_PX};
 use crate::content::DefDatabase;
@@ -202,6 +204,66 @@ pub enum FloorId {
 pub struct Vec2 {
     pub x: f32,
     pub y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionState {
+    Idle,
+    Walk,
+    Interact,
+    Carry,
+    UseTool,
+    Hit,
+    Downed,
+}
+
+impl Default for ActionState {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardinalFacing {
+    North,
+    South,
+    East,
+    West,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ActionTargetHint {
+    Entity(EntityId),
+    Point(Vec2),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActionParams {
+    pub phase: f32,
+    pub intensity: f32,
+    pub speed01: f32,
+    pub facing: Option<CardinalFacing>,
+    pub target_hint: Option<ActionTargetHint>,
+    pub is_looping: bool,
+}
+
+impl Default for ActionParams {
+    fn default() -> Self {
+        Self {
+            phase: 0.0,
+            intensity: 0.0,
+            speed01: 0.0,
+            facing: None,
+            target_hint: None,
+            is_looping: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EntityActionVisual {
+    pub action_state: ActionState,
+    pub action_params: ActionParams,
 }
 
 pub const CAMERA_ZOOM_DEFAULT: f32 = 1.0;
@@ -412,11 +474,12 @@ pub struct DebugMarker {
     pub ttl_seconds: f32,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SceneVisualState {
     pub selected_actor: Option<EntityId>,
     pub hovered_interactable: Option<EntityId>,
     pub targeted_interactable: Option<EntityId>,
+    pub entity_action_visuals: HashMap<EntityId, EntityActionVisual>,
 }
 
 #[derive(Debug, Clone)]
@@ -525,6 +588,9 @@ impl SceneWorld {
                     .binary_search_by_key(&entity.id.0, |id| id.0)
                     .is_err()
             });
+            for id in pending {
+                self.visual_state.entity_action_visuals.remove(id);
+            }
             self.pending_despawns.clear();
         }
 
@@ -574,6 +640,24 @@ impl SceneWorld {
 
     pub fn visual_state(&self) -> &SceneVisualState {
         &self.visual_state
+    }
+
+    pub fn set_entity_action_visual(&mut self, entity_id: EntityId, visual: EntityActionVisual) {
+        self.visual_state
+            .entity_action_visuals
+            .insert(entity_id, visual);
+    }
+
+    pub fn clear_entity_action_visual(&mut self, entity_id: EntityId) {
+        self.visual_state.entity_action_visuals.remove(&entity_id);
+    }
+
+    pub fn entity_action_visual(&self, entity_id: EntityId) -> EntityActionVisual {
+        self.visual_state
+            .entity_action_visuals
+            .get(&entity_id)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn push_debug_marker(&mut self, marker: DebugMarker) {
@@ -1397,6 +1481,103 @@ mod tests {
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].position_world, Vec2 { x: 1.0, y: 2.0 });
         assert!((markers[0].ttl_seconds - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn entity_action_visual_defaults_to_idle_zero_when_missing() {
+        let world = SceneWorld::default();
+        let visual = world.entity_action_visual(EntityId(999));
+        assert_eq!(visual.action_state, ActionState::Idle);
+        assert_eq!(visual.action_params.intensity, 0.0);
+        assert_eq!(visual.action_params.speed01, 0.0);
+        assert_eq!(visual.action_params.facing, None);
+        assert_eq!(visual.action_params.target_hint, None);
+        assert!(!visual.action_params.is_looping);
+    }
+
+    #[test]
+    fn entity_action_visual_clears_on_despawn_and_world_clear() {
+        let mut world = SceneWorld::default();
+        let id = world.spawn(
+            Transform::default(),
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "visual_actor",
+            },
+        );
+        world.apply_pending();
+        world.set_entity_action_visual(
+            id,
+            EntityActionVisual {
+                action_state: ActionState::Walk,
+                action_params: ActionParams {
+                    phase: 0.0,
+                    intensity: 1.0,
+                    speed01: 1.0,
+                    facing: Some(CardinalFacing::East),
+                    target_hint: None,
+                    is_looping: true,
+                },
+            },
+        );
+        assert_eq!(
+            world.entity_action_visual(id).action_state,
+            ActionState::Walk
+        );
+
+        assert!(world.despawn(id));
+        world.apply_pending();
+        assert_eq!(
+            world.entity_action_visual(id).action_state,
+            ActionState::Idle
+        );
+
+        let id2 = world.spawn(
+            Transform::default(),
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "visual_actor_2",
+            },
+        );
+        world.apply_pending();
+        world.set_entity_action_visual(id2, EntityActionVisual::default());
+        world.clear();
+        assert_eq!(
+            world.entity_action_visual(id2).action_state,
+            ActionState::Idle
+        );
+    }
+
+    #[test]
+    fn clear_entity_action_visual_removes_entry() {
+        let mut world = SceneWorld::default();
+        let id = world.spawn(
+            Transform::default(),
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "visual_actor",
+            },
+        );
+        world.apply_pending();
+        world.set_entity_action_visual(
+            id,
+            EntityActionVisual {
+                action_state: ActionState::Walk,
+                action_params: ActionParams {
+                    phase: 0.0,
+                    intensity: 1.0,
+                    speed01: 1.0,
+                    facing: Some(CardinalFacing::East),
+                    target_hint: None,
+                    is_looping: true,
+                },
+            },
+        );
+        world.clear_entity_action_visual(id);
+        assert_eq!(
+            world.entity_action_visual(id).action_state,
+            ActionState::Idle
+        );
     }
 
     #[test]

@@ -2330,6 +2330,40 @@
     }
 
     #[test]
+    fn player_action_state_transitions_idle_walk_from_input() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let player_id = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "player",
+            },
+        );
+        world.apply_pending();
+        scene.player_id = Some(player_id);
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        let idle_visual = world.entity_action_visual(player_id);
+        assert_eq!(idle_visual.action_state, ActionState::Idle);
+        assert_eq!(idle_visual.action_params.speed01, 0.0);
+
+        let move_input = snapshot_from_actions(&[InputAction::MoveRight]);
+        scene.update(0.1, &move_input, &mut world);
+        let walk_visual = world.entity_action_visual(player_id);
+        assert_eq!(walk_visual.action_state, ActionState::Walk);
+        assert!(walk_visual.action_params.speed01 > 0.0);
+        assert_eq!(walk_visual.action_params.facing, Some(CardinalFacing::East));
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        let idle_again_visual = world.entity_action_visual(player_id);
+        assert_eq!(idle_again_visual.action_state, ActionState::Idle);
+    }
+
+    #[test]
     fn camera_delta_uses_camera_actions() {
         let input = snapshot_from_actions(&[InputAction::CameraUp, InputAction::CameraRight]);
         let delta = camera_delta(&input, 1.0, 6.0);
