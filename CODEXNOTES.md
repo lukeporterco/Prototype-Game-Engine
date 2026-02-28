@@ -101,6 +101,10 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 62.4 (2026-02-28): renderer sprite-variant fallback is scoped to `visual_test/` keys only, with deterministic lookup order `{base}__{state}_{facing}` -> `{base}__{state}` -> `{base}`; non-`visual_test/` keys bypass variant probing entirely.
 - Ticket 62.4 (2026-02-28): `visual_sandbox` keeps the role-stable success payload schema (`player/prop/wall/floor`) and role semantics, while additional demo interactables may spawn outside payload for deterministic showcase coverage.
 - Ticket 62.4 (2026-02-28): sandbox-only player action forcing uses deterministic rules (interaction target tags -> `Interact`/`UseTool`, carry-lane x-threshold -> `Carry`, otherwise movement `Idle`/`Walk`) with no progression/unlock state.
+- Ticket 63 (2026-02-28): gameplay now tracks `pawn_role_by_entity` for actor control roles (`PlayerPawn`, `Settler`, `Npc`), with role entries populated only when spawn intents are applied and a committed live `EntityId` exists.
+- Ticket 63 (2026-02-28): `PlayerPawn` role assignment is authority-owned only (`GameplayScene.player_id`), never inferred from `defName`; `spawn proto.player` remains non-authoritative by default.
+- Ticket 63 (2026-02-28): orderability gates for right-click and `order.move` / `order.interact` now target selected orderable pawns (`PlayerPawn` + `Settler`) while NPC actors stay selectable but non-orderable; keyboard movement remains authoritative-player-only.
+- Ticket 63 (2026-02-28): `scenario.setup visual_sandbox` now also spawns one deterministic settler (`proto.settler`) without changing the success payload schema (`player/prop/wall/floor`).
 
 ## Module Boundaries and Ownership
 ### A. Module map

@@ -22,6 +22,7 @@ impl Scene for GameplayScene {
         world.apply_pending();
         self.sync_save_id_map_with_world(world)
             .expect("initial save_id assignment should not fail");
+        self.rebuild_pawn_roles_from_world(world);
         self.sync_runtime_component_stores_with_world(world);
         self.rebuild_ai_agents_from_world(world);
         info!(
@@ -161,12 +162,6 @@ impl Scene for GameplayScene {
                 let Some(actor_id) = self.selected_entity else {
                     return SceneDebugCommandResult::Error("no selected entity".to_string());
                 };
-                if Some(actor_id) != self.player_id {
-                    return SceneDebugCommandResult::Error(format!(
-                        "selected entity {} is not player pawn",
-                        actor_id.0
-                    ));
-                }
                 let Some(actor) = world.find_entity(actor_id) else {
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} not found",
@@ -183,6 +178,12 @@ impl Scene for GameplayScene {
                 if !actor.actor {
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} is not an actor",
+                        actor_id.0
+                    ));
+                }
+                if !self.selected_actor_is_orderable(actor_id, world) {
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} is not an orderable pawn",
                         actor_id.0
                     ));
                 }
@@ -203,12 +204,6 @@ impl Scene for GameplayScene {
                 let Some(actor_id) = self.selected_entity else {
                     return SceneDebugCommandResult::Error("no selected entity".to_string());
                 };
-                if Some(actor_id) != self.player_id {
-                    return SceneDebugCommandResult::Error(format!(
-                        "selected entity {} is not player pawn",
-                        actor_id.0
-                    ));
-                }
                 let Some(actor) = world.find_entity(actor_id) else {
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} not found",
@@ -225,6 +220,12 @@ impl Scene for GameplayScene {
                 if !actor.actor {
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} is not an actor",
+                        actor_id.0
+                    ));
+                }
+                if !self.selected_actor_is_orderable(actor_id, world) {
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} is not an orderable pawn",
                         actor_id.0
                     ));
                 }

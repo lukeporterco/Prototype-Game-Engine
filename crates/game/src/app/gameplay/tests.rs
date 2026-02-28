@@ -214,9 +214,12 @@
         position: Vec2,
     ) -> EntityId {
         let spawned_id = spawn_def_via_console(scene, world, "proto.player", position);
-        let player_id = scene.player_id.expect("player id assigned");
-        assert_eq!(player_id, spawned_id);
-        player_id
+        scene.player_id = Some(spawned_id);
+        scene
+            .pawn_role_by_entity
+            .insert(spawned_id, PawnControlRole::PlayerPawn);
+        scene.ai_agents_by_entity.remove(&spawned_id);
+        spawned_id
     }
 
     fn parse_scenario_setup_ids(message: &str) -> (u64, u64, u64) {
@@ -2090,6 +2093,37 @@
     }
 
     #[test]
+    fn debug_selected_settler_can_receive_order_move() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler_id =
+            spawn_def_via_console(&mut scene, &mut world, "proto.settler", Vec2 { x: 0.0, y: 0.0 });
+        scene.selected_entity = Some(settler_id);
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::OrderMove { x: 3.0, y: -2.5 },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(result, SceneDebugCommandResult::Success(_)));
+
+        scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+
+        let settler = world.find_entity(settler_id).expect("settler");
+        assert_eq!(
+            settler.order_state,
+            OrderState::MoveTo {
+                point: Vec2 { x: 3.0, y: -2.5 }
+            }
+        );
+    }
+
+    #[test]
     fn debug_order_interact_queues_and_applies_for_selected_actor() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -2190,11 +2224,49 @@
     }
 
     #[test]
+    fn debug_selected_settler_can_receive_order_interact() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: -1.0, y: 0.0 },
+        );
+        scene.selected_entity = Some(settler_id);
+        scene.sync_save_id_map_with_world(&world).expect("sync");
+
+        let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 2);
+        scene.sync_save_id_map_with_world(&world).expect("sync");
+        let target_save_id = scene.save_id_for_entity(pile).expect("save id");
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: pile.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(result, SceneDebugCommandResult::Success(_)));
+
+        scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+
+        let settler = world.find_entity(settler_id).expect("settler");
+        assert_eq!(settler.order_state, OrderState::Interact { target_save_id });
+    }
+
+    #[test]
     fn default_content_pack_contains_new_microticket_defs() {
         let mut world = SceneWorld::default();
         seed_def_database(&mut world);
         let def_db = world.def_database().expect("def database");
         for def_name in [
+            "proto.settler",
             "proto.npc_chaser",
             "proto.npc_dummy",
             "proto.stockpile_small",
@@ -2222,6 +2294,9 @@
         let npc_dummy_id = def_db
             .entity_def_id_by_name("proto.npc_dummy")
             .expect("npc dummy def");
+        let settler_id = def_db
+            .entity_def_id_by_name("proto.settler")
+            .expect("settler def");
         let stockpile_small_id = def_db
             .entity_def_id_by_name("proto.stockpile_small")
             .expect("stockpile small def");
@@ -2239,6 +2314,10 @@
                 position: Vec2 { x: 11.0, y: 0.0 },
             },
             GameplayIntent::SpawnByArchetypeId {
+                archetype_id: settler_id,
+                position: Vec2 { x: 11.5, y: 0.0 },
+            },
+            GameplayIntent::SpawnByArchetypeId {
                 archetype_id: stockpile_small_id,
                 position: Vec2 { x: 12.0, y: 0.0 },
             },
@@ -2252,8 +2331,8 @@
         world.apply_pending();
 
         assert_eq!(stats.invalid_target_count, 0);
-        assert_eq!(stats.spawn_by_archetype_id, 4);
-        assert_eq!(stats.spawned_entity_ids.len(), 4);
+        assert_eq!(stats.spawn_by_archetype_id, 5);
+        assert_eq!(stats.spawned_entity_ids.len(), 5);
 
         let spawned = stats
             .spawned_entity_ids
@@ -2280,6 +2359,12 @@
             .expect("dummy spawn");
         assert!(dummy.2);
         assert!(!dummy.3);
+        let settler = spawned
+            .iter()
+            .find(|(_, pos, _, _)| (pos.x - 11.5).abs() < 0.001)
+            .expect("settler spawn");
+        assert!(settler.2);
+        assert!(!settler.3);
         let stockpile = spawned
             .iter()
             .find(|(_, pos, _, _)| (pos.x - 12.0).abs() < 0.001)
@@ -2295,6 +2380,7 @@
 
         let chaser_id = chaser.0;
         let dummy_id = dummy.0;
+        let settler_id = settler.0;
         let chaser_health = scene
             .health_by_entity
             .get(&chaser_id)
@@ -2320,6 +2406,22 @@
         assert!(
             !scene.ai_agents_by_entity.contains_key(&dummy_id),
             "npc dummy should not auto-register combat AI"
+        );
+        assert!(
+            !scene.ai_agents_by_entity.contains_key(&settler_id),
+            "settler should not auto-register combat AI"
+        );
+        assert_eq!(
+            scene.pawn_role_by_entity.get(&chaser_id).copied(),
+            Some(PawnControlRole::Npc)
+        );
+        assert_eq!(
+            scene.pawn_role_by_entity.get(&dummy_id).copied(),
+            Some(PawnControlRole::Npc)
+        );
+        assert_eq!(
+            scene.pawn_role_by_entity.get(&settler_id).copied(),
+            Some(PawnControlRole::Settler)
         );
     }
 
@@ -2379,6 +2481,29 @@
         scene.update(0.1, &InputSnapshot::empty(), &mut world);
         let idle_again_visual = world.entity_action_visual(player_id);
         assert_eq!(idle_again_visual.action_state, ActionState::Idle);
+    }
+
+    #[test]
+    fn keyboard_movement_affects_only_authoritative_player_not_settler() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let player_id =
+            spawn_authoritative_player_via_console(&mut scene, &mut world, Vec2 { x: 0.0, y: 0.0 });
+        let settler_id =
+            spawn_def_via_console(&mut scene, &mut world, "proto.settler", Vec2 { x: 2.0, y: 0.0 });
+
+        let move_input = snapshot_from_actions(&[InputAction::MoveRight]);
+        scene.update(0.1, &move_input, &mut world);
+        world.apply_pending();
+
+        let player_x = world.find_entity(player_id).expect("player").transform.position.x;
+        let settler_x = world.find_entity(settler_id).expect("settler").transform.position.x;
+        assert!(player_x > 0.0);
+        assert!((settler_x - 2.0).abs() < 0.0001);
     }
 
     #[test]
@@ -2522,7 +2647,7 @@
         let first_wall_id = EntityId(first_wall_raw);
         let first_floor_id = EntityId(first_floor_raw);
 
-        assert_eq!(world.entity_count(), 5);
+        assert_eq!(world.entity_count(), 6);
         assert_eq!(scene.player_id, Some(first_player_id));
         assert_eq!(scene.selected_entity, Some(first_player_id));
 
@@ -2562,6 +2687,21 @@
             })
             .count();
         assert_eq!(first_bench_count, 1);
+        let first_settler_ids = world
+            .entities()
+            .iter()
+            .filter(|entity| archetype_def_name_for_entity(&scene, &world, entity.id) == "proto.settler")
+            .map(|entity| entity.id)
+            .collect::<Vec<_>>();
+        assert_eq!(first_settler_ids.len(), 1);
+        assert_eq!(
+            world
+                .find_entity(first_settler_ids[0])
+                .expect("first settler")
+                .transform
+                .position,
+            VISUAL_SANDBOX_SETTLER_POS
+        );
 
         let second = scene.execute_debug_command(
             SceneDebugCommand::ScenarioSetup {
@@ -2582,7 +2722,7 @@
         let second_wall_id = EntityId(second_wall_raw);
         let second_floor_id = EntityId(second_floor_raw);
 
-        assert_eq!(world.entity_count(), 5);
+        assert_eq!(world.entity_count(), 6);
         assert_eq!(scene.player_id, Some(second_player_id));
         assert_eq!(scene.selected_entity, Some(second_player_id));
 
@@ -2627,6 +2767,21 @@
             })
             .count();
         assert_eq!(second_bench_count, 1);
+        let second_settler_ids = world
+            .entities()
+            .iter()
+            .filter(|entity| archetype_def_name_for_entity(&scene, &world, entity.id) == "proto.settler")
+            .map(|entity| entity.id)
+            .collect::<Vec<_>>();
+        assert_eq!(second_settler_ids.len(), 1);
+        assert_eq!(
+            world
+                .find_entity(second_settler_ids[0])
+                .expect("second settler")
+                .transform
+                .position,
+            VISUAL_SANDBOX_SETTLER_POS
+        );
 
         if first_player_raw != second_player_raw {
             assert!(world.find_entity(first_player_id).is_none());
@@ -2754,7 +2909,7 @@
     }
 
     #[test]
-    fn debug_order_move_errors_for_selected_non_player_actor() {
+    fn debug_order_move_errors_for_selected_npc_actor() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
         seed_def_database(&mut world);
@@ -2792,7 +2947,11 @@
             SceneDebugContext::default(),
             &mut world,
         );
-        assert!(matches!(result, SceneDebugCommandResult::Error(_)));
+        assert!(matches!(
+            result,
+            SceneDebugCommandResult::Error(message)
+                if message.contains("not an orderable pawn")
+        ));
     }
 
     #[test]
@@ -2944,28 +3103,20 @@
     }
 
     #[test]
-    fn right_click_selected_actor_sets_move_target() {
+    fn right_click_selected_settler_sets_move_target() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
-        let actor = world.spawn_actor(
-            Transform {
-                position: Vec2 { x: 0.0, y: 0.0 },
-                rotation_radians: None,
-            },
-            RenderableDesc {
-                kind: engine::RenderableKind::Placeholder,
-                debug_name: "actor",
-            },
-        );
+        seed_def_database(&mut world);
+        scene.load(&mut world);
         world.apply_pending();
-        world.find_entity_mut(actor).expect("actor").selectable = true;
-        scene.player_id = Some(actor);
-        scene.selected_entity = Some(actor);
+        let settler =
+            spawn_def_via_console(&mut scene, &mut world, "proto.settler", Vec2 { x: 0.0, y: 0.0 });
+        scene.selected_entity = Some(settler);
 
         let click = right_click_snapshot(Vec2 { x: 672.0, y: 360.0 }, (1280, 720));
         scene.update(1.0 / 60.0, &click, &mut world);
 
-        let target = world.find_entity(actor).expect("actor");
+        let target = world.find_entity(settler).expect("settler");
         let target = match target.order_state {
             OrderState::MoveTo { point } => point,
             _ => panic!("expected move order"),
@@ -3115,6 +3266,22 @@
     }
 
     #[test]
+    fn right_click_selected_npc_actor_is_ignored() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+        let npc = spawn_def_via_console(&mut scene, &mut world, "proto.npc_dummy", Vec2 { x: 0.0, y: 0.0 });
+        scene.selected_entity = Some(npc);
+
+        let click = right_click_snapshot(Vec2 { x: 672.0, y: 360.0 }, (1280, 720));
+        scene.update(1.0 / 60.0, &click, &mut world);
+
+        assert_eq!(world.find_entity(npc).expect("npc").order_state, OrderState::Idle);
+    }
+
+    #[test]
     fn selected_visual_clears_when_stale_or_non_actor() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -3173,19 +3340,16 @@
     fn right_click_interactable_sets_interaction_target() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
-        let actor = world.spawn_actor(
-            Transform {
-                position: Vec2 { x: -2.0, y: 0.0 },
-                rotation_radians: None,
-            },
-            RenderableDesc {
-                kind: engine::RenderableKind::Placeholder,
-                debug_name: "actor",
-            },
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+        let actor = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: -2.0, y: 0.0 },
         );
         let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 3);
-        world.find_entity_mut(actor).expect("actor").selectable = true;
-        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
         scene
             .sync_save_id_map_with_world(&world)
@@ -3780,7 +3944,7 @@
     }
 
     #[test]
-    fn only_one_proto_player_spawn_allowed_at_a_time() {
+    fn spawn_proto_player_without_authority_stays_non_authoritative() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
         seed_def_database(&mut world);
@@ -3798,8 +3962,8 @@
         assert!(matches!(spawn_first, SceneDebugCommandResult::Success(_)));
         scene.update(0.1, &InputSnapshot::empty(), &mut world);
         world.apply_pending();
-        let first_player_id = scene.player_id.expect("first player id");
         let entity_count_after_first = world.entity_count();
+        assert_eq!(scene.player_id, None);
 
         let spawn_second = scene.execute_debug_command(
             SceneDebugCommand::Spawn {
@@ -3809,12 +3973,12 @@
             SceneDebugContext::default(),
             &mut world,
         );
-        assert!(matches!(spawn_second, SceneDebugCommandResult::Error(_)));
+        assert!(matches!(spawn_second, SceneDebugCommandResult::Success(_)));
         scene.update(0.1, &InputSnapshot::empty(), &mut world);
         world.apply_pending();
 
-        assert_eq!(scene.player_id, Some(first_player_id));
-        assert_eq!(world.entity_count(), entity_count_after_first);
+        assert_eq!(scene.player_id, None);
+        assert!(world.entity_count() > entity_count_after_first);
         assert_eq!(
             scene
                 .system_intents
@@ -3831,18 +3995,8 @@
         seed_def_database(&mut world);
         scene.load(&mut world);
         world.apply_pending();
-
-        let first = scene.execute_debug_command(
-            SceneDebugCommand::Spawn {
-                def_name: "proto.player".to_string(),
-                position: Some((0.0, 0.0)),
-            },
-            SceneDebugContext::default(),
-            &mut world,
-        );
-        assert!(matches!(first, SceneDebugCommandResult::Success(_)));
-        scene.update(0.1, &InputSnapshot::empty(), &mut world);
-        world.apply_pending();
+        let _authoritative =
+            spawn_authoritative_player_via_console(&mut scene, &mut world, Vec2 { x: 0.0, y: 0.0 });
 
         let second = scene.execute_debug_command(
             SceneDebugCommand::Spawn {

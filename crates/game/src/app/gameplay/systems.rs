@@ -37,6 +37,7 @@ struct GameplaySystemContext<'a> {
     input: &'a InputSnapshot,
     player_id: Option<EntityId>,
     selected_entity: Option<EntityId>,
+    pawn_role_by_entity: &'a HashMap<EntityId, PawnControlRole>,
     ai_agents_by_entity: &'a mut HashMap<EntityId, AiAgent>,
     status_sets_by_entity: &'a mut HashMap<EntityId, StatusSet>,
     active_interactions_by_actor: &'a mut HashMap<EntityId, ActiveInteraction>,
@@ -61,6 +62,7 @@ impl GameplaySystemsHost {
         input: &InputSnapshot,
         player_id: Option<EntityId>,
         selected_entity: Option<EntityId>,
+        pawn_role_by_entity: &HashMap<EntityId, PawnControlRole>,
         ai_agents_by_entity: &mut HashMap<EntityId, AiAgent>,
         status_sets_by_entity: &mut HashMap<EntityId, StatusSet>,
         active_interactions_by_actor: &mut HashMap<EntityId, ActiveInteraction>,
@@ -80,6 +82,7 @@ impl GameplaySystemsHost {
                 input,
                 player_id,
                 selected_entity,
+                pawn_role_by_entity,
                 ai_agents_by_entity,
                 status_sets_by_entity,
                 active_interactions_by_actor,
@@ -173,7 +176,14 @@ impl GameplaySystemsHost {
         if !actor.actor {
             return;
         }
-        if Some(actor_id) != context.player_id {
+        let is_authoritative_player = Some(actor_id) == context.player_id;
+        if !is_authoritative_player
+            && !context
+                .pawn_role_by_entity
+                .get(&actor_id)
+                .copied()
+                .is_some_and(PawnControlRole::is_orderable)
+        {
             return;
         }
         if let Some(target_id) = interactable_target {

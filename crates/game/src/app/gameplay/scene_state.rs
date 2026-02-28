@@ -15,6 +15,7 @@ struct GameplayScene {
     entity_save_ids: HashMap<EntityId, u64>,
     save_id_to_entity: HashMap<u64, EntityId>,
     entity_archetype_id_by_entity: HashMap<EntityId, EntityDefId>,
+    pawn_role_by_entity: HashMap<EntityId, PawnControlRole>,
     next_save_id: u64,
     health_by_entity: HashMap<EntityId, Health>,
     damage_by_entity: HashMap<EntityId, u32>,
@@ -58,6 +59,7 @@ impl GameplayScene {
             entity_save_ids: HashMap::new(),
             save_id_to_entity: HashMap::new(),
             entity_archetype_id_by_entity: HashMap::new(),
+            pawn_role_by_entity: HashMap::new(),
             next_save_id: 0,
             health_by_entity: HashMap::new(),
             damage_by_entity: HashMap::new(),
@@ -92,6 +94,59 @@ impl GameplayScene {
         entity.floor == self.active_floor_engine()
     }
 
+    fn classify_actor_role_from_archetype_tags(archetype: &EntityArchetype) -> PawnControlRole {
+        if archetype.tags.iter().any(|tag| tag == "settler") {
+            PawnControlRole::Settler
+        } else {
+            PawnControlRole::Npc
+        }
+    }
+
+    fn refresh_authoritative_player_role(&mut self, world: &SceneWorld) {
+        if let Some(player_id) = self.player_id {
+            if world.find_entity(player_id).is_some() {
+                self.pawn_role_by_entity
+                    .insert(player_id, PawnControlRole::PlayerPawn);
+            }
+        }
+    }
+
+    fn rebuild_pawn_roles_from_world(&mut self, world: &SceneWorld) {
+        self.pawn_role_by_entity.clear();
+        let Some(def_db) = world.def_database() else {
+            self.refresh_authoritative_player_role(world);
+            return;
+        };
+        for entity in world.entities() {
+            if !entity.actor {
+                continue;
+            }
+            let role = self
+                .entity_archetype_id_by_entity
+                .get(&entity.id)
+                .and_then(|archetype_id| def_db.entity_def(*archetype_id))
+                .map(Self::classify_actor_role_from_archetype_tags)
+                .unwrap_or(PawnControlRole::Npc);
+            self.pawn_role_by_entity.insert(entity.id, role);
+        }
+        self.refresh_authoritative_player_role(world);
+    }
+
+    fn selected_actor_is_orderable(&self, selected_id: EntityId, world: &SceneWorld) -> bool {
+        world.find_entity(selected_id).is_some_and(|entity| {
+            if !entity.actor {
+                return false;
+            }
+            if Some(selected_id) == self.player_id {
+                return true;
+            }
+            self.pawn_role_by_entity
+                .get(&selected_id)
+                .copied()
+                .is_some_and(PawnControlRole::is_orderable)
+        })
+    }
+
     fn alloc_next_save_id(&mut self) -> SaveLoadResult<u64> {
         let save_id = self.next_save_id;
         self.next_save_id = self
@@ -113,6 +168,7 @@ impl GameplayScene {
             self.save_id_to_entity.remove(&save_id);
         }
         self.entity_archetype_id_by_entity.remove(&entity_id);
+        self.pawn_role_by_entity.remove(&entity_id);
     }
 
     fn save_id_for_entity(&self, entity_id: EntityId) -> Option<u64> {
@@ -585,6 +641,7 @@ impl GameplayScene {
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
         self.entity_archetype_id_by_entity.clear();
+        self.pawn_role_by_entity.clear();
         self.reset_runtime_component_stores();
         world.camera_mut().position = save.camera_position.to_vec2();
         world.camera_mut().set_zoom_clamped(save.camera_zoom);
@@ -682,6 +739,7 @@ impl GameplayScene {
         self.resource_count = save.resource_count;
         self.active_floor = ActiveFloor::from_engine_floor(saved_active_floor);
         world.set_active_floor(self.active_floor_engine());
+        self.rebuild_pawn_roles_from_world(world);
         self.sync_runtime_component_stores_with_world(world);
         self.rebuild_active_interactions_from_world_order(world);
         self.rebuild_ai_agents_from_world(world);
@@ -697,6 +755,7 @@ impl GameplayScene {
         self.active_interactions_by_actor.clear();
         self.completed_attack_pairs_this_tick.clear();
         self.entity_archetype_id_by_entity.clear();
+        self.pawn_role_by_entity.clear();
         self.target_lookup_by_save_id.clear();
         self.next_interaction_id = 0;
     }
@@ -710,6 +769,8 @@ impl GameplayScene {
         self.status_sets_by_entity
             .retain(|entity_id, _| live_ids.contains(entity_id));
         self.entity_archetype_id_by_entity
+            .retain(|entity_id, _| live_ids.contains(entity_id));
+        self.pawn_role_by_entity
             .retain(|entity_id, _| live_ids.contains(entity_id));
         let def_db = world.def_database();
 
@@ -735,13 +796,23 @@ impl GameplayScene {
             }
             self.status_sets_by_entity.entry(entity.id).or_default();
         }
+        self.refresh_authoritative_player_role(world);
     }
 
     fn rebuild_ai_agents_from_world(&mut self, world: &SceneWorld) {
         self.ai_agents_by_entity.clear();
         let def_db = world.def_database();
         for entity in world.entities() {
-            if !entity.actor || Some(entity.id) == self.player_id {
+            if !entity.actor {
+                continue;
+            }
+            if self
+                .pawn_role_by_entity
+                .get(&entity.id)
+                .copied()
+                .unwrap_or(PawnControlRole::Npc)
+                != PawnControlRole::Npc
+            {
                 continue;
             }
             let defaults = Self::effective_combat_ai_params(
@@ -967,6 +1038,8 @@ impl GameplayScene {
         let dummy_id =
             self.apply_spawn_intent_now(world, "proto.npc_dummy", COMBAT_CHASER_DUMMY_POS)?;
 
+        self.player_id = Some(player_id);
+        self.refresh_authoritative_player_role(world);
         self.selected_entity = Some(player_id);
         self.combat_chaser_scenario = CombatChaserScenarioSlot {
             chaser_id: Some(chaser_id),
@@ -991,6 +1064,8 @@ impl GameplayScene {
 
         let player_id =
             self.apply_spawn_intent_now(world, "proto.player", VISUAL_SANDBOX_PLAYER_POS)?;
+        let _settler_id =
+            self.apply_spawn_intent_now(world, "proto.settler", VISUAL_SANDBOX_SETTLER_POS)?;
         let prop_id =
             self.apply_spawn_intent_now(world, "proto.resource_pile", VISUAL_SANDBOX_PROP_POS)?;
         let wall_id =
@@ -1006,6 +1081,8 @@ impl GameplayScene {
             VISUAL_SANDBOX_BENCH_POS,
         )?;
 
+        self.player_id = Some(player_id);
+        self.refresh_authoritative_player_role(world);
         self.selected_entity = Some(player_id);
         self.visual_sandbox_demo_active = true;
         world.set_entity_action_visual(
@@ -1216,6 +1293,7 @@ impl GameplayScene {
             input,
             self.player_id,
             self.selected_entity,
+            &self.pawn_role_by_entity,
             &mut self.ai_agents_by_entity,
             &mut self.status_sets_by_entity,
             &mut self.active_interactions_by_actor,
@@ -1277,7 +1355,7 @@ impl GameplayScene {
                                 rotation_radians: None,
                             },
                             RenderableDesc {
-                                kind: archetype.renderable,
+                                kind: archetype.renderable.clone(),
                                 debug_name: "intent_spawn_actor",
                             },
                         )
@@ -1288,7 +1366,7 @@ impl GameplayScene {
                                 rotation_radians: None,
                             },
                             RenderableDesc {
-                                kind: archetype.renderable,
+                                kind: archetype.renderable.clone(),
                                 debug_name: "intent_spawn",
                             },
                         )
@@ -1302,6 +1380,14 @@ impl GameplayScene {
                     self.entity_archetype_id_by_entity
                         .insert(entity_id, archetype_id);
                     stats.spawned_entity_ids.push(entity_id);
+                    if has_actor_tag {
+                        let role = if Some(entity_id) == self.player_id {
+                            PawnControlRole::PlayerPawn
+                        } else {
+                            Self::classify_actor_role_from_archetype_tags(&archetype)
+                        };
+                        self.pawn_role_by_entity.insert(entity_id, role);
+                    }
 
                     match self.alloc_next_save_id() {
                         Ok(save_id) => {
@@ -1332,23 +1418,18 @@ impl GameplayScene {
                     }
 
                     if has_actor_tag
-                        && Some(entity_id) != self.player_id
+                        && self
+                            .pawn_role_by_entity
+                            .get(&entity_id)
+                            .copied()
+                            .unwrap_or(PawnControlRole::Npc)
+                            == PawnControlRole::Npc
                         && archetype_uses_combat_ai
                     {
                         self.ai_agents_by_entity.insert(
                             entity_id,
                             AiAgent::from_home_position(position, effective_params),
                         );
-                    }
-                    if archetype.def_name == "proto.player" {
-                        let current_player_missing = self
-                            .player_id
-                            .and_then(|id| world.find_entity(id))
-                            .is_none();
-                        if self.player_id.is_none() || current_player_missing {
-                            self.player_id = Some(entity_id);
-                            self.ai_agents_by_entity.remove(&entity_id);
-                        }
                     }
                 }
                 GameplayIntent::SetMoveTarget { actor_id, point } => {
@@ -1565,6 +1646,8 @@ impl GameplayScene {
             if let Some(player) = world.find_entity_mut(player_id) {
                 player.selectable = true;
                 self.ai_agents_by_entity.remove(&player_id);
+                self.pawn_role_by_entity
+                    .insert(player_id, PawnControlRole::PlayerPawn);
                 return;
             }
             if self.entity_save_ids.contains_key(&player_id) {
@@ -1619,6 +1702,8 @@ impl GameplayScene {
         self.status_sets_by_entity.entry(player_id).or_default();
         self.ai_agents_by_entity.remove(&player_id);
         self.player_id = Some(player_id);
+        self.pawn_role_by_entity
+            .insert(player_id, PawnControlRole::PlayerPawn);
         if self.reselect_player_on_respawn {
             self.selected_entity = Some(player_id);
             self.reselect_player_on_respawn = false;
@@ -1678,8 +1763,8 @@ impl GameplayScene {
                 });
 
                 let mut marker_position = None::<Vec2>;
-                if let Some(entity) = world.find_entity_mut(selected_id) {
-                    if entity.actor && Some(selected_id) == self.player_id {
+                if self.selected_actor_is_orderable(selected_id, world) {
+                    if let Some(entity) = world.find_entity_mut(selected_id) {
                         if GameplaySystemsHost::order_state_indicates_interaction(
                             entity.order_state,
                         ) {

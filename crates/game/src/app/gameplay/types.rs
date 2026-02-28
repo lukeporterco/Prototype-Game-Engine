@@ -69,6 +69,19 @@ impl ActiveFloor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PawnControlRole {
+    PlayerPawn,
+    Settler,
+    Npc,
+}
+
+impl PawnControlRole {
+    fn is_orderable(self) -> bool {
+        matches!(self, Self::PlayerPawn | Self::Settler)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum SavedInteractableKind {
     ResourcePile,

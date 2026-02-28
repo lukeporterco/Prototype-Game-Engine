@@ -14,6 +14,16 @@
     </tags>
   </EntityDef>
   <EntityDef>
+    <defName>proto.settler</defName>
+    <label>Settler</label>
+    <renderable kind="Sprite" spriteKey="visual_test/pawn_blue" pixelScale="3" />
+    <moveSpeed>5.0</moveSpeed>
+    <tags>
+      <li>actor</li>
+      <li>settler</li>
+    </tags>
+  </EntityDef>
+  <EntityDef>
     <defName>proto.visual_carry_item</defName>
     <label>VisualCarryItem</label>
     <renderable kind="Sprite" spriteKey="visual_test/carry_item" pixelScale="3" />

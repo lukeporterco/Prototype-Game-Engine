@@ -42,6 +42,7 @@ const COMBAT_CHASER_PLAYER_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
 const COMBAT_CHASER_CHASER_POS: Vec2 = Vec2 { x: 0.75, y: 0.0 };
 const COMBAT_CHASER_DUMMY_POS: Vec2 = Vec2 { x: 7.0, y: 0.0 };
 const VISUAL_SANDBOX_PLAYER_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
+const VISUAL_SANDBOX_SETTLER_POS: Vec2 = Vec2 { x: -3.25, y: -0.25 };
 const VISUAL_SANDBOX_PROP_POS: Vec2 = Vec2 { x: -2.0, y: 0.75 };
 const VISUAL_SANDBOX_WALL_POS: Vec2 = Vec2 { x: 1.5, y: 0.0 };
 const VISUAL_SANDBOX_FLOOR_POS: Vec2 = Vec2 { x: 1.5, y: -1.0 };

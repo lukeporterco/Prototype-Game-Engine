@@ -56,6 +56,16 @@ How to use this doc:
 - Risks: Trigger timing may conflict with ongoing interaction states if priority rules are unclear.
 - Cut: No combat-system redesign and no non-deterministic/random trigger logic.
 
+### Multi-select settlers move order
+- Date: 2026-02-28
+- Source: Ticket 63
+- Area: Scene
+- Summary: Add box-select and issue-move behavior that sends one move order to all selected settlers.
+- Rationale: Improves colony-control ergonomics beyond single-pawn ordering.
+- Dependencies: Stable per-entity pawn-role classification and deterministic group-order dispatch rules.
+- Risks: Selection ordering and per-entity move target fan-out could drift determinism if processing order is not fixed.
+- Cut: No formations, squad tactics, or shared-path steering.
+
 ## Rendering
 
 ### Hand/tool anchor emission for UseTool visuals
@@ -103,6 +113,16 @@ How to use this doc:
 - Dependencies: Finalize command palette preset persistence format and macro execution safety rules.
 - Risks: Hidden ordering assumptions could reduce determinism if macros are used without explicit barriers.
 - Cut: No macro authoring UI or CI automation in current scope.
+
+### Overlay pawn role indicator
+- Date: 2026-02-28
+- Source: Ticket 63
+- Area: Tools
+- Summary: Show selected actor control role in overlay inspect text (`PlayerPawn`, `Settler`, `Npc`).
+- Rationale: Makes control semantics visible during testing without opening code/logs.
+- Dependencies: Gameplay exposes stable role value for selected entity in debug snapshot path.
+- Risks: Overlay text bloat can reduce readability on low-resolution displays.
+- Cut: No new HUD panels or interactive UI widgets.
 
 ## Physics placeholder
 
