@@ -2975,6 +2975,32 @@
     }
 
     #[test]
+    fn right_click_move_updates_player_action_visual_to_walk() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.player_id = Some(actor);
+        scene.selected_entity = Some(actor);
+
+        scene.update(0.1, &right_click_snapshot(Vec2 { x: 672.0, y: 360.0 }, (1280, 720)), &mut world);
+
+        let visual = world.entity_action_visual(actor);
+        assert_eq!(visual.action_state, ActionState::Walk);
+        assert!(visual.action_params.speed01 > 0.0);
+    }
+
+    #[test]
     fn zoom_steps_apply_before_right_click_screen_to_world_targeting() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();

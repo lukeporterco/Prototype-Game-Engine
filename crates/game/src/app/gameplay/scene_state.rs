@@ -1738,6 +1738,10 @@ impl GameplayScene {
         });
         world.set_targeted_interactable_visual(targeted_interactable_visual);
 
+        let player_start_position = self
+            .player_id
+            .and_then(|player_id| world.find_entity(player_id).map(|player| player.transform.position));
+
         if let Some(player_id) = self.player_id {
             let move_speed = self.effective_move_speed_for_entity(player_id, self.player_move_speed);
             let delta = movement_delta(input, fixed_dt_seconds, move_speed);
@@ -1745,36 +1749,6 @@ impl GameplayScene {
                 player.transform.position.x += delta.x;
                 player.transform.position.y += delta.y;
             }
-
-            if let Some(facing) = Self::facing_from_movement_delta(delta) {
-                self.last_player_facing = facing;
-            }
-            let magnitude = (delta.x * delta.x + delta.y * delta.y).sqrt();
-            let speed_denominator = (move_speed * fixed_dt_seconds).abs();
-            let speed01 = if speed_denominator <= f32::EPSILON {
-                0.0
-            } else {
-                (magnitude / speed_denominator).clamp(0.0, 1.0)
-            };
-            let movement_action_state = if speed01 > 0.0 {
-                ActionState::Walk
-            } else {
-                ActionState::Idle
-            };
-            let action_state =
-                self.resolve_player_action_state_for_visual_sandbox(world, player_id, movement_action_state);
-            world.update_entity_action_state_params(
-                player_id,
-                action_state,
-                ActionParams {
-                    phase: 0.0,
-                    intensity: speed01,
-                    speed01,
-                    facing: Some(self.last_player_facing),
-                    target_hint: None,
-                    is_looping: true,
-                },
-            );
         }
 
         self.interactable_cache.clear();
@@ -1915,6 +1889,49 @@ impl GameplayScene {
                 world.despawn(target_id);
                 self.remove_entity_save_mapping(target_id);
             }
+        }
+
+        if let (Some(player_id), Some(start_position), Some(player)) = (
+            self.player_id,
+            player_start_position,
+            self.player_id.and_then(|id| world.find_entity(id)),
+        ) {
+            let move_speed = self.effective_move_speed_for_entity(player_id, self.player_move_speed);
+            let actual_delta = Vec2 {
+                x: player.transform.position.x - start_position.x,
+                y: player.transform.position.y - start_position.y,
+            };
+
+            if let Some(facing) = Self::facing_from_movement_delta(actual_delta) {
+                self.last_player_facing = facing;
+            }
+
+            let magnitude = (actual_delta.x * actual_delta.x + actual_delta.y * actual_delta.y).sqrt();
+            let speed_denominator = (move_speed * fixed_dt_seconds).abs();
+            let speed01 = if speed_denominator <= f32::EPSILON {
+                0.0
+            } else {
+                (magnitude / speed_denominator).clamp(0.0, 1.0)
+            };
+            let movement_action_state = if speed01 > 0.0 {
+                ActionState::Walk
+            } else {
+                ActionState::Idle
+            };
+            let action_state =
+                self.resolve_player_action_state_for_visual_sandbox(world, player_id, movement_action_state);
+            world.update_entity_action_state_params(
+                player_id,
+                action_state,
+                ActionParams {
+                    phase: 0.0,
+                    intensity: speed01,
+                    speed01,
+                    facing: Some(self.last_player_facing),
+                    target_hint: None,
+                    is_looping: true,
+                },
+            );
         }
 
         let camera_delta = camera_delta(input, fixed_dt_seconds, CAMERA_SPEED_UNITS_PER_SECOND);
