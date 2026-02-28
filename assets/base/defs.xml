@@ -2,11 +2,20 @@
   <EntityDef>
     <defName>proto.player</defName>
     <label>Player</label>
-    <renderable kind="Sprite" spriteKey="visual_test/pawn_blue" pixelScale="3" />
+    <renderable kind="Sprite" spriteKey="visual_test/pawn_blue" pixelScale="3">
+      <anchors>
+        <anchor name="carry" x="3" y="-2" />
+      </anchors>
+    </renderable>
     <moveSpeed>5.0</moveSpeed>
     <tags>
       <li>actor</li>
     </tags>
+  </EntityDef>
+  <EntityDef>
+    <defName>proto.visual_carry_item</defName>
+    <label>VisualCarryItem</label>
+    <renderable kind="Sprite" spriteKey="visual_test/carry_item" pixelScale="3" />
   </EntityDef>
   <EntityDef>
     <defName>proto.resource_pile</defName>

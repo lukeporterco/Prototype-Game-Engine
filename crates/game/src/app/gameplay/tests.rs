@@ -2595,6 +2595,70 @@
     }
 
     #[test]
+    fn visual_sandbox_emits_carry_visual_with_held_def_and_facing_updates() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let setup_result = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "visual_sandbox".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(setup_result, SceneDebugCommandResult::Success(_)));
+        let player_id = scene.player_id.expect("sandbox player");
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        let initial_visual = world.entity_action_visual(player_id);
+        assert_eq!(initial_visual.action_state, ActionState::Carry);
+        assert_eq!(
+            initial_visual.held_visual.as_deref(),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
+        assert_eq!(initial_visual.action_params.facing, Some(CardinalFacing::South));
+        let initial_x = world
+            .find_entity(player_id)
+            .expect("player exists")
+            .transform
+            .position
+            .x;
+
+        let east_input = snapshot_from_actions(&[InputAction::MoveRight]);
+        scene.update(0.1, &east_input, &mut world);
+        let east_visual = world.entity_action_visual(player_id);
+        assert_eq!(east_visual.action_state, ActionState::Carry);
+        assert_eq!(east_visual.action_params.facing, Some(CardinalFacing::East));
+        assert_eq!(
+            east_visual.held_visual.as_deref(),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
+        let east_x = world
+            .find_entity(player_id)
+            .expect("player exists")
+            .transform
+            .position
+            .x;
+        assert!(east_x > initial_x);
+
+        let west_input = snapshot_from_actions(&[InputAction::MoveLeft]);
+        scene.update(0.1, &west_input, &mut world);
+        let west_visual = world.entity_action_visual(player_id);
+        assert_eq!(west_visual.action_state, ActionState::Carry);
+        assert_eq!(west_visual.action_params.facing, Some(CardinalFacing::West));
+        let west_x = world
+            .find_entity(player_id)
+            .expect("player exists")
+            .transform
+            .position
+            .x;
+        assert!(west_x < east_x);
+    }
+
+    #[test]
     fn debug_order_move_errors_for_selected_non_player_actor() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();

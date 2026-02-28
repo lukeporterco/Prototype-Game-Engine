@@ -9,13 +9,17 @@ use winit::window::Window;
 
 use crate::app::{
     tools::{draw_command_palette, draw_console, draw_overlay},
-    Camera2D, CommandPaletteRenderData, ConsoleState, DebugMarkerKind, Entity, FloorId,
-    OverlayData, RenderableKind, SceneWorld, Tilemap, Vec2,
+    ActionState, Camera2D, CardinalFacing, CommandPaletteRenderData, ConsoleState, DebugMarkerKind,
+    Entity, EntityActionVisual, FloorId, OverlayData, RenderableKind, SceneWorld, SpriteAnchorName,
+    SpriteAnchorPx, SpriteAnchors, Tilemap, Vec2,
 };
+use crate::content::DefDatabase;
 use crate::sprite_keys::validate_sprite_key;
 
 use super::transform::camera_pixels_per_world;
-use super::{world_to_screen_px, Viewport, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX};
+use super::{
+    screen_to_world_px, world_to_screen_px, Viewport, PIXELS_PER_WORLD, PLACEHOLDER_HALF_SIZE_PX,
+};
 
 const CLEAR_COLOR_ROOFTOP: [u8; 4] = [24, 26, 33, 255];
 const CLEAR_COLOR_MAIN: [u8; 4] = [20, 22, 28, 255];
@@ -70,6 +74,13 @@ struct LoadedSprite {
     rgba: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedCarrySprite {
+    sprite_key: String,
+    pixel_scale: u8,
+    anchors: SpriteAnchors,
+}
+
 pub struct Renderer {
     window: Arc<Window>,
     pixels: Pixels<'static>,
@@ -78,6 +89,8 @@ pub struct Renderer {
     sprite_cache: HashMap<String, Option<LoadedSprite>>,
     warned_missing_sprite_keys: HashSet<String>,
     visible_entity_draw_indices: Vec<usize>,
+    carry_sprite_cache: HashMap<String, Option<CachedCarrySprite>>,
+    last_def_db_identity: Option<usize>,
 }
 
 impl Renderer {
@@ -95,6 +108,8 @@ impl Renderer {
             sprite_cache: HashMap::new(),
             warned_missing_sprite_keys: HashSet::new(),
             visible_entity_draw_indices: Vec::new(),
+            carry_sprite_cache: HashMap::new(),
+            last_def_db_identity: None,
         })
     }
 
@@ -131,7 +146,14 @@ impl Renderer {
         let sprite_cache = &mut self.sprite_cache;
         let warned_missing_sprite_keys = &mut self.warned_missing_sprite_keys;
         let visible_entity_draw_indices = &mut self.visible_entity_draw_indices;
+        let carry_sprite_cache = &mut self.carry_sprite_cache;
         let frame = self.pixels.frame_mut();
+        let def_db = world.def_database();
+        let def_db_identity = def_db.map(|db| db as *const DefDatabase as usize);
+        if self.last_def_db_identity != def_db_identity {
+            carry_sprite_cache.clear();
+            self.last_def_db_identity = def_db_identity;
+        }
         let active_floor = world.active_floor();
         let clear_color = clear_color_for_floor(active_floor);
         for chunk in frame.chunks_exact_mut(4) {
@@ -160,56 +182,54 @@ impl Renderer {
             asset_root,
         );
         draw_world_grid(frame, self.viewport.width, self.viewport.height, world);
+        let default_action_visual = EntityActionVisual::default();
 
         for entity_index in visible_entity_draw_indices.iter().copied() {
             let entity = &world.entities()[entity_index];
-            let _action_visual = world.entity_action_visual(entity.id);
-            let (cx, cy) = snapped_world_to_screen_px(
+            let action_visual = world
+                .entity_action_visual_ref(entity.id)
+                .unwrap_or(&default_action_visual);
+            draw_renderable_at_world_position(
+                frame,
+                self.viewport.width,
+                self.viewport.height,
+                world.camera(),
+                entity.transform.position,
+                &entity.renderable.kind,
+                sprite_cache,
+                warned_missing_sprite_keys,
+                asset_root,
+                true,
+            );
+
+            if action_visual.action_state != ActionState::Carry {
+                continue;
+            }
+            let Some(held_visual_def_name) = action_visual.held_visual.as_deref() else {
+                continue;
+            };
+            let Some(carry_sprite) =
+                resolve_cached_carry_sprite(carry_sprite_cache, def_db, held_visual_def_name)
+            else {
+                continue;
+            };
+            let carry_world = entity_carry_anchor_world_position(
                 world.camera(),
                 (self.viewport.width, self.viewport.height),
-                entity.transform.position,
+                entity,
+                action_visual.action_params.facing,
             );
-            match &entity.renderable.kind {
-                RenderableKind::Placeholder => {
-                    draw_square(
-                        frame,
-                        self.viewport.width,
-                        self.viewport.height,
-                        cx,
-                        cy,
-                        PLACEHOLDER_HALF_SIZE_PX,
-                        PLACEHOLDER_COLOR,
-                    );
-                }
-                RenderableKind::Sprite { key, pixel_scale } => {
-                    if let Some(sprite) = resolve_cached_sprite(
-                        sprite_cache,
-                        warned_missing_sprite_keys,
-                        asset_root,
-                        key,
-                    ) {
-                        draw_sprite_centered_scaled(
-                            frame,
-                            self.viewport.width,
-                            self.viewport.height,
-                            cx,
-                            cy,
-                            sprite,
-                            *pixel_scale as f32 * world.camera().effective_zoom(),
-                        );
-                    } else {
-                        draw_square(
-                            frame,
-                            self.viewport.width,
-                            self.viewport.height,
-                            cx,
-                            cy,
-                            PLACEHOLDER_HALF_SIZE_PX,
-                            PLACEHOLDER_COLOR,
-                        );
-                    }
-                }
-            }
+            draw_cached_carry_sprite_at_world_position(
+                frame,
+                self.viewport.width,
+                self.viewport.height,
+                world.camera(),
+                carry_world,
+                carry_sprite,
+                sprite_cache,
+                warned_missing_sprite_keys,
+                asset_root,
+            );
         }
 
         draw_affordances(
@@ -232,6 +252,173 @@ impl Renderer {
 
         self.pixels.render()
     }
+}
+
+fn draw_renderable_at_world_position(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    camera: &Camera2D,
+    world_position: Vec2,
+    renderable: &RenderableKind,
+    sprite_cache: &mut HashMap<String, Option<LoadedSprite>>,
+    warned_missing_sprite_keys: &mut HashSet<String>,
+    asset_root: &Path,
+    draw_placeholder_on_missing_sprite: bool,
+) {
+    let (cx, cy) = snapped_world_to_screen_px(camera, (width, height), world_position);
+    match renderable {
+        RenderableKind::Placeholder => {
+            draw_square(
+                frame,
+                width,
+                height,
+                cx,
+                cy,
+                PLACEHOLDER_HALF_SIZE_PX,
+                PLACEHOLDER_COLOR,
+            );
+        }
+        RenderableKind::Sprite {
+            key, pixel_scale, ..
+        } => {
+            if let Some(sprite) =
+                resolve_cached_sprite(sprite_cache, warned_missing_sprite_keys, asset_root, key)
+            {
+                draw_sprite_centered_scaled(
+                    frame,
+                    width,
+                    height,
+                    cx,
+                    cy,
+                    sprite,
+                    *pixel_scale as f32 * camera.effective_zoom(),
+                );
+            } else if draw_placeholder_on_missing_sprite {
+                draw_square(
+                    frame,
+                    width,
+                    height,
+                    cx,
+                    cy,
+                    PLACEHOLDER_HALF_SIZE_PX,
+                    PLACEHOLDER_COLOR,
+                );
+            }
+        }
+    }
+}
+
+fn resolve_cached_carry_sprite<'a>(
+    cache: &'a mut HashMap<String, Option<CachedCarrySprite>>,
+    def_db: Option<&DefDatabase>,
+    held_visual_def_name: &str,
+) -> Option<&'a CachedCarrySprite> {
+    if !cache.contains_key(held_visual_def_name) {
+        let resolved = def_db
+            .and_then(|db| db.entity_def_id_by_name(held_visual_def_name))
+            .and_then(|def_id| def_db.and_then(|db| db.entity_def(def_id)))
+            .and_then(|archetype| match &archetype.renderable {
+                RenderableKind::Sprite {
+                    key,
+                    pixel_scale,
+                    anchors,
+                } => Some(CachedCarrySprite {
+                    sprite_key: key.clone(),
+                    pixel_scale: *pixel_scale,
+                    anchors: *anchors,
+                }),
+                RenderableKind::Placeholder => None,
+            });
+        cache.insert(held_visual_def_name.to_string(), resolved);
+    }
+    cache.get(held_visual_def_name).and_then(Option::as_ref)
+}
+
+fn draw_cached_carry_sprite_at_world_position(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    camera: &Camera2D,
+    world_position: Vec2,
+    cached_carry_sprite: &CachedCarrySprite,
+    sprite_cache: &mut HashMap<String, Option<LoadedSprite>>,
+    warned_missing_sprite_keys: &mut HashSet<String>,
+    asset_root: &Path,
+) {
+    let (cx, cy) = snapped_world_to_screen_px(camera, (width, height), world_position);
+    let Some(sprite) = resolve_cached_sprite(
+        sprite_cache,
+        warned_missing_sprite_keys,
+        asset_root,
+        &cached_carry_sprite.sprite_key,
+    ) else {
+        return;
+    };
+    draw_sprite_centered_scaled(
+        frame,
+        width,
+        height,
+        cx,
+        cy,
+        sprite,
+        cached_carry_sprite.pixel_scale as f32 * camera.effective_zoom(),
+    );
+}
+
+fn entity_carry_anchor_world_position(
+    camera: &Camera2D,
+    window_size: (u32, u32),
+    entity: &Entity,
+    facing: Option<CardinalFacing>,
+) -> Vec2 {
+    let RenderableKind::Sprite {
+        pixel_scale,
+        anchors,
+        ..
+    } = &entity.renderable.kind
+    else {
+        return entity.transform.position;
+    };
+    let anchor = sprite_anchor_or_origin(*anchors, SpriteAnchorName::Carry);
+    let transformed_anchor = transform_anchor_for_facing(anchor, facing);
+    let anchor_scale = *pixel_scale as f32 * camera.effective_zoom();
+    let (offset_x, offset_y) = anchor_screen_delta_px(transformed_anchor, anchor_scale);
+    let (base_x, base_y) =
+        snapped_world_to_screen_px(camera, window_size, entity.transform.position);
+    screen_to_world_px(
+        camera,
+        window_size,
+        Vec2 {
+            x: (base_x + offset_x) as f32,
+            y: (base_y + offset_y) as f32,
+        },
+    )
+}
+
+fn sprite_anchor_or_origin(anchors: SpriteAnchors, name: SpriteAnchorName) -> SpriteAnchorPx {
+    anchors.get(name).unwrap_or_default()
+}
+
+fn transform_anchor_for_facing(
+    anchor: SpriteAnchorPx,
+    facing: Option<CardinalFacing>,
+) -> SpriteAnchorPx {
+    if matches!(facing, Some(CardinalFacing::West)) {
+        SpriteAnchorPx {
+            x_px: anchor.x_px.saturating_neg(),
+            y_px: anchor.y_px,
+        }
+    } else {
+        anchor
+    }
+}
+
+fn anchor_screen_delta_px(anchor: SpriteAnchorPx, scale: f32) -> (i32, i32) {
+    (
+        (anchor.x_px as f32 * scale).round() as i32,
+        (anchor.y_px as f32 * scale).round() as i32,
+    )
 }
 
 fn clear_color_for_floor(floor: FloorId) -> [u8; 4] {
@@ -978,7 +1165,11 @@ fn draw_sprite_centered_scaled(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Camera2D, DebugMarker, DebugMarkerKind, EntityId, FloorId, Tilemap};
+    use crate::app::{
+        Camera2D, CardinalFacing, DebugMarker, DebugMarkerKind, EntityId, FloorId,
+        SpriteAnchorName, SpriteAnchorPx, SpriteAnchors, Tilemap,
+    };
+    use crate::content::{DefDatabase, EntityArchetype, EntityDefId};
     use tempfile::TempDir;
 
     fn collect_visible_entity_ids_for_active_floor(
@@ -1190,6 +1381,94 @@ mod tests {
         };
         assert_eq!(scaled_sprite_dimensions(&sprite, 1.0), (4, 6));
         assert_eq!(scaled_sprite_dimensions(&sprite, 2.0), (8, 12));
+    }
+
+    #[test]
+    fn sprite_anchor_lookup_falls_back_to_origin_when_missing() {
+        let anchors = SpriteAnchors::default();
+        assert_eq!(
+            sprite_anchor_or_origin(anchors, SpriteAnchorName::Carry),
+            SpriteAnchorPx::default()
+        );
+    }
+
+    #[test]
+    fn west_facing_anchor_transform_mirrors_x_only() {
+        let anchor = SpriteAnchorPx { x_px: 7, y_px: -3 };
+        let transformed = transform_anchor_for_facing(anchor, Some(CardinalFacing::West));
+        assert_eq!(transformed.x_px, -7);
+        assert_eq!(transformed.y_px, -3);
+    }
+
+    #[test]
+    fn north_and_south_anchor_transform_do_not_modify_anchor() {
+        let anchor = SpriteAnchorPx { x_px: 4, y_px: 2 };
+        assert_eq!(
+            transform_anchor_for_facing(anchor, Some(CardinalFacing::North)),
+            anchor
+        );
+        assert_eq!(
+            transform_anchor_for_facing(anchor, Some(CardinalFacing::South)),
+            anchor
+        );
+    }
+
+    #[test]
+    fn carry_sprite_resolution_uses_cache_for_repeated_defname() {
+        let mut cache = HashMap::<String, Option<CachedCarrySprite>>::new();
+        let def_db = DefDatabase::from_entity_defs(vec![
+            EntityArchetype {
+                id: EntityDefId(0),
+                def_name: "proto.visual_carry_item".to_string(),
+                label: "Carry".to_string(),
+                renderable: RenderableKind::Sprite {
+                    key: "visual_test/carry_item".to_string(),
+                    pixel_scale: 3,
+                    anchors: SpriteAnchors::default(),
+                },
+                move_speed: 5.0,
+                health_max: None,
+                base_damage: None,
+                aggro_radius: None,
+                attack_range: None,
+                attack_cooldown_seconds: None,
+                tags: Vec::new(),
+            },
+            EntityArchetype {
+                id: EntityDefId(0),
+                def_name: "proto.not_sprite".to_string(),
+                label: "NotSprite".to_string(),
+                renderable: RenderableKind::Placeholder,
+                move_speed: 5.0,
+                health_max: None,
+                base_damage: None,
+                aggro_radius: None,
+                attack_range: None,
+                attack_cooldown_seconds: None,
+                tags: Vec::new(),
+            },
+        ]);
+
+        let first =
+            resolve_cached_carry_sprite(&mut cache, Some(&def_db), "proto.visual_carry_item")
+                .cloned();
+        assert!(first.is_some());
+        assert_eq!(cache.len(), 1);
+
+        let second =
+            resolve_cached_carry_sprite(&mut cache, Some(&def_db), "proto.visual_carry_item")
+                .cloned();
+        assert_eq!(second, first);
+        assert_eq!(cache.len(), 1);
+
+        let miss_first = resolve_cached_carry_sprite(&mut cache, Some(&def_db), "proto.not_sprite");
+        assert!(miss_first.is_none());
+        assert_eq!(cache.len(), 2);
+
+        let miss_second =
+            resolve_cached_carry_sprite(&mut cache, Some(&def_db), "proto.not_sprite");
+        assert!(miss_second.is_none());
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]

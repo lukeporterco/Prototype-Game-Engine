@@ -45,6 +45,7 @@ const VISUAL_SANDBOX_PLAYER_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
 const VISUAL_SANDBOX_PROP_POS: Vec2 = Vec2 { x: -1.5, y: 0.75 };
 const VISUAL_SANDBOX_WALL_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
 const VISUAL_SANDBOX_FLOOR_POS: Vec2 = Vec2 { x: 1.5, y: -0.75 };
+const VISUAL_SANDBOX_CARRY_VISUAL_DEF: &str = "proto.visual_carry_item";
 
 include!("types.rs");
 include!("systems.rs");

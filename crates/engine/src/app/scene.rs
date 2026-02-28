@@ -207,6 +207,42 @@ pub struct Vec2 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpriteAnchorName {
+    Hand,
+    Carry,
+    Muzzle,
+    LightOrigin,
+    Tool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpriteAnchorPx {
+    pub x_px: i16,
+    pub y_px: i16,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpriteAnchors {
+    pub hand: Option<SpriteAnchorPx>,
+    pub carry: Option<SpriteAnchorPx>,
+    pub muzzle: Option<SpriteAnchorPx>,
+    pub light_origin: Option<SpriteAnchorPx>,
+    pub tool: Option<SpriteAnchorPx>,
+}
+
+impl SpriteAnchors {
+    pub fn get(self, name: SpriteAnchorName) -> Option<SpriteAnchorPx> {
+        match name {
+            SpriteAnchorName::Hand => self.hand,
+            SpriteAnchorName::Carry => self.carry,
+            SpriteAnchorName::Muzzle => self.muzzle,
+            SpriteAnchorName::LightOrigin => self.light_origin,
+            SpriteAnchorName::Tool => self.tool,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionState {
     Idle,
     Walk,
@@ -260,10 +296,11 @@ impl Default for ActionParams {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct EntityActionVisual {
     pub action_state: ActionState,
     pub action_params: ActionParams,
+    pub held_visual: Option<String>,
 }
 
 pub const CAMERA_ZOOM_DEFAULT: f32 = 1.0;
@@ -399,7 +436,11 @@ impl Tilemap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderableKind {
     Placeholder,
-    Sprite { key: String, pixel_scale: u8 },
+    Sprite {
+        key: String,
+        pixel_scale: u8,
+        anchors: SpriteAnchors,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -648,15 +689,40 @@ impl SceneWorld {
             .insert(entity_id, visual);
     }
 
+    pub fn update_entity_action_state_params(
+        &mut self,
+        entity_id: EntityId,
+        action_state: ActionState,
+        action_params: ActionParams,
+    ) {
+        if let Some(existing) = self.visual_state.entity_action_visuals.get_mut(&entity_id) {
+            existing.action_state = action_state;
+            existing.action_params = action_params;
+            return;
+        }
+        self.visual_state.entity_action_visuals.insert(
+            entity_id,
+            EntityActionVisual {
+                action_state,
+                action_params,
+                held_visual: None,
+            },
+        );
+    }
+
     pub fn clear_entity_action_visual(&mut self, entity_id: EntityId) {
         self.visual_state.entity_action_visuals.remove(&entity_id);
+    }
+
+    pub fn entity_action_visual_ref(&self, entity_id: EntityId) -> Option<&EntityActionVisual> {
+        self.visual_state.entity_action_visuals.get(&entity_id)
     }
 
     pub fn entity_action_visual(&self, entity_id: EntityId) -> EntityActionVisual {
         self.visual_state
             .entity_action_visuals
             .get(&entity_id)
-            .copied()
+            .cloned()
             .unwrap_or_default()
     }
 
@@ -1518,6 +1584,7 @@ mod tests {
                     target_hint: None,
                     is_looping: true,
                 },
+                held_visual: None,
             },
         );
         assert_eq!(
@@ -1571,6 +1638,7 @@ mod tests {
                     target_hint: None,
                     is_looping: true,
                 },
+                held_visual: None,
             },
         );
         world.clear_entity_action_visual(id);
@@ -1578,6 +1646,62 @@ mod tests {
             world.entity_action_visual(id).action_state,
             ActionState::Idle
         );
+    }
+
+    #[test]
+    fn update_action_state_params_preserves_held_visual() {
+        let mut world = SceneWorld::default();
+        let id = world.spawn(
+            Transform::default(),
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "visual_actor",
+            },
+        );
+        world.apply_pending();
+        world.set_entity_action_visual(
+            id,
+            EntityActionVisual {
+                action_state: ActionState::Carry,
+                action_params: ActionParams::default(),
+                held_visual: Some("proto.visual_carry_item".to_string()),
+            },
+        );
+        world.update_entity_action_state_params(
+            id,
+            ActionState::Walk,
+            ActionParams {
+                speed01: 1.0,
+                intensity: 1.0,
+                ..ActionParams::default()
+            },
+        );
+        let visual = world.entity_action_visual(id);
+        assert_eq!(visual.action_state, ActionState::Walk);
+        assert_eq!(visual.action_params.speed01, 1.0);
+        assert_eq!(
+            visual.held_visual.as_deref(),
+            Some("proto.visual_carry_item")
+        );
+    }
+
+    #[test]
+    fn update_action_state_params_creates_entry_when_missing() {
+        let mut world = SceneWorld::default();
+        let id = EntityId(999);
+        world.update_entity_action_state_params(
+            id,
+            ActionState::Idle,
+            ActionParams {
+                speed01: 0.0,
+                intensity: 0.0,
+                ..ActionParams::default()
+            },
+        );
+        let visual = world.entity_action_visual(id);
+        assert_eq!(visual.action_state, ActionState::Idle);
+        assert_eq!(visual.action_params.speed01, 0.0);
+        assert_eq!(visual.held_visual, None);
     }
 
     #[test]
@@ -1712,6 +1836,7 @@ mod tests {
                 kind: RenderableKind::Sprite {
                     key: "ui/icons/worker_1".to_string(),
                     pixel_scale: 1,
+                    anchors: SpriteAnchors::default(),
                 },
                 debug_name: "sprite_selectable",
             },
@@ -1905,6 +2030,7 @@ mod tests {
                 kind: RenderableKind::Sprite {
                     key: "objects/resource_pile".to_string(),
                     pixel_scale: 1,
+                    anchors: SpriteAnchors::default(),
                 },
                 debug_name: "sprite_interactable",
             },

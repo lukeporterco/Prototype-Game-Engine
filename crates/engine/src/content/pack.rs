@@ -5,7 +5,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::app::RenderableKind;
+use crate::app::{RenderableKind, SpriteAnchorPx, SpriteAnchors};
 
 use super::atomic_io::write_bytes_atomic;
 use super::compiler::{CompiledEntityDef, SourceLocation};
@@ -187,9 +187,41 @@ fn encode_payload(records: &[CompiledEntityDef]) -> Result<Vec<u8>, ContentPackE
                 RenderableKind::Sprite { .. } => 1u8,
             };
             payload.push(kind);
-            if let RenderableKind::Sprite { key, pixel_scale } = renderable {
+            if let RenderableKind::Sprite {
+                key,
+                pixel_scale,
+                anchors,
+            } = renderable
+            {
                 write_string(&mut payload, &key, path_for_payload())?;
                 payload.push(pixel_scale);
+                let anchor_mask = sprite_anchor_mask(anchors);
+                payload.push(anchor_mask);
+                encode_sprite_anchor_if_present(
+                    &mut payload,
+                    anchors.hand,
+                    anchor_mask & (1 << 0) != 0,
+                );
+                encode_sprite_anchor_if_present(
+                    &mut payload,
+                    anchors.carry,
+                    anchor_mask & (1 << 1) != 0,
+                );
+                encode_sprite_anchor_if_present(
+                    &mut payload,
+                    anchors.muzzle,
+                    anchor_mask & (1 << 2) != 0,
+                );
+                encode_sprite_anchor_if_present(
+                    &mut payload,
+                    anchors.light_origin,
+                    anchor_mask & (1 << 3) != 0,
+                );
+                encode_sprite_anchor_if_present(
+                    &mut payload,
+                    anchors.tool,
+                    anchor_mask & (1 << 4) != 0,
+                );
             }
         }
         if let Some(move_speed) = record.move_speed {
@@ -265,7 +297,49 @@ fn decode_payload(
                             "invalid sprite pixel_scale (expected 1..=16)",
                         ));
                     }
-                    RenderableKind::Sprite { key, pixel_scale }
+                    let anchor_mask = *read_exact(payload, &mut cursor, 1, path)?
+                        .first()
+                        .ok_or_else(|| invalid_format(path, "missing sprite anchor mask"))?;
+                    if anchor_mask & !0b0001_1111 != 0 {
+                        return Err(invalid_format(path, "invalid sprite anchor mask"));
+                    }
+                    let anchors = SpriteAnchors {
+                        hand: decode_sprite_anchor_if_present(
+                            payload,
+                            &mut cursor,
+                            path,
+                            anchor_mask & (1 << 0) != 0,
+                        )?,
+                        carry: decode_sprite_anchor_if_present(
+                            payload,
+                            &mut cursor,
+                            path,
+                            anchor_mask & (1 << 1) != 0,
+                        )?,
+                        muzzle: decode_sprite_anchor_if_present(
+                            payload,
+                            &mut cursor,
+                            path,
+                            anchor_mask & (1 << 2) != 0,
+                        )?,
+                        light_origin: decode_sprite_anchor_if_present(
+                            payload,
+                            &mut cursor,
+                            path,
+                            anchor_mask & (1 << 3) != 0,
+                        )?,
+                        tool: decode_sprite_anchor_if_present(
+                            payload,
+                            &mut cursor,
+                            path,
+                            anchor_mask & (1 << 4) != 0,
+                        )?,
+                    };
+                    RenderableKind::Sprite {
+                        key,
+                        pixel_scale,
+                        anchors,
+                    }
                 }
                 _ => return Err(invalid_format(path, "invalid renderable kind")),
             })
@@ -374,6 +448,14 @@ fn read_u16(bytes: &[u8], cursor: &mut usize, path: &Path) -> Result<u16, Conten
     ))
 }
 
+fn read_i16(bytes: &[u8], cursor: &mut usize, path: &Path) -> Result<i16, ContentPackError> {
+    Ok(i16::from_le_bytes(
+        read_exact(bytes, cursor, 2, path)?
+            .try_into()
+            .map_err(|_| invalid_format(path, "invalid i16 encoding"))?,
+    ))
+}
+
 fn read_u32(bytes: &[u8], cursor: &mut usize, path: &Path) -> Result<u32, ContentPackError> {
     Ok(u32::from_le_bytes(
         read_exact(bytes, cursor, 4, path)?
@@ -460,6 +542,55 @@ fn path_for_payload() -> &'static Path {
     Path::new("<payload>")
 }
 
+fn sprite_anchor_mask(anchors: SpriteAnchors) -> u8 {
+    let mut mask = 0u8;
+    if anchors.hand.is_some() {
+        mask |= 1 << 0;
+    }
+    if anchors.carry.is_some() {
+        mask |= 1 << 1;
+    }
+    if anchors.muzzle.is_some() {
+        mask |= 1 << 2;
+    }
+    if anchors.light_origin.is_some() {
+        mask |= 1 << 3;
+    }
+    if anchors.tool.is_some() {
+        mask |= 1 << 4;
+    }
+    mask
+}
+
+fn encode_sprite_anchor_if_present(
+    payload: &mut Vec<u8>,
+    anchor: Option<SpriteAnchorPx>,
+    is_present: bool,
+) {
+    if !is_present {
+        return;
+    }
+    let Some(anchor) = anchor else {
+        return;
+    };
+    payload.extend_from_slice(&anchor.x_px.to_le_bytes());
+    payload.extend_from_slice(&anchor.y_px.to_le_bytes());
+}
+
+fn decode_sprite_anchor_if_present(
+    payload: &[u8],
+    cursor: &mut usize,
+    path: &Path,
+    is_present: bool,
+) -> Result<Option<SpriteAnchorPx>, ContentPackError> {
+    if !is_present {
+        return Ok(None);
+    }
+    let x_px = read_i16(payload, cursor, path)?;
+    let y_px = read_i16(payload, cursor, path)?;
+    Ok(Some(SpriteAnchorPx { x_px, y_px }))
+}
+
 pub fn compiled_from_packed(
     packed: PackedEntityDef,
     mod_id: &str,
@@ -508,6 +639,11 @@ mod tests {
             renderable: Some(RenderableKind::Sprite {
                 key: "player".to_string(),
                 pixel_scale: 2,
+                anchors: SpriteAnchors {
+                    carry: Some(SpriteAnchorPx { x_px: 3, y_px: -2 }),
+                    hand: Some(SpriteAnchorPx { x_px: 1, y_px: -1 }),
+                    ..SpriteAnchors::default()
+                },
             }),
             move_speed: Some(5.0),
             health_max: Some(100),
@@ -529,7 +665,12 @@ mod tests {
             loaded.records[0].renderable,
             Some(RenderableKind::Sprite {
                 key: "player".to_string(),
-                pixel_scale: 2
+                pixel_scale: 2,
+                anchors: SpriteAnchors {
+                    carry: Some(SpriteAnchorPx { x_px: 3, y_px: -2 }),
+                    hand: Some(SpriteAnchorPx { x_px: 1, y_px: -1 }),
+                    ..SpriteAnchors::default()
+                },
             })
         );
         assert_eq!(loaded.records[0].health_max, Some(100));
@@ -574,5 +715,46 @@ mod tests {
         assert_eq!(record.aggro_radius, None);
         assert_eq!(record.attack_range, None);
         assert_eq!(record.attack_cooldown_seconds, None);
+    }
+
+    #[test]
+    fn decode_payload_rejects_invalid_anchor_mask_bits() {
+        let path = Path::new("<payload>");
+        let mut payload = Vec::new();
+        write_string(&mut payload, "proto.bad", path).expect("def name");
+        payload.push(1 << 1); // renderable present
+        payload.push(1); // sprite kind
+        write_string(&mut payload, "player", path).expect("sprite key");
+        payload.push(1); // pixel scale
+        payload.push(1 << 7); // invalid anchor mask bits
+
+        let err = decode_payload(&payload, 1, path).expect_err("invalid mask");
+        match err {
+            ContentPackError::InvalidFormat { message, .. } => {
+                assert!(message.contains("invalid sprite anchor mask"))
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn decode_payload_rejects_truncated_anchor_payload() {
+        let path = Path::new("<payload>");
+        let mut payload = Vec::new();
+        write_string(&mut payload, "proto.bad", path).expect("def name");
+        payload.push(1 << 1); // renderable present
+        payload.push(1); // sprite kind
+        write_string(&mut payload, "player", path).expect("sprite key");
+        payload.push(1); // pixel scale
+        payload.push(1 << 1); // carry anchor present
+        payload.extend_from_slice(&3i16.to_le_bytes()); // x only, missing y
+
+        let err = decode_payload(&payload, 1, path).expect_err("truncated");
+        match err {
+            ContentPackError::InvalidFormat { message, .. } => {
+                assert!(message.contains("unexpected end of file"))
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }

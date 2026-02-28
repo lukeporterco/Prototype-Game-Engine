@@ -25,6 +25,7 @@ struct GameplayScene {
     next_interaction_id: u64,
     reselect_player_on_respawn: bool,
     selected_completion_enqueued_this_tick: bool,
+    visual_sandbox_force_carry_visual: bool,
     systems_host: GameplaySystemsHost,
     system_events: GameplayEventBus,
     system_intents: GameplayIntentQueue,
@@ -67,6 +68,7 @@ impl GameplayScene {
             next_interaction_id: 0,
             reselect_player_on_respawn: false,
             selected_completion_enqueued_this_tick: false,
+            visual_sandbox_force_carry_visual: false,
             systems_host: GameplaySystemsHost::default(),
             system_events: GameplayEventBus::default(),
             system_intents: GameplayIntentQueue::default(),
@@ -956,6 +958,7 @@ impl GameplayScene {
         self.player_id = None;
         self.selected_entity = None;
         self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
+        self.visual_sandbox_force_carry_visual = false;
 
         let player_id =
             self.apply_spawn_intent_now(world, "proto.player", COMBAT_CHASER_PLAYER_POS)?;
@@ -984,6 +987,7 @@ impl GameplayScene {
 
         self.player_id = None;
         self.selected_entity = None;
+        self.visual_sandbox_force_carry_visual = false;
 
         let player_id =
             self.apply_spawn_intent_now(world, "proto.player", VISUAL_SANDBOX_PLAYER_POS)?;
@@ -998,6 +1002,22 @@ impl GameplayScene {
         )?;
 
         self.selected_entity = Some(player_id);
+        self.visual_sandbox_force_carry_visual = true;
+        world.set_entity_action_visual(
+            player_id,
+            EntityActionVisual {
+                action_state: ActionState::Carry,
+                action_params: ActionParams {
+                    phase: 0.0,
+                    intensity: 0.0,
+                    speed01: 0.0,
+                    facing: Some(self.last_player_facing),
+                    target_hint: None,
+                    is_looping: true,
+                },
+                held_visual: Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF.to_string()),
+            },
+        );
 
         Ok((player_id, prop_id, wall_id, floor_id))
     }
@@ -1677,23 +1697,26 @@ impl GameplayScene {
             } else {
                 (magnitude / speed_denominator).clamp(0.0, 1.0)
             };
-            let action_state = if speed01 > 0.0 {
+            let movement_action_state = if speed01 > 0.0 {
                 ActionState::Walk
             } else {
                 ActionState::Idle
             };
-            world.set_entity_action_visual(
+            let action_state = if self.visual_sandbox_force_carry_visual {
+                ActionState::Carry
+            } else {
+                movement_action_state
+            };
+            world.update_entity_action_state_params(
                 player_id,
-                EntityActionVisual {
-                    action_state,
-                    action_params: ActionParams {
-                        phase: 0.0,
-                        intensity: speed01,
-                        speed01,
-                        facing: Some(self.last_player_facing),
-                        target_hint: None,
-                        is_looping: true,
-                    },
+                action_state,
+                ActionParams {
+                    phase: 0.0,
+                    intensity: speed01,
+                    speed01,
+                    facing: Some(self.last_player_facing),
+                    target_hint: None,
+                    is_looping: true,
                 },
             );
         }

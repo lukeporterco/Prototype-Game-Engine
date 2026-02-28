@@ -7,7 +7,7 @@ use super::atomic_io::write_text_atomic;
 use super::pack::ContentPackError;
 use super::types::ContentPlanError;
 
-pub(crate) const CONTENT_PACK_FORMAT_VERSION: u16 = 3;
+pub(crate) const CONTENT_PACK_FORMAT_VERSION: u16 = 4;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct ManifestV1 {

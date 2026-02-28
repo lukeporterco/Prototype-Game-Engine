@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use roxmltree::{Document, Node};
 
-use crate::app::RenderableKind;
+use crate::app::{RenderableKind, SpriteAnchorName, SpriteAnchorPx, SpriteAnchors};
 use crate::sprite_keys::validate_sprite_key;
 use crate::AppPaths;
 
@@ -519,6 +519,8 @@ fn parse_renderable(
     doc: &Document<'_>,
     node: Node<'_, '_>,
 ) -> Result<RenderableKind, ContentCompileError> {
+    let child_elements: Vec<Node<'_, '_>> =
+        node.children().filter(|child| child.is_element()).collect();
     for attr in node.attributes() {
         if attr.name() != "kind" && attr.name() != "spriteKey" && attr.name() != "pixelScale" {
             return Err(error_at_node(
@@ -555,11 +557,13 @@ fn parse_renderable(
 
         return match kind {
             "Placeholder" => {
-                if sprite_key_attr.is_some() || pixel_scale_attr.is_some() {
+                if sprite_key_attr.is_some()
+                    || pixel_scale_attr.is_some()
+                    || !child_elements.is_empty()
+                {
                     Err(error_at_node(
                         ContentErrorCode::InvalidValue,
-                        "renderable kind='Placeholder' must not include spriteKey or pixelScale"
-                            .to_string(),
+                        "renderable kind='Placeholder' must not include spriteKey, pixelScale, or child elements".to_string(),
                         mod_id,
                         file_path,
                         doc,
@@ -592,9 +596,11 @@ fn parse_renderable(
                 })?;
                 let pixel_scale =
                     parse_sprite_pixel_scale(mod_id, file_path, doc, node, pixel_scale_attr)?;
+                let anchors = parse_sprite_anchors(mod_id, file_path, doc, &child_elements)?;
                 Ok(RenderableKind::Sprite {
                     key: key.to_string(),
                     pixel_scale,
+                    anchors,
                 })
             }
             _ => Err(error_at_node(
@@ -621,6 +627,16 @@ fn parse_renderable(
             node,
         ));
     }
+    if !child_elements.is_empty() {
+        return Err(error_at_node(
+            ContentErrorCode::InvalidValue,
+            "renderable text format must not include child elements".to_string(),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        ));
+    }
 
     let value = required_text(mod_id, file_path, doc, node, "renderable")?;
     match value.as_str() {
@@ -640,6 +656,7 @@ fn parse_renderable(
             Ok(RenderableKind::Sprite {
                 key: key.to_string(),
                 pixel_scale: 1,
+                anchors: SpriteAnchors::default(),
             })
         }
         _ => Err(error_at_node(
@@ -647,6 +664,196 @@ fn parse_renderable(
             format!(
                 "invalid renderable '{}'; allowed values: Placeholder, Sprite:<key>, or <renderable kind=\"...\" .../>",
                 value
+            ),
+            mod_id,
+            file_path,
+            doc,
+            node,
+        )),
+    }
+}
+
+fn parse_sprite_anchors(
+    mod_id: &str,
+    file_path: &Path,
+    doc: &Document<'_>,
+    child_elements: &[Node<'_, '_>],
+) -> Result<SpriteAnchors, ContentCompileError> {
+    let mut anchors = SpriteAnchors::default();
+    let mut anchors_block_seen = false;
+    for child in child_elements {
+        if child.tag_name().name() != "anchors" {
+            return Err(error_at_node(
+                ContentErrorCode::UnknownField,
+                format!(
+                    "unknown child <{}> inside <renderable>; expected optional <anchors>",
+                    child.tag_name().name()
+                ),
+                mod_id,
+                file_path,
+                doc,
+                *child,
+            ));
+        }
+        if anchors_block_seen {
+            return Err(error_at_node(
+                ContentErrorCode::InvalidValue,
+                "renderable may include at most one <anchors> block".to_string(),
+                mod_id,
+                file_path,
+                doc,
+                *child,
+            ));
+        }
+        anchors_block_seen = true;
+        if child.attributes().len() > 0 {
+            return Err(error_at_node(
+                ContentErrorCode::UnknownField,
+                "unknown attribute on <anchors>; <anchors> has no attributes".to_string(),
+                mod_id,
+                file_path,
+                doc,
+                *child,
+            ));
+        }
+
+        for anchor_node in child.children().filter(|node| node.is_element()) {
+            if anchor_node.tag_name().name() != "anchor" {
+                return Err(error_at_node(
+                    ContentErrorCode::UnknownField,
+                    format!(
+                        "unknown child <{}> inside <anchors>; expected <anchor>",
+                        anchor_node.tag_name().name()
+                    ),
+                    mod_id,
+                    file_path,
+                    doc,
+                    anchor_node,
+                ));
+            }
+            for attr in anchor_node.attributes() {
+                if attr.name() != "name" && attr.name() != "x" && attr.name() != "y" {
+                    return Err(error_at_node(
+                        ContentErrorCode::UnknownField,
+                        format!(
+                            "unknown attribute '{}' on <anchor>; allowed attributes: name, x, y",
+                            attr.name()
+                        ),
+                        mod_id,
+                        file_path,
+                        doc,
+                        anchor_node,
+                    ));
+                }
+            }
+            if anchor_node
+                .children()
+                .any(|child_node| child_node.is_element())
+            {
+                return Err(error_at_node(
+                    ContentErrorCode::InvalidValue,
+                    "<anchor> must not include child elements".to_string(),
+                    mod_id,
+                    file_path,
+                    doc,
+                    anchor_node,
+                ));
+            }
+            let anchor_name_text = anchor_node.attribute("name").ok_or_else(|| {
+                error_at_node(
+                    ContentErrorCode::MissingField,
+                    "<anchor> missing required attribute 'name'".to_string(),
+                    mod_id,
+                    file_path,
+                    doc,
+                    anchor_node,
+                )
+            })?;
+            let anchor_name =
+                parse_sprite_anchor_name(mod_id, file_path, doc, anchor_node, anchor_name_text)?;
+            let x_raw = anchor_node.attribute("x").ok_or_else(|| {
+                error_at_node(
+                    ContentErrorCode::MissingField,
+                    "<anchor> missing required attribute 'x'".to_string(),
+                    mod_id,
+                    file_path,
+                    doc,
+                    anchor_node,
+                )
+            })?;
+            let y_raw = anchor_node.attribute("y").ok_or_else(|| {
+                error_at_node(
+                    ContentErrorCode::MissingField,
+                    "<anchor> missing required attribute 'y'".to_string(),
+                    mod_id,
+                    file_path,
+                    doc,
+                    anchor_node,
+                )
+            })?;
+            let x_px = x_raw.parse::<i16>().map_err(|_| {
+                error_at_node(
+                    ContentErrorCode::InvalidValue,
+                    format!("invalid anchor x '{x_raw}': expected i16 integer"),
+                    mod_id,
+                    file_path,
+                    doc,
+                    anchor_node,
+                )
+            })?;
+            let y_px = y_raw.parse::<i16>().map_err(|_| {
+                error_at_node(
+                    ContentErrorCode::InvalidValue,
+                    format!("invalid anchor y '{y_raw}': expected i16 integer"),
+                    mod_id,
+                    file_path,
+                    doc,
+                    anchor_node,
+                )
+            })?;
+            let value = Some(SpriteAnchorPx { x_px, y_px });
+
+            let slot = match anchor_name {
+                SpriteAnchorName::Hand => &mut anchors.hand,
+                SpriteAnchorName::Carry => &mut anchors.carry,
+                SpriteAnchorName::Muzzle => &mut anchors.muzzle,
+                SpriteAnchorName::LightOrigin => &mut anchors.light_origin,
+                SpriteAnchorName::Tool => &mut anchors.tool,
+            };
+            if slot.is_some() {
+                return Err(error_at_node(
+                    ContentErrorCode::InvalidValue,
+                    format!("duplicate anchor '{}'", anchor_name_text),
+                    mod_id,
+                    file_path,
+                    doc,
+                    anchor_node,
+                ));
+            }
+            *slot = value;
+        }
+    }
+
+    Ok(anchors)
+}
+
+fn parse_sprite_anchor_name(
+    mod_id: &str,
+    file_path: &Path,
+    doc: &Document<'_>,
+    node: Node<'_, '_>,
+    value: &str,
+) -> Result<SpriteAnchorName, ContentCompileError> {
+    match value {
+        "hand" => Ok(SpriteAnchorName::Hand),
+        "carry" => Ok(SpriteAnchorName::Carry),
+        "muzzle" => Ok(SpriteAnchorName::Muzzle),
+        "light_origin" => Ok(SpriteAnchorName::LightOrigin),
+        "tool" => Ok(SpriteAnchorName::Tool),
+        _ => Err(error_at_node(
+            ContentErrorCode::InvalidValue,
+            format!(
+                "invalid anchor name '{value}'; allowed values: hand, carry, muzzle, light_origin, tool"
             ),
             mod_id,
             file_path,
@@ -1050,7 +1257,8 @@ mod tests {
             def.renderable,
             RenderableKind::Sprite {
                 key: "player".to_string(),
-                pixel_scale: 1
+                pixel_scale: 1,
+                anchors: SpriteAnchors::default(),
             }
         );
     }
@@ -1082,7 +1290,8 @@ mod tests {
             def.renderable,
             RenderableKind::Sprite {
                 key: "player".to_string(),
-                pixel_scale: 1
+                pixel_scale: 1,
+                anchors: SpriteAnchors::default(),
             }
         );
     }
@@ -1102,7 +1311,8 @@ mod tests {
             def.renderable,
             RenderableKind::Sprite {
                 key: "player".to_string(),
-                pixel_scale: 2
+                pixel_scale: 2,
+                anchors: SpriteAnchors::default(),
             }
         );
     }
@@ -1122,9 +1332,74 @@ mod tests {
             def.renderable,
             RenderableKind::Sprite {
                 key: "player".to_string(),
-                pixel_scale: 1
+                pixel_scale: 1,
+                anchors: SpriteAnchors::default(),
             }
         );
+    }
+
+    #[test]
+    fn renderable_sprite_anchors_parse_when_valid() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Sprite" spriteKey="player"><anchors><anchor name="carry" x="3" y="-2"/><anchor name="hand" x="1" y="-1"/></anchors></renderable></EntityDef></Defs>"#,
+        );
+        let db = compile_def_database(&app, &ContentPlanRequest::default()).expect("compile");
+        let id = db.entity_def_id_by_name("a").expect("id");
+        let def = db.entity_def(id).expect("def");
+        assert_eq!(
+            def.renderable,
+            RenderableKind::Sprite {
+                key: "player".to_string(),
+                pixel_scale: 1,
+                anchors: SpriteAnchors {
+                    hand: Some(SpriteAnchorPx { x_px: 1, y_px: -1 }),
+                    carry: Some(SpriteAnchorPx { x_px: 3, y_px: -2 }),
+                    ..SpriteAnchors::default()
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn renderable_sprite_anchors_reject_unknown_name() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Sprite" spriteKey="player"><anchors><anchor name="bad" x="1" y="2"/></anchors></renderable></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::InvalidValue);
+        assert!(err.message.contains("invalid anchor name"));
+    }
+
+    #[test]
+    fn renderable_sprite_anchors_reject_duplicates() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Sprite" spriteKey="player"><anchors><anchor name="carry" x="1" y="2"/><anchor name="carry" x="3" y="4"/></anchors></renderable></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::InvalidValue);
+        assert!(err.message.contains("duplicate anchor"));
+    }
+
+    #[test]
+    fn renderable_sprite_anchors_reject_non_i16_values() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Sprite" spriteKey="player"><anchors><anchor name="carry" x="40000" y="0"/></anchors></renderable></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::InvalidValue);
+        assert!(err.message.contains("expected i16 integer"));
     }
 
     #[test]
@@ -1156,6 +1431,19 @@ mod tests {
         let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
         assert_eq!(err.code, ContentErrorCode::InvalidValue);
         assert!(err.message.contains("pixelScale"));
+    }
+
+    #[test]
+    fn renderable_placeholder_rejects_anchors_block() {
+        let temp = TempDir::new().expect("temp");
+        let app = setup_app_paths(temp.path());
+        write_file(
+            &app.base_content_dir.join("defs.xml"),
+            r#"<Defs><EntityDef><defName>a</defName><label>A</label><renderable kind="Placeholder"><anchors><anchor name="carry" x="1" y="2"/></anchors></renderable></EntityDef></Defs>"#,
+        );
+        let err = compile_def_database(&app, &ContentPlanRequest::default()).expect_err("err");
+        assert_eq!(err.code, ContentErrorCode::InvalidValue);
+        assert!(err.message.contains("child elements"));
     }
 
     #[test]
@@ -1524,7 +1812,8 @@ mod tests {
             def.renderable,
             RenderableKind::Sprite {
                 key: "player".to_string(),
-                pixel_scale: 1
+                pixel_scale: 1,
+                anchors: SpriteAnchors::default(),
             }
         );
     }

@@ -93,6 +93,9 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 61.2 (2026-02-28): debug overlay readability pass updated `crates/engine/src/app/tools/overlay.rs` with a high-contrast text palette, deterministic grouped spacing, and an always-on solid alpha backing plate + border behind overlay text; no metrics/simulation/input/gameplay behavior changed.
 - Ticket 62.1 (2026-02-28): added visual-only per-entity action payload contract (`ActionState`, `ActionParams`, `CardinalFacing`, `ActionTargetHint`, `EntityActionVisual`) under `SceneWorld.visual_state.entity_action_visuals` keyed by `EntityId`; missing entries resolve to `Idle` + zero params.
 - Ticket 62.1 (2026-02-28): gameplay now emits player `Idle`/`Walk` + cardinal facing every tick via `SceneWorld::set_entity_action_visual`, with gameplay-owned `last_player_facing` persistence; renderer remains stateless for facing fallback and must not use this payload for simulation decisions.
+- Ticket 62.2 (2026-02-28): sprite renderables now support optional fixed-name anchors stored as integer pixels (`SpriteAnchors` with `SpriteAnchorPx{i16}`), authored via XML `<anchors><anchor .../></anchors>` and persisted through content pack format v4.
+- Ticket 62.2 (2026-02-28): renderer anchor transform policy is West-only horizontal mirror (`x_px -> -x_px`); East/North/South apply no runtime anchor transform and rely on distinct authored sprite art for orientation differences.
+- Ticket 62.2 (2026-02-28): carry attachment remains visual-only: when action visual is `Carry` with `held_visual`, renderer resolves the def and draws its sprite at the entity carry anchor (missing anchor/def safely falls back or skips without per-frame log spam).
 
 ## Module Boundaries and Ownership
 ### A. Module map

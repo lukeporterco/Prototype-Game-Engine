@@ -38,6 +38,16 @@ How to use this doc:
 
 ## Rendering
 
+### Hand/tool anchor emission for UseTool visuals
+- Date: 2026-02-28
+- Source: Ticket 62.2
+- Area: Rendering
+- Summary: Emit and consume `hand`/`tool` sprite anchors to support `UseTool` held/tool attachment visuals.
+- Rationale: Extend the carry-anchor MVP into practical tool-use presentation without changing simulation authority.
+- Dependencies: Stable `UseTool` action visual emission and authored sprite anchor coverage.
+- Risks: Anchor naming/authoring drift across sprite sets can cause visual misalignment.
+- Cut: No IK, bone rigs, blend trees, or per-pixel deformation systems.
+
 ## Assets
 
 ## Input

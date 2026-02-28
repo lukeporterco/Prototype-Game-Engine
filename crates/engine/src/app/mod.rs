@@ -20,8 +20,9 @@ pub use scene::{
     DebugJobState, DebugMarker, DebugMarkerKind, Entity, EntityActionVisual, EntityId, FloorId,
     InputSnapshot, Interactable, InteractableKind, OrderState, RenderableDesc, RenderableKind,
     Scene, SceneCommand, SceneDebugCommand, SceneDebugCommandResult, SceneDebugContext, SceneKey,
-    SceneVisualState, SceneWorld, Tilemap, TilemapError, Transform, Vec2, CAMERA_ZOOM_DEFAULT,
-    CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN, CAMERA_ZOOM_STEP,
+    SceneVisualState, SceneWorld, SpriteAnchorName, SpriteAnchorPx, SpriteAnchors, Tilemap,
+    TilemapError, Transform, Vec2, CAMERA_ZOOM_DEFAULT, CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN,
+    CAMERA_ZOOM_STEP,
 };
 pub(crate) use tools::{
     format_spawn_command, CommandPaletteButtonKind, CommandPaletteRenderData, CommandPaletteState,
