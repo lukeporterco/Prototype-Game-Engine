@@ -291,6 +291,7 @@ impl Scene for GameplayScene {
                 world.set_active_floor(self.active_floor_engine());
                 world.set_hovered_interactable_visual(None);
                 world.set_selected_actor_visual(None);
+                world.set_targeted_interactable_visual(None);
                 world.clear_debug_markers();
 
                 if self.selected_entity.is_some_and(|selected_id| {

@@ -28,7 +28,9 @@ const TILE_FALLBACK_GRASS_COLOR: [u8; 4] = [74, 112, 56, 255];
 const TILE_FALLBACK_DIRT_COLOR: [u8; 4] = [112, 83, 58, 255];
 const TILE_FALLBACK_UNKNOWN_COLOR: [u8; 4] = [68, 74, 62, 255];
 const SELECTED_HIGHLIGHT_COLOR: [u8; 4] = [80, 220, 255, 255];
+const SELECTED_XRAY_HIGHLIGHT_COLOR: [u8; 4] = [210, 245, 255, 255];
 const HOVER_HIGHLIGHT_COLOR: [u8; 4] = [255, 210, 70, 255];
+const TARGET_XRAY_HIGHLIGHT_COLOR: [u8; 4] = [255, 236, 120, 255];
 const ORDER_MARKER_COLOR: [u8; 4] = [255, 120, 120, 255];
 const SELECTED_HIGHLIGHT_HALF_SIZE_PX: i32 = 10;
 const HOVER_HIGHLIGHT_HALF_SIZE_PX: i32 = 8;
@@ -51,6 +53,14 @@ struct TileRectInclusive {
     x_max: u32,
     y_min: u32,
     y_max: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScreenRectPx {
+    left: i32,
+    right: i32,
+    top: i32,
+    bottom: i32,
 }
 
 struct LoadedSprite {
@@ -289,6 +299,27 @@ fn draw_affordances(
                         SELECTED_HIGHLIGHT_HALF_SIZE_PX,
                         SELECTED_HIGHLIGHT_COLOR,
                     );
+
+                    let subject_rect =
+                        entity_screen_rect_placeholder(world.camera(), (width, height), entity);
+                    if is_entity_occluded_by_front_overlap(
+                        world,
+                        (width, height),
+                        active_floor,
+                        entity.id,
+                        subject_rect,
+                        entity.renderer_overlap_order_key(),
+                    ) {
+                        draw_square_outline(
+                            frame,
+                            width,
+                            height,
+                            cx,
+                            cy,
+                            SELECTED_HIGHLIGHT_HALF_SIZE_PX,
+                            SELECTED_XRAY_HIGHLIGHT_COLOR,
+                        );
+                    }
                 }
             }
         }
@@ -321,6 +352,44 @@ fn draw_affordances(
         }
     }
 
+    if let Some(targeted_id) = visuals.targeted_interactable {
+        if let Some(entity) = world.find_entity(targeted_id) {
+            if entity.interactable.is_some() && entity.floor == active_floor {
+                if bounds_intersects_point_radius(
+                    view_bounds,
+                    entity.transform.position,
+                    ENTITY_CULL_RADIUS_WORLD_TILES,
+                ) {
+                    let (cx, cy) = snapped_world_to_screen_px(
+                        world.camera(),
+                        (width, height),
+                        entity.transform.position,
+                    );
+                    let subject_rect =
+                        entity_screen_rect_placeholder(world.camera(), (width, height), entity);
+                    if is_entity_occluded_by_front_overlap(
+                        world,
+                        (width, height),
+                        active_floor,
+                        entity.id,
+                        subject_rect,
+                        entity.renderer_overlap_order_key(),
+                    ) {
+                        draw_square_outline(
+                            frame,
+                            width,
+                            height,
+                            cx,
+                            cy,
+                            HOVER_HIGHLIGHT_HALF_SIZE_PX,
+                            TARGET_XRAY_HIGHLIGHT_COLOR,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     for marker in world.debug_markers() {
         if matches!(marker.kind, DebugMarkerKind::Order) {
             if !bounds_intersects_point_radius(
@@ -343,6 +412,59 @@ fn draw_affordances(
             );
         }
     }
+}
+
+fn screen_rect_from_center(cx: i32, cy: i32, half_size: i32) -> ScreenRectPx {
+    ScreenRectPx {
+        left: cx - half_size,
+        right: cx + half_size,
+        top: cy - half_size,
+        bottom: cy + half_size,
+    }
+}
+
+fn entity_screen_rect_placeholder(
+    camera: &Camera2D,
+    window_size: (u32, u32),
+    entity: &Entity,
+) -> ScreenRectPx {
+    let (cx, cy) = snapped_world_to_screen_px(camera, window_size, entity.transform.position);
+    screen_rect_from_center(cx, cy, PLACEHOLDER_HALF_SIZE_PX)
+}
+
+fn screen_rects_overlap(a: ScreenRectPx, b: ScreenRectPx) -> bool {
+    !(a.right < b.left || b.right < a.left || a.bottom < b.top || b.bottom < a.top)
+}
+
+fn is_occluded_by_front_overlap(
+    subject_rect: ScreenRectPx,
+    subject_order_key: u64,
+    occluder_rect: ScreenRectPx,
+    occluder_order_key: u64,
+) -> bool {
+    occluder_order_key > subject_order_key && screen_rects_overlap(subject_rect, occluder_rect)
+}
+
+fn is_entity_occluded_by_front_overlap(
+    world: &SceneWorld,
+    window_size: (u32, u32),
+    active_floor: FloorId,
+    subject_id: crate::app::EntityId,
+    subject_rect: ScreenRectPx,
+    subject_order_key: u64,
+) -> bool {
+    world.entities().iter().any(|candidate| {
+        if candidate.id == subject_id || candidate.floor != active_floor {
+            return false;
+        }
+        let occluder_rect = entity_screen_rect_placeholder(world.camera(), window_size, candidate);
+        is_occluded_by_front_overlap(
+            subject_rect,
+            subject_order_key,
+            occluder_rect,
+            candidate.renderer_overlap_order_key(),
+        )
+    })
 }
 
 fn draw_tilemap(
@@ -855,6 +977,56 @@ mod tests {
     }
 
     #[test]
+    fn occlusion_predicate_respects_order_and_overlap() {
+        let subject = ScreenRectPx {
+            left: 10,
+            right: 20,
+            top: 10,
+            bottom: 20,
+        };
+        let overlapping = ScreenRectPx {
+            left: 15,
+            right: 25,
+            top: 15,
+            bottom: 25,
+        };
+        let separate = ScreenRectPx {
+            left: 100,
+            right: 110,
+            top: 100,
+            bottom: 110,
+        };
+
+        assert!(is_occluded_by_front_overlap(subject, 1, overlapping, 2));
+        assert!(!is_occluded_by_front_overlap(subject, 2, overlapping, 1));
+        assert!(!is_occluded_by_front_overlap(subject, 1, separate, 2));
+        assert!(!is_occluded_by_front_overlap(subject, 2, overlapping, 2));
+    }
+
+    #[test]
+    fn occlusion_predicate_is_deterministic_across_calls() {
+        let subject = ScreenRectPx {
+            left: -20,
+            right: -10,
+            top: -20,
+            bottom: -10,
+        };
+        let occluder = ScreenRectPx {
+            left: -18,
+            right: -8,
+            top: -18,
+            bottom: -8,
+        };
+        let expected = is_occluded_by_front_overlap(subject, 5, occluder, 9);
+        for _ in 0..128 {
+            assert_eq!(
+                is_occluded_by_front_overlap(subject, 5, occluder, 9),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn major_index_classification_handles_negative_indices() {
         for idx in -10..=10 {
             let expected = idx % 5 == 0;
@@ -1125,6 +1297,7 @@ mod tests {
         let mut world = SceneWorld::default();
         world.set_selected_actor_visual(Some(EntityId(999)));
         world.set_hovered_interactable_visual(Some(EntityId(1000)));
+        world.set_targeted_interactable_visual(Some(EntityId(1001)));
 
         let mut frame = vec![0u8; 64 * 64 * 4];
         let bounds = view_bounds_world(world.camera(), (64, 64), VIEW_CULL_PADDING_PX);

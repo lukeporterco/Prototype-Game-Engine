@@ -1527,6 +1527,21 @@ impl GameplayScene {
                 .map(|_| id)
         });
         world.set_selected_actor_visual(selected_actor_visual);
+        let targeted_interactable_visual = selected_actor_visual.and_then(|actor_id| {
+            let actor = world.find_entity(actor_id)?;
+            let target_save_id = match actor.order_state {
+                OrderState::Interact { target_save_id }
+                | OrderState::Working { target_save_id, .. } => target_save_id,
+                _ => return None,
+            };
+            let target_id = self.resolve_runtime_target_id(target_save_id, world)?;
+            let target = world.find_entity(target_id)?;
+            if target.floor != active_floor || target.interactable.is_none() {
+                return None;
+            }
+            Some(target_id)
+        });
+        world.set_targeted_interactable_visual(targeted_interactable_visual);
 
         if let Some(player_id) = self.player_id {
             if let Some(player) = world.find_entity_mut(player_id) {

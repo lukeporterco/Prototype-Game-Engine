@@ -416,6 +416,7 @@ pub struct DebugMarker {
 pub struct SceneVisualState {
     pub selected_actor: Option<EntityId>,
     pub hovered_interactable: Option<EntityId>,
+    pub targeted_interactable: Option<EntityId>,
 }
 
 #[derive(Debug, Clone)]
@@ -429,6 +430,12 @@ pub struct Entity {
     pub order_state: OrderState,
     pub interactable: Option<Interactable>,
     applied_spawn_order: u64,
+}
+
+impl Entity {
+    pub fn renderer_overlap_order_key(&self) -> u64 {
+        self.applied_spawn_order
+    }
 }
 
 #[derive(Debug, Default)]
@@ -561,6 +568,10 @@ impl SceneWorld {
         self.visual_state.hovered_interactable = hovered;
     }
 
+    pub fn set_targeted_interactable_visual(&mut self, targeted: Option<EntityId>) {
+        self.visual_state.targeted_interactable = targeted;
+    }
+
     pub fn visual_state(&self) -> &SceneVisualState {
         &self.visual_state
     }
@@ -651,8 +662,8 @@ impl SceneWorld {
             }
 
             match best {
-                Some((order, _)) if order >= entity.applied_spawn_order => {}
-                _ => best = Some((entity.applied_spawn_order, entity.id)),
+                Some((order, _)) if order >= entity.renderer_overlap_order_key() => {}
+                _ => best = Some((entity.renderer_overlap_order_key(), entity.id)),
             }
         }
 
@@ -690,8 +701,8 @@ impl SceneWorld {
             }
 
             match best {
-                Some((order, _)) if order >= entity.applied_spawn_order => {}
-                _ => best = Some((entity.applied_spawn_order, entity.id)),
+                Some((order, _)) if order >= entity.renderer_overlap_order_key() => {}
+                _ => best = Some((entity.renderer_overlap_order_key(), entity.id)),
             }
         }
 

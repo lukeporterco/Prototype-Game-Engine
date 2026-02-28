@@ -83,6 +83,7 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 55 (2026-02-28): renderer now owns a micro-grid snap policy for world-space draw placement (`crates/engine/src/app/rendering/renderer.rs`), defaulting to `MICRO_GRID_RESOLUTION_PX = 1`; simulation transforms and picking logic remain unchanged.
 - Ticket 56 (2026-02-28): added floor-layer runtime contract with `FloorId` (Rooftop/Main/Basement), `Entity.floor`, and `SceneWorld.active_floor`; topmost pick functions now take optional floor filters (`None` keeps legacy behavior) and `floor.set` routes as an engine queueable command to scene-owned behavior.
 - Ticket 57 (2026-02-28): gameplay orderability contract now restricts job/order commands (`order.move`, `order.interact`, right-click job intents) to the authoritative `player_id`; non-player NPC actors remain selectable but are non-jobbable, and combat AI auto-registration now requires archetype combat fields instead of applying to every non-player actor.
+- Ticket 57 (2026-02-28, occlusion assist v0): renderer affordances now support deterministic occlusion assist using renderer overlap order keys (`Entity::renderer_overlap_order_key`) and placeholder-sized screen bounds; `SceneVisualState` gained `targeted_interactable`, gameplay populates it from selected actor `Interact/Working` target on active floor, and renderer draws x-ray outline passes without changing simulation or picking.
 
 ## Module Boundaries and Ownership
 ### A. Module map
