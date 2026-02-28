@@ -23,9 +23,10 @@ use super::metrics::MetricsAccumulator;
 use super::scene::SceneMachine;
 use super::tools::console_commands::{InjectedInputEvent, InjectedKey, InjectedMouseButton};
 use super::{
-    ConsoleCommandProcessor, ConsoleState, DebugCommand, InputAction, InputSnapshot, MetricsHandle,
-    OverlayData, PerfStats, Renderer, Scene, SceneCommand, SceneDebugCommand,
-    SceneDebugCommandResult, SceneDebugContext, SceneKey,
+    format_spawn_command, CommandPaletteButtonKind, CommandPaletteState, ConsoleCommandProcessor,
+    ConsoleState, DebugCommand, InputAction, InputSnapshot, MetricsHandle, OverlayData, PerfStats,
+    Renderer, Scene, SceneCommand, SceneDebugCommand, SceneDebugCommandResult, SceneDebugContext,
+    SceneKey,
 };
 
 pub const SLOW_FRAME_ENV_VAR: &str = "PROTOGE_SLOW_FRAME_MS";
@@ -237,6 +238,7 @@ fn run_app_with_metrics_and_hooks(
     let mut queued_manual_ticks = 0u32;
     let mut tick_counter = 0u64;
     let mut console = ConsoleState::default();
+    let mut command_palette = CommandPaletteState::new(cfg!(debug_assertions));
     let mut console_command_processor = ConsoleCommandProcessor::new();
     let mut drained_debug_commands = Vec::<DebugCommand>::new();
     let mut remote_console_lines = Vec::<String>::new();
@@ -286,7 +288,17 @@ fn run_app_with_metrics_and_hooks(
                         input_collector.clear_cursor_position();
                     }
                     WindowEvent::MouseInput { state, button, .. } => {
-                        if !console.is_open() {
+                        if state == ElementState::Pressed
+                            && handle_command_palette_mouse_press(
+                                &mut command_palette,
+                                &mut console,
+                                &input_collector,
+                                button,
+                                &scenes,
+                            )
+                        {
+                            // Palette consumed this press; do not route to gameplay input edges.
+                        } else if !console.is_open() {
                             input_collector.handle_mouse_input(button, state);
                         }
                     }
@@ -439,6 +451,12 @@ fn run_app_with_metrics_and_hooks(
                             resource_count: scenes.debug_resource_count_active(),
                             debug_info: scenes.debug_info_snapshot_active(),
                         });
+                        command_palette.rebuild_layout(
+                            input_collector.window_size(),
+                            &collect_spawn_def_names(&scenes),
+                            input_collector.cursor_position_px(),
+                        );
+                        let palette_render_data = command_palette.render_data();
 
                         // render_ms boundary start:
                         // starts immediately before scene render preparation.
@@ -449,6 +467,7 @@ fn run_app_with_metrics_and_hooks(
                             scenes.active_world(),
                             overlay.as_ref(),
                             Some(&console),
+                            palette_render_data,
                         );
                         // render_ms boundary end:
                         // ends immediately after renderer.render_world returns.
@@ -944,6 +963,14 @@ impl InputCollector {
         self.window_height = height;
     }
 
+    fn window_size(&self) -> (u32, u32) {
+        (self.window_width, self.window_height)
+    }
+
+    fn cursor_position_px(&self) -> Option<super::Vec2> {
+        self.cursor_position_px
+    }
+
     fn set_cursor_position_px(&mut self, x: f32, y: f32) {
         self.cursor_position_px = Some(super::Vec2 { x, y });
     }
@@ -1309,6 +1336,84 @@ fn append_scene_debug_result(console: &mut ConsoleState, result: SceneDebugComma
             console.append_output_line(format!("error: {message}"));
         }
     }
+}
+
+fn enqueue_console_submission_line(console: &mut ConsoleState, line: &str) {
+    console.append_output_line(format!("> {line}"));
+    console.enqueue_pending_line(line.to_string());
+}
+
+fn collect_spawn_def_names(scenes: &SceneMachine) -> Vec<String> {
+    let Some(def_db) = scenes.active_world().def_database() else {
+        return Vec::new();
+    };
+    let mut defs = def_db
+        .entity_defs()
+        .iter()
+        .map(|def| def.def_name.clone())
+        .collect::<Vec<_>>();
+    defs.sort();
+    defs.dedup();
+    defs
+}
+
+fn handle_command_palette_mouse_press(
+    command_palette: &mut CommandPaletteState,
+    console: &mut ConsoleState,
+    input_collector: &InputCollector,
+    button: MouseButton,
+    scenes: &SceneMachine,
+) -> bool {
+    if !command_palette.is_enabled() {
+        return false;
+    }
+
+    if button == MouseButton::Right && command_palette.is_armed() {
+        command_palette.clear_armed_spawn();
+        command_palette.set_status_line("placement cancelled");
+        return true;
+    }
+
+    let cursor_position = input_collector.cursor_position_px();
+    if let Some(cursor_px) = cursor_position {
+        if let Some(button_kind) = command_palette.button_at_cursor(cursor_px) {
+            match button_kind {
+                CommandPaletteButtonKind::Immediate { command } => {
+                    command_palette.clear_armed_spawn();
+                    command_palette.clear_status_line();
+                    enqueue_console_submission_line(console, &command);
+                }
+                CommandPaletteButtonKind::SpawnPlacement { def_name } => {
+                    command_palette.arm_spawn(def_name);
+                }
+            }
+            return true;
+        }
+
+        if command_palette.is_armed() && command_palette.is_cursor_over_panel(cursor_px) {
+            return true;
+        }
+    }
+
+    if button != MouseButton::Left || !command_palette.is_armed() {
+        return false;
+    }
+
+    let Some(def_name) = command_palette.take_armed_spawn() else {
+        return false;
+    };
+    let Some(target_world) = cursor_world_from_input(scenes, input_collector) else {
+        command_palette.set_status_line("error: could not resolve world target");
+        console.append_output_line(
+            "error: command palette could not resolve world coordinates for placement",
+        );
+        return true;
+    };
+
+    command_palette.clear_status_line();
+    let command = format_spawn_command(&def_name, target_world);
+    enqueue_console_submission_line(console, &command);
+    true
 }
 
 fn cursor_world_from_input(
@@ -2128,6 +2233,80 @@ mod tests {
             .all(|line| line.starts_with("ok:") || line.starts_with("error:")));
         assert!(lines.iter().all(|line| !line.starts_with("queued:")));
         assert_eq!(scenes.active_world().entity_count(), 1);
+    }
+
+    #[test]
+    fn palette_submission_path_routes_through_console_parser_queue() {
+        let mut console = ConsoleState::default();
+        let mut processor = ConsoleCommandProcessor::new();
+        enqueue_console_submission_line(&mut console, "pause_sim");
+
+        processor.process_pending_lines(&mut console);
+
+        let lines = console.output_lines().collect::<Vec<_>>();
+        assert_eq!(lines, vec!["> pause_sim"]);
+
+        let mut queued = Vec::new();
+        processor.drain_pending_debug_commands_into(&mut queued);
+        assert_eq!(queued, vec![DebugCommand::PauseSim]);
+    }
+
+    #[test]
+    fn palette_armed_right_click_cancels_without_emitting_command() {
+        let mut scenes = SceneMachine::new(Box::new(NoopScene), Box::new(NoopScene), SceneKey::A);
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut palette = CommandPaletteState::new(true);
+        palette.arm_spawn("proto.player");
+        let mut console = ConsoleState::default();
+        let input_collector = InputCollector::new(1280, 720);
+
+        let consumed = handle_command_palette_mouse_press(
+            &mut palette,
+            &mut console,
+            &input_collector,
+            MouseButton::Right,
+            &scenes,
+        );
+
+        assert!(consumed);
+        assert!(!palette.is_armed());
+
+        let mut pending_lines = Vec::new();
+        console.drain_pending_lines_into(&mut pending_lines);
+        assert!(pending_lines.is_empty());
+    }
+
+    #[test]
+    fn palette_armed_left_click_without_world_resolution_emits_error_and_no_command() {
+        let mut scenes = SceneMachine::new(Box::new(NoopScene), Box::new(NoopScene), SceneKey::A);
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let mut palette = CommandPaletteState::new(true);
+        palette.arm_spawn("proto.player");
+        let mut console = ConsoleState::default();
+        let input_collector = InputCollector::new(1280, 720);
+
+        let consumed = handle_command_palette_mouse_press(
+            &mut palette,
+            &mut console,
+            &input_collector,
+            MouseButton::Left,
+            &scenes,
+        );
+
+        assert!(consumed);
+        assert!(!palette.is_armed());
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec!["error: command palette could not resolve world coordinates for placement"]
+        );
+
+        let mut pending_lines = Vec::new();
+        console.drain_pending_lines_into(&mut pending_lines);
+        assert!(pending_lines.is_empty());
     }
 
     #[test]

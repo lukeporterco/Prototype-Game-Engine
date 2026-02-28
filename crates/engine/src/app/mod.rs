@@ -23,5 +23,6 @@ pub use scene::{
     Vec2, CAMERA_ZOOM_DEFAULT, CAMERA_ZOOM_MAX, CAMERA_ZOOM_MIN, CAMERA_ZOOM_STEP,
 };
 pub(crate) use tools::{
+    format_spawn_command, CommandPaletteButtonKind, CommandPaletteRenderData, CommandPaletteState,
     ConsoleCommandProcessor, ConsoleState, DebugCommand, OverlayData, PerfStats,
 };

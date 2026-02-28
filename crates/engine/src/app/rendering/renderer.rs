@@ -8,9 +8,9 @@ use tracing::warn;
 use winit::window::Window;
 
 use crate::app::{
-    tools::{draw_console, draw_overlay},
-    Camera2D, ConsoleState, DebugMarkerKind, Entity, FloorId, OverlayData, RenderableKind,
-    SceneWorld, Tilemap, Vec2,
+    tools::{draw_command_palette, draw_console, draw_overlay},
+    Camera2D, CommandPaletteRenderData, ConsoleState, DebugMarkerKind, Entity, FloorId,
+    OverlayData, RenderableKind, SceneWorld, Tilemap, Vec2,
 };
 use crate::sprite_keys::validate_sprite_key;
 
@@ -121,6 +121,7 @@ impl Renderer {
         world: &SceneWorld,
         overlay_data: Option<&OverlayData>,
         console_state: Option<&ConsoleState>,
+        command_palette: Option<&CommandPaletteRenderData>,
     ) -> Result<(), Error> {
         if self.viewport.width == 0 || self.viewport.height == 0 {
             return Ok(());
@@ -220,6 +221,9 @@ impl Renderer {
 
         if let Some(data) = overlay_data {
             draw_overlay(frame, self.viewport.width, self.viewport.height, data);
+        }
+        if let Some(palette) = command_palette {
+            draw_command_palette(frame, self.viewport.width, self.viewport.height, palette);
         }
         if let Some(console) = console_state {
             draw_console(frame, self.viewport.width, self.viewport.height, console);

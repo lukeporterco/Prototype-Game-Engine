@@ -13,6 +13,21 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `Up` / `Down` browse submission history
 - `Escape` closes console and clears current input line
 
+## Dev Command Palette (Ticket 61.1)
+
+- Scope: debug/dev UI convenience only (`cfg!(debug_assertions)` builds).
+- Purpose: emits plain command strings through the same pending-line parser path used by typed console input.
+- Layer: Engine tools UI front-end; does not bypass command parsing/routing.
+- Behavior:
+- Non-placement buttons submit one command immediately.
+- Spawn placement buttons arm `spawn <def_name>` for one world click.
+- Armed left-click in world emits `spawn <def_name> <x> <y>` (2-decimal formatting) and then disarms.
+- Armed right-click cancels without emitting a spawn command.
+- Clicking inside the palette panel while armed does not place in world.
+- Spawn button population:
+- Uses current runtime `DefDatabase` entity defs from active world.
+- Does not hardcode missing defs (`proto.worker`, `proto.wall`, `proto.crate` are omitted unless present in loaded content).
+
 ## Command Handling Model
 
 - Local actions (handled immediately, never queued):
