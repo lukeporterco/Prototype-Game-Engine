@@ -33,6 +33,7 @@ const HOVER_HIGHLIGHT_HALF_SIZE_PX: i32 = 8;
 const ORDER_MARKER_HALF_SIZE_PX: i32 = 6;
 const VIEW_CULL_PADDING_PX: f32 = 16.0;
 const ENTITY_CULL_RADIUS_WORLD_TILES: f32 = 0.5;
+const MICRO_GRID_RESOLUTION_PX: i32 = 1;
 
 #[derive(Debug, Clone, Copy)]
 struct WorldBounds {
@@ -139,7 +140,7 @@ impl Renderer {
             ) {
                 continue;
             }
-            let (cx, cy) = world_to_screen_px(
+            let (cx, cy) = snapped_world_to_screen_px(
                 world.camera(),
                 (self.viewport.width, self.viewport.height),
                 entity.transform.position,
@@ -200,6 +201,41 @@ impl Renderer {
     }
 }
 
+fn snap_screen_coordinate_px(coord_px: i32, micro_grid_px: i32) -> i32 {
+    let step = micro_grid_px.max(1);
+    let remainder = coord_px.rem_euclid(step);
+    if remainder == 0 {
+        return coord_px;
+    }
+
+    let lower = coord_px - remainder;
+    let upper = lower + step;
+    let distance_to_lower = remainder;
+    let distance_to_upper = step - remainder;
+
+    if distance_to_lower < distance_to_upper {
+        lower
+    } else if distance_to_upper < distance_to_lower {
+        upper
+    } else if coord_px >= 0 {
+        upper
+    } else {
+        lower
+    }
+}
+
+fn snapped_world_to_screen_px(
+    camera: &Camera2D,
+    window_size: (u32, u32),
+    world_pos: Vec2,
+) -> (i32, i32) {
+    let (x, y) = world_to_screen_px(camera, window_size, world_pos);
+    (
+        snap_screen_coordinate_px(x, MICRO_GRID_RESOLUTION_PX),
+        snap_screen_coordinate_px(y, MICRO_GRID_RESOLUTION_PX),
+    )
+}
+
 fn draw_affordances(
     frame: &mut [u8],
     width: u32,
@@ -217,7 +253,7 @@ fn draw_affordances(
                     entity.transform.position,
                     ENTITY_CULL_RADIUS_WORLD_TILES,
                 ) {
-                    let (cx, cy) = world_to_screen_px(
+                    let (cx, cy) = snapped_world_to_screen_px(
                         world.camera(),
                         (width, height),
                         entity.transform.position,
@@ -244,7 +280,7 @@ fn draw_affordances(
                     entity.transform.position,
                     ENTITY_CULL_RADIUS_WORLD_TILES,
                 ) {
-                    let (cx, cy) = world_to_screen_px(
+                    let (cx, cy) = snapped_world_to_screen_px(
                         world.camera(),
                         (width, height),
                         entity.transform.position,
@@ -273,7 +309,7 @@ fn draw_affordances(
                 continue;
             }
             let (cx, cy) =
-                world_to_screen_px(world.camera(), (width, height), marker.position_world);
+                snapped_world_to_screen_px(world.camera(), (width, height), marker.position_world);
             draw_cross(
                 frame,
                 width,
@@ -312,7 +348,8 @@ fn draw_tilemap(
             let Some(center_world) = tilemap.tile_center_world(x, y) else {
                 continue;
             };
-            let (cx, cy) = world_to_screen_px(world.camera(), (width, height), center_world);
+            let (cx, cy) =
+                snapped_world_to_screen_px(world.camera(), (width, height), center_world);
             if let Some(key) = tile_sprite_key(tile_id) {
                 if let Some(sprite) = resolve_cached_sprite(sprite_cache, asset_root, key) {
                     draw_sprite_centered(frame, width, height, cx, cy, sprite);
@@ -467,7 +504,7 @@ fn draw_world_grid(frame: &mut [u8], width: u32, height: u32, world: &SceneWorld
 
     for ix in ix_start..=ix_end {
         let world_x = ix as f32 * GRID_CELL_WORLD;
-        let (screen_x, _) = world_to_screen_px(
+        let (screen_x, _) = snapped_world_to_screen_px(
             world.camera(),
             (width, height),
             Vec2 {
@@ -485,7 +522,7 @@ fn draw_world_grid(frame: &mut [u8], width: u32, height: u32, world: &SceneWorld
 
     for iy in iy_start..=iy_end {
         let world_y = iy as f32 * GRID_CELL_WORLD;
-        let (_, screen_y) = world_to_screen_px(
+        let (_, screen_y) = snapped_world_to_screen_px(
             world.camera(),
             (width, height),
             Vec2 {
@@ -682,6 +719,32 @@ mod tests {
     #[test]
     fn renderer_type_is_non_generic() {
         let _renderer: Option<Renderer> = None;
+    }
+
+    #[test]
+    fn snap_screen_coordinate_handles_positive_values() {
+        assert_eq!(snap_screen_coordinate_px(5, 4), 4);
+        assert_eq!(snap_screen_coordinate_px(7, 4), 8);
+    }
+
+    #[test]
+    fn snap_screen_coordinate_handles_negative_values() {
+        assert_eq!(snap_screen_coordinate_px(-5, 4), -4);
+        assert_eq!(snap_screen_coordinate_px(-7, 4), -8);
+    }
+
+    #[test]
+    fn snap_screen_coordinate_half_step_ties_break_away_from_zero() {
+        assert_eq!(snap_screen_coordinate_px(2, 4), 4);
+        assert_eq!(snap_screen_coordinate_px(-2, 4), -4);
+    }
+
+    #[test]
+    fn snap_screen_coordinate_is_deterministic_across_calls() {
+        let expected = snap_screen_coordinate_px(-37, 6);
+        for _ in 0..128 {
+            assert_eq!(snap_screen_coordinate_px(-37, 6), expected);
+        }
     }
 
     #[test]

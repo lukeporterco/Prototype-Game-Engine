@@ -79,3 +79,5 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 
 - Status model reminder: statuses use `StatusId(&'static str)` and shipping slow status id is `status.slow`.
 - Deprecated in-place detailed notes (Module Boundaries + Tickets 48-54 + single-shot stress update) were moved to `CODEXNOTES_ARCHIVE.md` on 2026-02-28.
+
+- Ticket 55 (2026-02-28): renderer now owns a micro-grid snap policy for world-space draw placement (`crates/engine/src/app/rendering/renderer.rs`), defaulting to `MICRO_GRID_RESOLUTION_PX = 1`; simulation transforms and picking logic remain unchanged.
