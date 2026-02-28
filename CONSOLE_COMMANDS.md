@@ -234,11 +234,13 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - Layer: Engine queueable -> active scene debug hook (scene-owned implementation)
 - Description: Sets up a deterministic scenario layout for automation preconditions.
 - Syntax: `scenario.setup <scenario_id>`
-- Supported scenario IDs (GameplayScene): `combat_chaser`
+- Supported scenario IDs (GameplayScene): `combat_chaser`, `visual_sandbox`
 - Example:
 - `scenario.setup combat_chaser`
+- `scenario.setup visual_sandbox`
 - Result examples:
 - `ok: scenario.setup combat_chaser player:1 chaser:2 dummy:3`
+- `ok: scenario.setup visual_sandbox player:1 prop:2 wall:3 floor:4`
 - `error: unknown scenario 'foo'`
 - `error: active scene does not support this command`
 

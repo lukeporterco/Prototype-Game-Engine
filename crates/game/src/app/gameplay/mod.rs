@@ -40,6 +40,10 @@ const STATUS_SLOW_MULTIPLIER: f32 = 0.5;
 const COMBAT_CHASER_PLAYER_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
 const COMBAT_CHASER_CHASER_POS: Vec2 = Vec2 { x: 0.75, y: 0.0 };
 const COMBAT_CHASER_DUMMY_POS: Vec2 = Vec2 { x: 7.0, y: 0.0 };
+const VISUAL_SANDBOX_PLAYER_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
+const VISUAL_SANDBOX_PROP_POS: Vec2 = Vec2 { x: -1.5, y: 0.75 };
+const VISUAL_SANDBOX_WALL_POS: Vec2 = Vec2 { x: 0.0, y: 0.0 };
+const VISUAL_SANDBOX_FLOOR_POS: Vec2 = Vec2 { x: 1.5, y: -0.75 };
 
 include!("types.rs");
 include!("systems.rs");

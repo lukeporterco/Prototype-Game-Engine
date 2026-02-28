@@ -907,6 +907,35 @@ impl GameplayScene {
         Ok((player_id, chaser_id, dummy_id))
     }
 
+    fn run_scenario_setup_visual_sandbox(
+        &mut self,
+        world: &mut SceneWorld,
+    ) -> SaveLoadResult<(EntityId, EntityId, EntityId, EntityId)> {
+        let stale_ids: Vec<EntityId> = world.entities().iter().map(|entity| entity.id).collect();
+        for stale_id in stale_ids {
+            self.apply_despawn_intent_now(world, stale_id)?;
+        }
+
+        self.player_id = None;
+        self.selected_entity = None;
+
+        let player_id =
+            self.apply_spawn_intent_now(world, "proto.player", VISUAL_SANDBOX_PLAYER_POS)?;
+        let prop_id =
+            self.apply_spawn_intent_now(world, "proto.resource_pile", VISUAL_SANDBOX_PROP_POS)?;
+        let wall_id =
+            self.apply_spawn_intent_now(world, "proto.door_dummy", VISUAL_SANDBOX_WALL_POS)?;
+        let floor_id = self.apply_spawn_intent_now(
+            world,
+            "proto.stockpile_small",
+            VISUAL_SANDBOX_FLOOR_POS,
+        )?;
+
+        self.selected_entity = Some(player_id);
+
+        Ok((player_id, prop_id, wall_id, floor_id))
+    }
+
     fn status_multiplier(status_id: StatusId) -> f32 {
         match status_id {
             STATUS_SLOW => STATUS_SLOW_MULTIPLIER,

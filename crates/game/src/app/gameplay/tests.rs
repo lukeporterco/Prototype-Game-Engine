@@ -216,6 +216,30 @@
         )
     }
 
+    fn parse_visual_sandbox_setup_ids(message: &str) -> (u64, u64, u64, u64) {
+        let mut player = None::<u64>;
+        let mut prop = None::<u64>;
+        let mut wall = None::<u64>;
+        let mut floor = None::<u64>;
+        for token in message.split_whitespace() {
+            if let Some(value) = token.strip_prefix("player:") {
+                player = value.parse::<u64>().ok();
+            } else if let Some(value) = token.strip_prefix("prop:") {
+                prop = value.parse::<u64>().ok();
+            } else if let Some(value) = token.strip_prefix("wall:") {
+                wall = value.parse::<u64>().ok();
+            } else if let Some(value) = token.strip_prefix("floor:") {
+                floor = value.parse::<u64>().ok();
+            }
+        }
+        (
+            player.expect("player id"),
+            prop.expect("prop id"),
+            wall.expect("wall id"),
+            floor.expect("floor id"),
+        )
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum EntityKindTag {
         Actor,
@@ -2412,6 +2436,123 @@
         );
         scene.update(1.0 / 60.0, &click_b, &mut world);
         assert_eq!(scene.debug_selected_entity(), Some(b));
+    }
+
+    #[test]
+    fn scenario_setup_visual_sandbox_is_deterministic_and_wired() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let first = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "visual_sandbox".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let first_message = match first {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        assert!(first_message.starts_with("scenario.setup visual_sandbox "));
+        let (first_player_raw, first_prop_raw, first_wall_raw, first_floor_raw) =
+            parse_visual_sandbox_setup_ids(&first_message);
+        let first_player_id = EntityId(first_player_raw);
+        let first_prop_id = EntityId(first_prop_raw);
+        let first_wall_id = EntityId(first_wall_raw);
+        let first_floor_id = EntityId(first_floor_raw);
+
+        assert_eq!(world.entity_count(), 4);
+        assert_eq!(scene.player_id, Some(first_player_id));
+        assert_eq!(scene.selected_entity, Some(first_player_id));
+
+        let player = world.find_entity(first_player_id).expect("player");
+        let prop = world.find_entity(first_prop_id).expect("prop");
+        let wall = world.find_entity(first_wall_id).expect("wall");
+        let floor = world.find_entity(first_floor_id).expect("floor");
+
+        assert_eq!(player.transform.position, VISUAL_SANDBOX_PLAYER_POS);
+        assert_eq!(prop.transform.position, VISUAL_SANDBOX_PROP_POS);
+        assert_eq!(wall.transform.position, VISUAL_SANDBOX_WALL_POS);
+        assert_eq!(floor.transform.position, VISUAL_SANDBOX_FLOOR_POS);
+
+        assert!(player.actor);
+        assert!(player.selectable);
+        assert!(!prop.actor && prop.interactable.is_some());
+        assert!(!wall.actor && wall.interactable.is_some());
+        assert!(!floor.actor && floor.interactable.is_some());
+
+        let second = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "visual_sandbox".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let second_message = match second {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        assert!(second_message.starts_with("scenario.setup visual_sandbox "));
+        let (second_player_raw, second_prop_raw, second_wall_raw, second_floor_raw) =
+            parse_visual_sandbox_setup_ids(&second_message);
+        let second_player_id = EntityId(second_player_raw);
+        let second_prop_id = EntityId(second_prop_raw);
+        let second_wall_id = EntityId(second_wall_raw);
+        let second_floor_id = EntityId(second_floor_raw);
+
+        assert_eq!(world.entity_count(), 4);
+        assert_eq!(scene.player_id, Some(second_player_id));
+        assert_eq!(scene.selected_entity, Some(second_player_id));
+
+        assert_eq!(
+            world
+                .find_entity(second_player_id)
+                .expect("second player")
+                .transform
+                .position,
+            VISUAL_SANDBOX_PLAYER_POS
+        );
+        assert_eq!(
+            world
+                .find_entity(second_prop_id)
+                .expect("second prop")
+                .transform
+                .position,
+            VISUAL_SANDBOX_PROP_POS
+        );
+        assert_eq!(
+            world
+                .find_entity(second_wall_id)
+                .expect("second wall")
+                .transform
+                .position,
+            VISUAL_SANDBOX_WALL_POS
+        );
+        assert_eq!(
+            world
+                .find_entity(second_floor_id)
+                .expect("second floor")
+                .transform
+                .position,
+            VISUAL_SANDBOX_FLOOR_POS
+        );
+
+        if first_player_raw != second_player_raw {
+            assert!(world.find_entity(first_player_id).is_none());
+        }
+        if first_prop_raw != second_prop_raw {
+            assert!(world.find_entity(first_prop_id).is_none());
+        }
+        if first_wall_raw != second_wall_raw {
+            assert!(world.find_entity(first_wall_id).is_none());
+        }
+        if first_floor_raw != second_floor_raw {
+            assert!(world.find_entity(first_floor_id).is_none());
+        }
     }
 
     #[test]

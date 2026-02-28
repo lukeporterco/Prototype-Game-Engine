@@ -315,19 +315,26 @@ impl Scene for GameplayScene {
                 SceneDebugCommandResult::Success(self.format_dump_ai(world))
             }
             SceneDebugCommand::ScenarioSetup { scenario_id } => {
-                if scenario_id != "combat_chaser" {
-                    return SceneDebugCommandResult::Error(format!(
-                        "unknown scenario '{scenario_id}'"
-                    ));
-                }
-                match self.run_scenario_setup_combat_chaser(world) {
-                    Ok((player_id, chaser_id, dummy_id)) => {
-                        SceneDebugCommandResult::Success(format!(
-                            "scenario.setup combat_chaser player:{} chaser:{} dummy:{}",
-                            player_id.0, chaser_id.0, dummy_id.0
-                        ))
-                    }
-                    Err(error) => SceneDebugCommandResult::Error(error),
+                match scenario_id.as_str() {
+                    "combat_chaser" => match self.run_scenario_setup_combat_chaser(world) {
+                        Ok((player_id, chaser_id, dummy_id)) => {
+                            SceneDebugCommandResult::Success(format!(
+                                "scenario.setup combat_chaser player:{} chaser:{} dummy:{}",
+                                player_id.0, chaser_id.0, dummy_id.0
+                            ))
+                        }
+                        Err(error) => SceneDebugCommandResult::Error(error),
+                    },
+                    "visual_sandbox" => match self.run_scenario_setup_visual_sandbox(world) {
+                        Ok((player_id, prop_id, wall_id, floor_id)) => {
+                            SceneDebugCommandResult::Success(format!(
+                                "scenario.setup visual_sandbox player:{} prop:{} wall:{} floor:{}",
+                                player_id.0, prop_id.0, wall_id.0, floor_id.0
+                            ))
+                        }
+                        Err(error) => SceneDebugCommandResult::Error(error),
+                    },
+                    _ => SceneDebugCommandResult::Error(format!("unknown scenario '{scenario_id}'")),
                 }
             }
         }
