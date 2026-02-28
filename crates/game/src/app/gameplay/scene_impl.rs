@@ -159,6 +159,12 @@ impl Scene for GameplayScene {
                 let Some(actor_id) = self.selected_entity else {
                     return SceneDebugCommandResult::Error("no selected entity".to_string());
                 };
+                if Some(actor_id) != self.player_id {
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} is not player pawn",
+                        actor_id.0
+                    ));
+                }
                 let Some(actor) = world.find_entity(actor_id) else {
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} not found",
@@ -195,6 +201,12 @@ impl Scene for GameplayScene {
                 let Some(actor_id) = self.selected_entity else {
                     return SceneDebugCommandResult::Error("no selected entity".to_string());
                 };
+                if Some(actor_id) != self.player_id {
+                    return SceneDebugCommandResult::Error(format!(
+                        "selected entity {} is not player pawn",
+                        actor_id.0
+                    ));
+                }
                 let Some(actor) = world.find_entity(actor_id) else {
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} not found",

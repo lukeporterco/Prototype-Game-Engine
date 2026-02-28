@@ -173,6 +173,9 @@ impl GameplaySystemsHost {
         if !actor.actor {
             return;
         }
+        if Some(actor_id) != context.player_id {
+            return;
+        }
         if let Some(target_id) = interactable_target {
             let Some(target) = context.world_view.find_entity(target_id) else {
                 return;
@@ -291,7 +294,8 @@ impl GameplaySystemsHost {
             let has_runtime_interaction =
                 context.active_interactions_by_actor.contains_key(&actor_id);
             let has_world_interaction = Self::order_state_indicates_interaction(actor.order_state);
-            let movement_blocked = has_runtime_interaction || has_world_interaction;
+            let movement_blocked =
+                has_runtime_interaction || has_world_interaction || matches!(actor.order_state, OrderState::MoveTo { .. });
 
             if let Some(player_entity) = player {
                 let dx = player_entity.transform.position.x - actor.transform.position.x;

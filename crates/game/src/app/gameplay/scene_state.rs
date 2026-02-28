@@ -688,6 +688,12 @@ impl GameplayScene {
         }
     }
 
+    fn archetype_uses_combat_ai(archetype: &EntityArchetype) -> bool {
+        archetype.aggro_radius.is_some()
+            || archetype.attack_range.is_some()
+            || archetype.attack_cooldown_seconds.is_some()
+    }
+
     fn ai_state_counts(&self) -> AiStateCounts {
         let mut counts = AiStateCounts::default();
         for agent in self.ai_agents_by_entity.values() {
@@ -1058,6 +1064,7 @@ impl GameplayScene {
                         continue;
                     };
                     let effective_params = Self::effective_combat_ai_params(Some(&archetype));
+                    let archetype_uses_combat_ai = Self::archetype_uses_combat_ai(&archetype);
                     if archetype.def_name == "proto.player"
                         && self
                             .player_id
@@ -1131,7 +1138,10 @@ impl GameplayScene {
                         }
                     }
 
-                    if has_actor_tag && Some(entity_id) != self.player_id {
+                    if has_actor_tag
+                        && Some(entity_id) != self.player_id
+                        && archetype_uses_combat_ai
+                    {
                         self.ai_agents_by_entity.insert(
                             entity_id,
                             AiAgent::from_home_position(position, effective_params),
@@ -1474,7 +1484,7 @@ impl GameplayScene {
 
                 let mut marker_position = None::<Vec2>;
                 if let Some(entity) = world.find_entity_mut(selected_id) {
-                    if entity.actor {
+                    if entity.actor && Some(selected_id) == self.player_id {
                         if GameplaySystemsHost::order_state_indicates_interaction(
                             entity.order_state,
                         ) {

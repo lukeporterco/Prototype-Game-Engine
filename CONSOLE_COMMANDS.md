@@ -149,6 +149,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - Result examples:
 - `ok: queued move for entity 42 to (3.50, -1.25)`
 - `error: no selected entity`
+- `error: selected entity 42 is not player pawn`
 - `error: selected entity 42 is not an actor`
 
 ### order.interact
@@ -160,6 +161,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - Result examples:
 - `ok: queued interact actor 42 target 77`
 - `error: no selected entity`
+- `error: selected entity 42 is not player pawn`
 - `error: target entity 77 not found`
 - `error: target entity 77 is not interactable`
 
@@ -321,6 +323,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `select <entity_id>`
 - `order.move <x> <y>`
 - `order.interact <target_entity_id>`
+- `order.move` / `order.interact` are restricted to the authoritative player pawn; NPC actors remain selectable for inspection/debug context.
 - Processor prints parse errors with usage hints.
 - Unknown commands print `error: unknown command '<name>'. try: help`.
 

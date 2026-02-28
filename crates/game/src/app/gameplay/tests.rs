@@ -1722,7 +1722,7 @@
         assert!(scene.damage_by_entity.contains_key(&dummy_id));
         assert!(!scene.ai_agents_by_entity.contains_key(&player_id));
         assert!(scene.ai_agents_by_entity.contains_key(&chaser_id));
-        assert!(scene.ai_agents_by_entity.contains_key(&dummy_id));
+        assert!(!scene.ai_agents_by_entity.contains_key(&dummy_id));
     }
 
     #[test]
@@ -1936,6 +1936,7 @@
         );
         world.apply_pending();
         world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
 
         let result = scene.execute_debug_command(
@@ -2016,6 +2017,7 @@
         );
         world.apply_pending();
         world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
         scene.sync_save_id_map_with_world(&world).expect("sync");
 
@@ -2059,6 +2061,7 @@
         );
         world.apply_pending();
         world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
 
         let missing = scene.execute_debug_command(
@@ -2222,10 +2225,10 @@
             scene.damage_by_entity.get(&dummy_id).copied(),
             Some(ATTACK_DAMAGE_PER_HIT)
         );
-        let dummy_ai = scene.ai_agents_by_entity.get(&dummy_id).expect("dummy ai");
-        assert!((dummy_ai.aggro_radius - AI_AGGRO_RADIUS_UNITS).abs() < 0.001);
-        assert!((dummy_ai.attack_range - AI_ATTACK_RANGE_UNITS).abs() < 0.001);
-        assert!((dummy_ai.cooldown_seconds - AI_ATTACK_COOLDOWN_SECONDS).abs() < 0.001);
+        assert!(
+            !scene.ai_agents_by_entity.contains_key(&dummy_id),
+            "npc dummy should not auto-register combat AI"
+        );
     }
 
     #[test]
@@ -2367,6 +2370,48 @@
     }
 
     #[test]
+    fn debug_order_move_errors_for_selected_non_player_actor() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let player = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "player",
+            },
+        );
+        let npc = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 2.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "npc",
+            },
+        );
+        world.apply_pending();
+        world.find_entity_mut(player).expect("player").selectable = true;
+        world.find_entity_mut(npc).expect("npc").selectable = true;
+        scene.player_id = Some(player);
+        scene.selected_entity = Some(npc);
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::OrderMove { x: 1.0, y: 1.0 },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(result, SceneDebugCommandResult::Error(_)));
+    }
+
+    #[test]
     fn floor_set_changes_active_floor_and_selection_filter() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -2433,6 +2478,7 @@
         );
         world.apply_pending();
         world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
 
         world.set_active_floor(engine::FloorId::Basement);
@@ -2529,6 +2575,7 @@
         );
         world.apply_pending();
         world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
 
         let click = right_click_snapshot(Vec2 { x: 672.0, y: 360.0 }, (1280, 720));
@@ -2558,6 +2605,7 @@
             },
         );
         world.apply_pending();
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
 
         let input = InputSnapshot::empty()
@@ -2593,6 +2641,7 @@
         );
         world.apply_pending();
         world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
 
         let click = right_click_snapshot(Vec2 { x: 672.0, y: 360.0 }, (1280, 720));
@@ -2726,6 +2775,7 @@
         );
         let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 3);
         world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
         scene
             .sync_save_id_map_with_world(&world)
@@ -2761,6 +2811,7 @@
         scene
             .sync_save_id_map_with_world(&world)
             .expect("save-id sync");
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
         world.find_entity_mut(actor).expect("actor").selectable = true;
         let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
@@ -2949,6 +3000,7 @@
         );
         let pile = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 3);
         world.find_entity_mut(actor).expect("actor").selectable = true;
+        scene.player_id = Some(actor);
         scene.selected_entity = Some(actor);
         scene
             .sync_save_id_map_with_world(&world)
