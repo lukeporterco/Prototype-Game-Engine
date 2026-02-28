@@ -2,7 +2,7 @@
   <EntityDef>
     <defName>proto.player</defName>
     <label>Player</label>
-    <renderable kind="Sprite" spriteKey="player" />
+    <renderable kind="Sprite" spriteKey="visual_test/pawn_blue" />
     <moveSpeed>5.0</moveSpeed>
     <tags>
       <li>actor</li>
@@ -20,7 +20,7 @@
   <EntityDef>
     <defName>proto.npc_chaser</defName>
     <label>NpcChaser</label>
-    <renderable kind="Sprite" spriteKey="player" />
+    <renderable kind="Sprite" spriteKey="visual_test/chaser_red" />
     <moveSpeed>5.0</moveSpeed>
     <health_max>200</health_max>
     <base_damage>40</base_damage>
@@ -35,7 +35,7 @@
   <EntityDef>
     <defName>proto.npc_dummy</defName>
     <label>NpcDummy</label>
-    <renderable kind="Sprite" spriteKey="player" />
+    <renderable kind="Sprite" spriteKey="visual_test/dummy_gold" />
     <moveSpeed>5.0</moveSpeed>
     <tags>
       <li>actor</li>

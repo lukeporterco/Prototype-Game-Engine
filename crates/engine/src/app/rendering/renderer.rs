@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use image::ImageReader;
 use pixels::{Error, Pixels, SurfaceTexture};
+use tracing::warn;
 use winit::window::Window;
 
 use crate::app::{
@@ -75,6 +76,7 @@ pub struct Renderer {
     viewport: Viewport,
     asset_root: PathBuf,
     sprite_cache: HashMap<String, Option<LoadedSprite>>,
+    warned_missing_sprite_keys: HashSet<String>,
 }
 
 impl Renderer {
@@ -90,6 +92,7 @@ impl Renderer {
             },
             asset_root,
             sprite_cache: HashMap::new(),
+            warned_missing_sprite_keys: HashSet::new(),
         })
     }
 
@@ -123,6 +126,7 @@ impl Renderer {
 
         let asset_root = self.asset_root.as_path();
         let sprite_cache = &mut self.sprite_cache;
+        let warned_missing_sprite_keys = &mut self.warned_missing_sprite_keys;
         let frame = self.pixels.frame_mut();
         let active_floor = world.active_floor();
         let clear_color = clear_color_for_floor(active_floor);
@@ -142,6 +146,7 @@ impl Renderer {
             world,
             &view_bounds,
             sprite_cache,
+            warned_missing_sprite_keys,
             asset_root,
         );
         draw_world_grid(frame, self.viewport.width, self.viewport.height, world);
@@ -168,7 +173,12 @@ impl Renderer {
                     );
                 }
                 RenderableKind::Sprite(key) => {
-                    if let Some(sprite) = resolve_cached_sprite(sprite_cache, asset_root, key) {
+                    if let Some(sprite) = resolve_cached_sprite(
+                        sprite_cache,
+                        warned_missing_sprite_keys,
+                        asset_root,
+                        key,
+                    ) {
                         draw_sprite_centered(
                             frame,
                             self.viewport.width,
@@ -474,6 +484,7 @@ fn draw_tilemap(
     world: &SceneWorld,
     view_bounds: &WorldBounds,
     sprite_cache: &mut HashMap<String, Option<LoadedSprite>>,
+    warned_missing_sprite_keys: &mut HashSet<String>,
     asset_root: &Path,
 ) {
     let Some(tilemap) = world.tilemap() else {
@@ -495,7 +506,9 @@ fn draw_tilemap(
             let (cx, cy) =
                 snapped_world_to_screen_px(world.camera(), (width, height), center_world);
             if let Some(key) = tile_sprite_key(tile_id) {
-                if let Some(sprite) = resolve_cached_sprite(sprite_cache, asset_root, key) {
+                if let Some(sprite) =
+                    resolve_cached_sprite(sprite_cache, warned_missing_sprite_keys, asset_root, key)
+                {
                     draw_sprite_centered(frame, width, height, cx, cy, sprite);
                     continue;
                 }
@@ -601,6 +614,7 @@ fn draw_tile_fallback(
 
 fn resolve_cached_sprite<'a>(
     cache: &'a mut HashMap<String, Option<LoadedSprite>>,
+    warned_missing_sprite_keys: &mut HashSet<String>,
     asset_root: &Path,
     key: &str,
 ) -> Option<&'a LoadedSprite> {
@@ -610,31 +624,67 @@ fn resolve_cached_sprite<'a>(
         // We return immediately on this hit-path, so `cache` is not mutated before use.
         return sprite_ptr.map(|ptr| unsafe { &*ptr });
     }
-    let sprite =
-        resolve_sprite_image_path(asset_root, key).and_then(|path| load_sprite_rgba(&path));
+    let sprite = match resolve_sprite_image_path(asset_root, key) {
+        Ok(path) => match load_sprite_rgba(&path) {
+            Ok(sprite) => Some(sprite),
+            Err(reason) => {
+                warn_sprite_load_once(
+                    warned_missing_sprite_keys,
+                    key,
+                    Some(path.as_path()),
+                    reason.as_str(),
+                );
+                None
+            }
+        },
+        Err(reason) => {
+            warn_sprite_load_once(warned_missing_sprite_keys, key, None, reason.as_str());
+            None
+        }
+    };
     cache.insert(key.to_string(), sprite);
     cache.get(key).and_then(Option::as_ref)
 }
 
-fn resolve_sprite_image_path(asset_root: &Path, key: &str) -> Option<PathBuf> {
-    if validate_sprite_key(key).is_err() {
-        return None;
-    }
-    Some(
-        asset_root
-            .join("base")
-            .join("sprites")
-            .join(format!("{key}.png")),
-    )
+fn resolve_sprite_image_path(asset_root: &Path, key: &str) -> Result<PathBuf, String> {
+    validate_sprite_key(key).map_err(|error| format!("invalid_key:{error}"))?;
+    Ok(asset_root
+        .join("base")
+        .join("sprites")
+        .join(format!("{key}.png")))
 }
 
-fn load_sprite_rgba(path: &Path) -> Option<LoadedSprite> {
-    let image = ImageReader::open(path).ok()?.decode().ok()?.to_rgba8();
-    Some(LoadedSprite {
+fn load_sprite_rgba(path: &Path) -> Result<LoadedSprite, String> {
+    let reader = ImageReader::open(path).map_err(|error| format!("file_open_failed:{error}"))?;
+    let decoded = reader
+        .decode()
+        .map_err(|error| format!("decode_failed:{error}"))?;
+    let image = decoded.to_rgba8();
+    Ok(LoadedSprite {
         width: image.width(),
         height: image.height(),
         rgba: image.into_raw(),
     })
+}
+
+fn warn_sprite_load_once(
+    warned_keys: &mut HashSet<String>,
+    key: &str,
+    resolved_path: Option<&Path>,
+    reason: &str,
+) {
+    if !warned_keys.insert(key.to_string()) {
+        return;
+    }
+    let path_display = resolved_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<unresolved>".to_string());
+    warn!(
+        sprite_key = key,
+        path = %path_display,
+        reason = reason,
+        "renderer_sprite_load_failed_using_placeholder"
+    );
 }
 
 fn draw_world_grid(frame: &mut [u8], width: u32, height: u32, world: &SceneWorld) {
@@ -1246,14 +1296,14 @@ mod tests {
         let temp = TempDir::new().expect("temp");
         let asset_root = temp.path();
 
-        assert!(resolve_sprite_image_path(asset_root, r"bad\key").is_none());
+        assert!(resolve_sprite_image_path(asset_root, r"bad\key").is_err());
 
         let valid_path = resolve_sprite_image_path(asset_root, "player").expect("path");
         assert_eq!(
             valid_path,
             asset_root.join("base").join("sprites").join("player.png")
         );
-        assert!(load_sprite_rgba(&valid_path).is_none());
+        assert!(load_sprite_rgba(&valid_path).is_err());
     }
 
     #[test]
@@ -1289,7 +1339,7 @@ mod tests {
 
         let grass_path = resolve_sprite_image_path(asset_root, tile_sprite_key(0).expect("key"))
             .expect("sprite path");
-        assert!(load_sprite_rgba(&grass_path).is_none());
+        assert!(load_sprite_rgba(&grass_path).is_err());
     }
 
     #[test]

@@ -1726,6 +1726,51 @@
     }
 
     #[test]
+    fn scenario_setup_combat_chaser_wires_distinct_sprite_keys() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let result = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "combat_chaser".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let message = match result {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        let (player_raw, chaser_raw, dummy_raw) = parse_scenario_setup_ids(&message);
+        let player = world.find_entity(EntityId(player_raw)).expect("player");
+        let chaser = world.find_entity(EntityId(chaser_raw)).expect("chaser");
+        let dummy = world.find_entity(EntityId(dummy_raw)).expect("dummy");
+
+        let player_key = match &player.renderable.kind {
+            RenderableKind::Sprite(key) => key.as_str(),
+            other => panic!("expected player sprite renderable, got {other:?}"),
+        };
+        let chaser_key = match &chaser.renderable.kind {
+            RenderableKind::Sprite(key) => key.as_str(),
+            other => panic!("expected chaser sprite renderable, got {other:?}"),
+        };
+        let dummy_key = match &dummy.renderable.kind {
+            RenderableKind::Sprite(key) => key.as_str(),
+            other => panic!("expected dummy sprite renderable, got {other:?}"),
+        };
+
+        assert_eq!(player_key, "visual_test/pawn_blue");
+        assert_eq!(chaser_key, "visual_test/chaser_red");
+        assert_eq!(dummy_key, "visual_test/dummy_gold");
+        assert_ne!(player_key, chaser_key);
+        assert_ne!(player_key, dummy_key);
+        assert_ne!(chaser_key, dummy_key);
+    }
+
+    #[test]
     fn scenario_setup_combat_chaser_is_idempotent() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
