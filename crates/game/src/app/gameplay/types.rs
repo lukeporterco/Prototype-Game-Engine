@@ -74,6 +74,31 @@ enum SavedInteractableKind {
     ResourcePile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SavedFloorId {
+    Rooftop,
+    Main,
+    Basement,
+}
+
+impl SavedFloorId {
+    fn from_engine_floor(value: engine::FloorId) -> Self {
+        match value {
+            engine::FloorId::Rooftop => Self::Rooftop,
+            engine::FloorId::Main => Self::Main,
+            engine::FloorId::Basement => Self::Basement,
+        }
+    }
+
+    fn to_engine_floor(self) -> engine::FloorId {
+        match self {
+            Self::Rooftop => engine::FloorId::Rooftop,
+            Self::Main => engine::FloorId::Main,
+            Self::Basement => engine::FloorId::Basement,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 struct SavedInteractableRuntime {
     kind: SavedInteractableKind,
@@ -95,8 +120,12 @@ struct SavedEntityRuntime {
     save_id: u64,
     position: SavedVec2,
     rotation_radians: Option<f32>,
+    #[serde(default)]
+    floor: Option<SavedFloorId>,
     selectable: bool,
     actor: bool,
+    #[serde(default)]
+    archetype_def_name: Option<String>,
     move_target_world: Option<SavedVec2>,
     interaction_target_save_id: Option<u64>,
     job_state: SavedJobState,
@@ -107,6 +136,8 @@ struct SavedEntityRuntime {
 struct SaveGame {
     save_version: u32,
     scene_key: SavedSceneKey,
+    #[serde(default)]
+    active_floor: Option<SavedFloorId>,
     camera_position: SavedVec2,
     camera_zoom: f32,
     selected_entity_save_id: Option<u64>,

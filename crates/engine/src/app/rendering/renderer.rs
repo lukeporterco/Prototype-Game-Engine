@@ -77,6 +77,7 @@ pub struct Renderer {
     asset_root: PathBuf,
     sprite_cache: HashMap<String, Option<LoadedSprite>>,
     warned_missing_sprite_keys: HashSet<String>,
+    visible_entity_draw_indices: Vec<usize>,
 }
 
 impl Renderer {
@@ -93,6 +94,7 @@ impl Renderer {
             asset_root,
             sprite_cache: HashMap::new(),
             warned_missing_sprite_keys: HashSet::new(),
+            visible_entity_draw_indices: Vec::new(),
         })
     }
 
@@ -127,6 +129,7 @@ impl Renderer {
         let asset_root = self.asset_root.as_path();
         let sprite_cache = &mut self.sprite_cache;
         let warned_missing_sprite_keys = &mut self.warned_missing_sprite_keys;
+        let visible_entity_draw_indices = &mut self.visible_entity_draw_indices;
         let frame = self.pixels.frame_mut();
         let active_floor = world.active_floor();
         let clear_color = clear_color_for_floor(active_floor);
@@ -137,6 +140,12 @@ impl Renderer {
             world.camera(),
             (self.viewport.width, self.viewport.height),
             VIEW_CULL_PADDING_PX,
+        );
+        collect_sorted_visible_entity_draw_indices(
+            world,
+            active_floor,
+            &view_bounds,
+            visible_entity_draw_indices,
         );
 
         draw_tilemap(
@@ -151,10 +160,8 @@ impl Renderer {
         );
         draw_world_grid(frame, self.viewport.width, self.viewport.height, world);
 
-        for entity in world.entities() {
-            if !entity_visible_on_active_floor(entity, active_floor, &view_bounds) {
-                continue;
-            }
+        for entity_index in visible_entity_draw_indices.iter().copied() {
+            let entity = &world.entities()[entity_index];
             let (cx, cy) = snapped_world_to_screen_px(
                 world.camera(),
                 (self.viewport.width, self.viewport.height),
@@ -241,6 +248,28 @@ fn entity_visible_on_active_floor(
             entity.transform.position,
             ENTITY_CULL_RADIUS_WORLD_TILES,
         )
+}
+
+fn collect_sorted_visible_entity_draw_indices(
+    world: &SceneWorld,
+    active_floor: FloorId,
+    view_bounds: &WorldBounds,
+    out: &mut Vec<usize>,
+) {
+    out.clear();
+    for (index, entity) in world.entities().iter().enumerate() {
+        if entity_visible_on_active_floor(entity, active_floor, view_bounds) {
+            out.push(index);
+        }
+    }
+    out.sort_by(|left, right| {
+        let left_entity = &world.entities()[*left];
+        let right_entity = &world.entities()[*right];
+        left_entity
+            .renderer_overlap_order_key()
+            .cmp(&right_entity.renderer_overlap_order_key())
+            .then_with(|| left_entity.id.0.cmp(&right_entity.id.0))
+    });
 }
 
 fn snap_screen_coordinate_px(coord_px: i32, micro_grid_px: i32) -> i32 {
@@ -889,40 +918,54 @@ fn draw_sprite_centered_scaled(
     sprite: &LoadedSprite,
     scale: f32,
 ) {
-    if sprite.width == 0 || sprite.height == 0 {
+    if sprite.width == 0 || sprite.height == 0 || width == 0 || height == 0 {
         return;
     }
+    let expected_rgba_len = sprite.width as usize * sprite.height as usize * 4;
+    if sprite.rgba.len() < expected_rgba_len {
+        return;
+    }
+
     let scale = normalized_sprite_scale(scale);
+    let inv_scale = scale.recip();
     let (scaled_w, scaled_h) = scaled_sprite_dimensions(sprite, scale);
     let left = center_x - (scaled_w as i32 / 2);
     let top = center_y - (scaled_h as i32 / 2);
+    let right = left + scaled_w as i32;
+    let bottom = top + scaled_h as i32;
 
-    for dy in 0..scaled_h as i32 {
-        let sy = ((dy as f32) / scale).floor() as u32;
-        let sy = sy.min(sprite.height - 1);
-        for dx in 0..scaled_w as i32 {
-            let sx = ((dx as f32) / scale).floor() as u32;
-            let sx = sx.min(sprite.width - 1);
-            let src_offset = ((sy as usize * sprite.width as usize) + sx as usize) * 4;
-            if src_offset + 3 >= sprite.rgba.len() {
-                continue;
-            }
+    let draw_left = left.max(0);
+    let draw_top = top.max(0);
+    let draw_right = right.min(width as i32);
+    let draw_bottom = bottom.min(height as i32);
+    if draw_left >= draw_right || draw_top >= draw_bottom {
+        return;
+    }
+
+    let frame_width = width as usize;
+    let sprite_width = sprite.width as usize;
+
+    for out_y in draw_top..draw_bottom {
+        let dy = out_y - top;
+        let src_y = ((dy as f32) * inv_scale).floor() as u32;
+        let src_y = src_y.min(sprite.height - 1) as usize;
+        let src_row_offset = src_y * sprite_width * 4;
+        let dst_row_offset = out_y as usize * frame_width * 4;
+
+        for out_x in draw_left..draw_right {
+            let dx = out_x - left;
+            let src_x = ((dx as f32) * inv_scale).floor() as u32;
+            let src_x = src_x.min(sprite.width - 1) as usize;
+            let src_offset = src_row_offset + src_x * 4;
             let alpha = sprite.rgba[src_offset + 3];
             if alpha == 0 {
                 continue;
             }
-            let color = [
-                sprite.rgba[src_offset],
-                sprite.rgba[src_offset + 1],
-                sprite.rgba[src_offset + 2],
-                alpha,
-            ];
-            let out_x = left + dx;
-            let out_y = top + dy;
-            if out_x < 0 || out_y < 0 || out_x >= width as i32 || out_y >= height as i32 {
-                continue;
-            }
-            write_pixel_rgba_clipped(frame, width as usize, out_x, out_y, color);
+            let dst_offset = dst_row_offset + out_x as usize * 4;
+            frame[dst_offset] = sprite.rgba[src_offset];
+            frame[dst_offset + 1] = sprite.rgba[src_offset + 1];
+            frame[dst_offset + 2] = sprite.rgba[src_offset + 2];
+            frame[dst_offset + 3] = alpha;
         }
     }
 }
@@ -938,11 +981,11 @@ mod tests {
         view_bounds: &WorldBounds,
     ) -> Vec<EntityId> {
         let active_floor = world.active_floor();
-        world
-            .entities()
-            .iter()
-            .filter(|entity| entity_visible_on_active_floor(entity, active_floor, view_bounds))
-            .map(|entity| entity.id)
+        let mut indices = Vec::new();
+        collect_sorted_visible_entity_draw_indices(world, active_floor, view_bounds, &mut indices);
+        indices
+            .into_iter()
+            .map(|index| world.entities()[index].id)
             .collect()
     }
 
@@ -1021,6 +1064,90 @@ mod tests {
             collect_visible_entity_ids_for_active_floor(&world, &bounds),
             vec![basement_visible]
         );
+    }
+
+    #[test]
+    fn sorted_draw_list_helper_uses_overlap_order_not_storage_order() {
+        let mut world = SceneWorld::default();
+        world.set_active_floor(FloorId::Main);
+        let first = world.spawn(
+            crate::app::Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            crate::app::RenderableDesc {
+                kind: crate::app::RenderableKind::Placeholder,
+                debug_name: "first",
+            },
+        );
+        let second = world.spawn(
+            crate::app::Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            crate::app::RenderableDesc {
+                kind: crate::app::RenderableKind::Placeholder,
+                debug_name: "second",
+            },
+        );
+        let third = world.spawn(
+            crate::app::Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            crate::app::RenderableDesc {
+                kind: crate::app::RenderableKind::Placeholder,
+                debug_name: "third",
+            },
+        );
+        world.apply_pending();
+        world.entities_mut().reverse();
+
+        let bounds = WorldBounds {
+            min_x: -1.0,
+            max_x: 1.0,
+            min_y: -1.0,
+            max_y: 1.0,
+        };
+        let ids = collect_visible_entity_ids_for_active_floor(&world, &bounds);
+        assert_eq!(ids, vec![first, second, third]);
+    }
+
+    #[test]
+    fn sorted_draw_list_helper_is_repeatable() {
+        let mut world = SceneWorld::default();
+        world.set_active_floor(FloorId::Main);
+        world.spawn(
+            crate::app::Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            crate::app::RenderableDesc {
+                kind: crate::app::RenderableKind::Placeholder,
+                debug_name: "a",
+            },
+        );
+        world.spawn(
+            crate::app::Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            crate::app::RenderableDesc {
+                kind: crate::app::RenderableKind::Placeholder,
+                debug_name: "b",
+            },
+        );
+        world.apply_pending();
+
+        let bounds = WorldBounds {
+            min_x: -1.0,
+            max_x: 1.0,
+            min_y: -1.0,
+            max_y: 1.0,
+        };
+        let first = collect_visible_entity_ids_for_active_floor(&world, &bounds);
+        let second = collect_visible_entity_ids_for_active_floor(&world, &bounds);
+        assert_eq!(first, second);
     }
 
     #[test]

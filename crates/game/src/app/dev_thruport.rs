@@ -30,6 +30,7 @@ const THRUPORT_PORT_ENV_VAR: &str = "PROTOGE_THRUPORT_PORT";
 const THRUPORT_DIAG_ENV_VAR: &str = "PROTOGE_THRUPORT_DIAG";
 const THRUPORT_DEFAULT_PORT: u16 = 46001;
 const MAX_PENDING_TELEMETRY_BYTES_PER_CLIENT: usize = 256 * 1024;
+const MAX_PENDING_CONTROL_BYTES_PER_CLIENT: usize = 256 * 1024;
 const REMOTE_CONTROL_PREFIX: &str = "C ";
 const REMOTE_TELEMETRY_PREFIX: &str = "T ";
 
@@ -136,6 +137,7 @@ struct ClientConn {
     read_buf: Vec<u8>,
     active_chunk: Option<OutboundChunkState>,
     queued_chunks: VecDeque<OutboundChunk>,
+    queued_control_bytes: usize,
     queued_telemetry_bytes: usize,
 }
 
@@ -175,6 +177,7 @@ impl TcpRemoteConsoleTransport {
                         read_buf: Vec::new(),
                         active_chunk: None,
                         queued_chunks: VecDeque::new(),
+                        queued_control_bytes: 0,
                         queued_telemetry_bytes: 0,
                     };
                     enqueue_control_line(&mut client, &ready_line_text(self.bound_port));
@@ -230,7 +233,7 @@ impl TcpRemoteConsoleTransport {
     fn send_output_lines(&mut self, lines: &[String]) -> bool {
         for client in &mut self.clients {
             for line in lines {
-                enqueue_control_line(client, line);
+                enqueue_control_line_with_cap(client, line, MAX_PENDING_CONTROL_BYTES_PER_CLIENT);
             }
         }
         self.flush_all_client_outbound()
@@ -252,6 +255,7 @@ impl TcpRemoteConsoleTransport {
                 flush_pending_chunks(
                     &mut client.active_chunk,
                     &mut client.queued_chunks,
+                    &mut client.queued_control_bytes,
                     &mut client.queued_telemetry_bytes,
                     |payload| client.stream.write(payload),
                 )
@@ -440,10 +444,42 @@ fn ready_line_text(port: u16) -> String {
 }
 
 fn enqueue_control_line(client: &mut ClientConn, line: &str) {
+    enqueue_control_line_with_cap(client, line, MAX_PENDING_CONTROL_BYTES_PER_CLIENT);
+}
+
+fn enqueue_control_line_with_cap(client: &mut ClientConn, line: &str, control_cap: usize) {
     let chunk = OutboundChunk {
         class: OutboundClass::Control,
         bytes: encode_remote_tagged_payload(REMOTE_CONTROL_PREFIX, line),
     };
+    let chunk_bytes = chunk.bytes.len();
+    if chunk_bytes > control_cap {
+        if thruport_diag_enabled() {
+            info!(
+                chunk_bytes,
+                control_cap, "thruport_diag_drop_control_chunk_over_cap"
+            );
+        }
+        return;
+    }
+
+    while client.queued_control_bytes.saturating_add(chunk_bytes) > control_cap {
+        if !evict_oldest_queued_control(client) {
+            if thruport_diag_enabled() {
+                info!(
+                    chunk_bytes,
+                    control_cap,
+                    queue_len = client.queued_chunks.len(),
+                    control_bytes = client.queued_control_bytes,
+                    telemetry_bytes = client.queued_telemetry_bytes,
+                    "thruport_diag_drop_control_chunk_no_evictable_entry"
+                );
+            }
+            return;
+        }
+    }
+
+    client.queued_control_bytes = client.queued_control_bytes.saturating_add(chunk_bytes);
     let insert_at = client
         .queued_chunks
         .iter()
@@ -454,6 +490,7 @@ fn enqueue_control_line(client: &mut ClientConn, line: &str) {
         info!(
             line = %line,
             queue_len = client.queued_chunks.len(),
+            control_bytes = client.queued_control_bytes,
             telemetry_bytes = client.queued_telemetry_bytes,
             "thruport_diag_enqueued_control_line"
         );
@@ -497,10 +534,35 @@ fn enqueue_telemetry_line_with_cap(client: &mut ClientConn, line: &str, telemetr
         info!(
             chunk_bytes,
             queue_len = client.queued_chunks.len(),
+            control_bytes = client.queued_control_bytes,
             telemetry_bytes = client.queued_telemetry_bytes,
             "thruport_diag_enqueued_telemetry_line"
         );
     }
+}
+
+fn evict_oldest_queued_control(client: &mut ClientConn) -> bool {
+    let Some(index) = client
+        .queued_chunks
+        .iter()
+        .position(|chunk| chunk.class == OutboundClass::Control)
+    else {
+        return false;
+    };
+    let removed = client.queued_chunks.remove(index).expect("index exists");
+    client.queued_control_bytes = client
+        .queued_control_bytes
+        .saturating_sub(removed.bytes.len());
+    if thruport_diag_enabled() {
+        info!(
+            removed_bytes = removed.bytes.len(),
+            queue_len = client.queued_chunks.len(),
+            control_bytes = client.queued_control_bytes,
+            telemetry_bytes = client.queued_telemetry_bytes,
+            "thruport_diag_evicted_oldest_control"
+        );
+    }
+    true
 }
 
 fn evict_oldest_queued_telemetry(client: &mut ClientConn) -> bool {
@@ -519,6 +581,7 @@ fn evict_oldest_queued_telemetry(client: &mut ClientConn) -> bool {
         info!(
             removed_bytes = removed.bytes.len(),
             queue_len = client.queued_chunks.len(),
+            control_bytes = client.queued_control_bytes,
             telemetry_bytes = client.queued_telemetry_bytes,
             "thruport_diag_evicted_oldest_telemetry"
         );
@@ -529,6 +592,7 @@ fn evict_oldest_queued_telemetry(client: &mut ClientConn) -> bool {
 fn flush_pending_chunks<F>(
     active_chunk: &mut Option<OutboundChunkState>,
     queued_chunks: &mut VecDeque<OutboundChunk>,
+    queued_control_bytes: &mut usize,
     queued_telemetry_bytes: &mut usize,
     mut write_payload: F,
 ) -> io::Result<()>
@@ -540,8 +604,14 @@ where
             let Some(chunk) = queued_chunks.pop_front() else {
                 return Ok(());
             };
-            if chunk.class == OutboundClass::Telemetry {
-                *queued_telemetry_bytes = queued_telemetry_bytes.saturating_sub(chunk.bytes.len());
+            match chunk.class {
+                OutboundClass::Control => {
+                    *queued_control_bytes = queued_control_bytes.saturating_sub(chunk.bytes.len());
+                }
+                OutboundClass::Telemetry => {
+                    *queued_telemetry_bytes =
+                        queued_telemetry_bytes.saturating_sub(chunk.bytes.len());
+                }
             }
             *active_chunk = Some(OutboundChunkState { chunk, written: 0 });
         }
@@ -564,6 +634,7 @@ where
                         written = state.written,
                         total = state.chunk.bytes.len(),
                         queued_len = queued_chunks.len(),
+                        queued_control_bytes = *queued_control_bytes,
                         queued_telemetry_bytes = *queued_telemetry_bytes,
                         "thruport_diag_flush_write_progress"
                     );
@@ -573,6 +644,7 @@ where
                         info!(
                             class = ?state.chunk.class,
                             queued_len = queued_chunks.len(),
+                            queued_control_bytes = *queued_control_bytes,
                             queued_telemetry_bytes = *queued_telemetry_bytes,
                             "thruport_diag_flush_chunk_complete"
                         );
@@ -587,6 +659,7 @@ where
                         written = state.written,
                         total = state.chunk.bytes.len(),
                         queued_len = queued_chunks.len(),
+                        queued_control_bytes = *queued_control_bytes,
                         queued_telemetry_bytes = *queued_telemetry_bytes,
                         "thruport_diag_flush_would_block"
                     );
@@ -607,10 +680,10 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        encode_line_payload, enqueue_control_line, enqueue_telemetry_line_with_cap,
-        flush_pending_chunks, initialize, localhost_bind_addr, parse_enabled_flag,
-        parse_port_or_default, ready_line_text, DevThruport, DevThruportConfig, DevThruportHooks,
-        DevThruportMode, OutboundChunk, OutboundChunkState, OutboundClass,
+        encode_line_payload, enqueue_control_line, enqueue_control_line_with_cap,
+        enqueue_telemetry_line_with_cap, flush_pending_chunks, initialize, localhost_bind_addr,
+        parse_enabled_flag, parse_port_or_default, ready_line_text, DevThruport, DevThruportConfig,
+        DevThruportHooks, DevThruportMode, OutboundChunk, OutboundChunkState, OutboundClass,
         TcpRemoteConsoleTransport, THRUPORT_DEFAULT_PORT,
     };
 
@@ -626,6 +699,7 @@ mod tests {
             read_buf: Vec::new(),
             active_chunk: None,
             queued_chunks: std::collections::VecDeque::new(),
+            queued_control_bytes: 0,
             queued_telemetry_bytes: 0,
         }
     }
@@ -867,28 +941,31 @@ mod tests {
     fn wouldblock_retains_active_chunk_and_queue_order() {
         let mut active_chunk = None;
         let mut queued_chunks = std::collections::VecDeque::new();
-        let mut queued_telemetry_bytes = 0usize;
-        queued_chunks.push_back(OutboundChunk {
+        let control_a = OutboundChunk {
             class: OutboundClass::Control,
             bytes: encode_line_payload("ok: sync"),
-        });
-        queued_chunks.push_back(OutboundChunk {
+        };
+        let control_b = OutboundChunk {
             class: OutboundClass::Control,
             bytes: encode_line_payload("ok: sim paused"),
-        });
+        };
+        let mut queued_control_bytes = control_a.bytes.len().saturating_add(control_b.bytes.len());
+        queued_chunks.push_back(control_a);
+        queued_chunks.push_back(control_b);
         let telemetry = OutboundChunk {
             class: OutboundClass::Telemetry,
             bytes: encode_line_payload(
                 "thruport.frame v1 tick:1 paused:1 qtick:0 ev:0 in:0 in_bad:0",
             ),
         };
-        queued_telemetry_bytes = telemetry.bytes.len();
+        let mut queued_telemetry_bytes = telemetry.bytes.len();
         queued_chunks.push_back(telemetry);
 
         let mut first = true;
         let _ = flush_pending_chunks(
             &mut active_chunk,
             &mut queued_chunks,
+            &mut queued_control_bytes,
             &mut queued_telemetry_bytes,
             |payload| {
                 if first {
@@ -958,6 +1035,43 @@ mod tests {
             .collect();
         assert_eq!(controls_before, controls_after);
         assert!(client.queued_telemetry_bytes <= cap);
+    }
+
+    #[test]
+    fn control_queue_bytes_are_capped() {
+        let mut client = make_client_conn_for_queue_tests();
+        let cap = 32usize;
+        for i in 0..64 {
+            enqueue_control_line_with_cap(&mut client, &format!("ctl-{i}"), cap);
+        }
+
+        assert!(client.queued_control_bytes <= cap);
+        assert!(
+            client
+                .queued_chunks
+                .iter()
+                .filter(|chunk| chunk.class == OutboundClass::Control)
+                .count()
+                > 0
+        );
+    }
+
+    #[test]
+    fn control_eviction_is_fifo_under_pressure() {
+        let mut client = make_client_conn_for_queue_tests();
+        let cap = 8usize; // fits exactly two control chunks for one-character payloads.
+        enqueue_control_line_with_cap(&mut client, "A", cap);
+        enqueue_control_line_with_cap(&mut client, "B", cap);
+        enqueue_control_line_with_cap(&mut client, "C", cap);
+
+        let controls: Vec<String> = client
+            .queued_chunks
+            .iter()
+            .filter(|chunk| chunk.class == OutboundClass::Control)
+            .map(|chunk| String::from_utf8_lossy(&chunk.bytes).to_string())
+            .collect();
+        assert_eq!(client.queued_control_bytes, cap);
+        assert_eq!(controls, vec!["C B\n".to_string(), "C C\n".to_string()]);
     }
 
     #[test]
@@ -1125,13 +1239,16 @@ mod tests {
     fn flush_pending_chunks_handles_large_partial_write_sequence() {
         let mut active_chunk = None;
         let mut queued_chunks = std::collections::VecDeque::new();
+        let mut queued_control_bytes = 0usize;
         let mut queued_telemetry_bytes = 0usize;
         for i in 0..240 {
             if i % 6 == 0 {
-                queued_chunks.push_back(OutboundChunk {
+                let chunk = OutboundChunk {
                     class: OutboundClass::Control,
                     bytes: encode_line_payload(&format!("ok: batch-{i}")),
-                });
+                };
+                queued_control_bytes = queued_control_bytes.saturating_add(chunk.bytes.len());
+                queued_chunks.push_back(chunk);
             } else {
                 let chunk = OutboundChunk {
                     class: OutboundClass::Telemetry,
@@ -1149,6 +1266,7 @@ mod tests {
             flush_pending_chunks(
                 &mut active_chunk,
                 &mut queued_chunks,
+                &mut queued_control_bytes,
                 &mut queued_telemetry_bytes,
                 |payload| {
                     let step = stride.min(payload.len());
@@ -1164,6 +1282,7 @@ mod tests {
 
         assert!(active_chunk.is_none());
         assert!(queued_chunks.is_empty());
+        assert_eq!(queued_control_bytes, 0);
         assert_eq!(queued_telemetry_bytes, 0);
     }
 }

@@ -9,9 +9,11 @@ struct GameplayScene {
     resource_count: u32,
     interactable_cache: Vec<(EntityId, Vec2, f32)>,
     interactable_lookup_by_save_id: HashMap<u64, (EntityId, Vec2, f32)>,
+    target_lookup_by_save_id: HashMap<u64, Vec2>,
     completed_target_ids: Vec<EntityId>,
     entity_save_ids: HashMap<EntityId, u64>,
     save_id_to_entity: HashMap<u64, EntityId>,
+    entity_archetype_id_by_entity: HashMap<EntityId, EntityDefId>,
     next_save_id: u64,
     health_by_entity: HashMap<EntityId, Health>,
     damage_by_entity: HashMap<EntityId, u32>,
@@ -48,9 +50,11 @@ impl GameplayScene {
             resource_count: 0,
             interactable_cache: Vec::new(),
             interactable_lookup_by_save_id: HashMap::new(),
+            target_lookup_by_save_id: HashMap::new(),
             completed_target_ids: Vec::new(),
             entity_save_ids: HashMap::new(),
             save_id_to_entity: HashMap::new(),
+            entity_archetype_id_by_entity: HashMap::new(),
             next_save_id: 0,
             health_by_entity: HashMap::new(),
             damage_by_entity: HashMap::new(),
@@ -104,6 +108,7 @@ impl GameplayScene {
         if let Some(save_id) = self.entity_save_ids.remove(&entity_id) {
             self.save_id_to_entity.remove(&save_id);
         }
+        self.entity_archetype_id_by_entity.remove(&entity_id);
     }
 
     fn save_id_for_entity(&self, entity_id: EntityId) -> Option<u64> {
@@ -475,6 +480,7 @@ impl GameplayScene {
 
     fn build_save_game(&mut self, world: &SceneWorld) -> SaveLoadResult<SaveGame> {
         self.sync_save_id_map_with_world(world)?;
+        let def_db = world.def_database();
 
         let entities = world
             .entities()
@@ -489,13 +495,23 @@ impl GameplayScene {
                     })?;
                 let (move_target_world, interaction_target_save_id, job_state) =
                     Self::saved_order_fields_from_runtime(entity.order_state);
+                let archetype_def_name = self
+                    .entity_archetype_id_by_entity
+                    .get(&entity.id)
+                    .and_then(|def_id| {
+                        def_db
+                            .and_then(|db| db.entity_def(*def_id))
+                            .map(|archetype| archetype.def_name.clone())
+                    });
 
                 Ok(SavedEntityRuntime {
                     save_id,
                     position: SavedVec2::from_vec2(entity.transform.position),
                     rotation_radians: entity.transform.rotation_radians,
+                    floor: Some(SavedFloorId::from_engine_floor(entity.floor)),
                     selectable: entity.selectable,
                     actor: entity.actor,
+                    archetype_def_name,
                     move_target_world,
                     interaction_target_save_id,
                     job_state,
@@ -517,6 +533,7 @@ impl GameplayScene {
         Ok(SaveGame {
             save_version: SAVE_VERSION,
             scene_key: SavedSceneKey::from_scene_key(self.scene_key()),
+            active_floor: Some(SavedFloorId::from_engine_floor(self.active_floor_engine())),
             camera_position: SavedVec2::from_vec2(world.camera().position),
             camera_zoom: world.camera().zoom,
             selected_entity_save_id: self
@@ -532,6 +549,11 @@ impl GameplayScene {
     }
 
     fn apply_save_game(&mut self, save: SaveGame, world: &mut SceneWorld) -> SaveLoadResult<()> {
+        let saved_active_floor = save
+            .active_floor
+            .unwrap_or(SavedFloorId::Main)
+            .to_engine_floor();
+        let def_db = world.def_database().cloned();
         let needs_actor_archetype = save.entities.iter().any(|entity| entity.actor);
         let needs_pile_archetype = save
             .entities
@@ -554,17 +576,28 @@ impl GameplayScene {
         world.clear();
         self.interactable_cache.clear();
         self.interactable_lookup_by_save_id.clear();
+        self.target_lookup_by_save_id.clear();
         self.completed_target_ids.clear();
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
+        self.entity_archetype_id_by_entity.clear();
         self.reset_runtime_component_stores();
         world.camera_mut().position = save.camera_position.to_vec2();
         world.camera_mut().set_zoom_clamped(save.camera_zoom);
 
         let mut spawned_ids = Vec::with_capacity(save.entities.len());
         let mut spawned_ids_by_save_id = HashMap::with_capacity(save.entities.len());
+        let mut loaded_archetype_id_by_entity = HashMap::with_capacity(save.entities.len());
         for saved_entity in &save.entities {
-            let renderable_kind = if saved_entity.interactable.is_some() {
+            let resolved_archetype = saved_entity.archetype_def_name.as_deref().and_then(|name| {
+                let db = def_db.as_ref()?;
+                let id = db.entity_def_id_by_name(name)?;
+                let archetype = db.entity_def(id)?;
+                Some((id, archetype.clone()))
+            });
+            let renderable_kind = if let Some((_, archetype)) = &resolved_archetype {
+                archetype.renderable.clone()
+            } else if saved_entity.interactable.is_some() {
                 pile_archetype
                     .as_ref()
                     .map(|archetype| archetype.renderable.clone())
@@ -577,6 +610,11 @@ impl GameplayScene {
             } else {
                 RenderableKind::Placeholder
             };
+            let floor = saved_entity
+                .floor
+                .unwrap_or(SavedFloorId::Main)
+                .to_engine_floor();
+            world.set_active_floor(floor);
             let id = world.spawn(
                 Transform {
                     position: saved_entity.position.to_vec2(),
@@ -597,6 +635,9 @@ impl GameplayScene {
                     saved_entity.save_id
                 ));
             }
+            if let Some((archetype_id, _)) = resolved_archetype {
+                loaded_archetype_id_by_entity.insert(id, archetype_id);
+            }
         }
         world.apply_pending();
 
@@ -610,6 +651,10 @@ impl GameplayScene {
 
             entity.transform.position = saved_entity.position.to_vec2();
             entity.transform.rotation_radians = saved_entity.rotation_radians;
+            entity.floor = saved_entity
+                .floor
+                .unwrap_or(SavedFloorId::Main)
+                .to_engine_floor();
             entity.selectable = saved_entity.selectable;
             entity.actor = saved_entity.actor;
             entity.order_state = Self::runtime_order_state_from_saved(saved_entity);
@@ -629,7 +674,10 @@ impl GameplayScene {
             .player_entity_save_id
             .and_then(|save_id| spawned_ids_by_save_id.get(&save_id).copied());
         self.rebuild_save_id_map_from_loaded(world, &spawned_ids_by_save_id, save.next_save_id)?;
+        self.entity_archetype_id_by_entity = loaded_archetype_id_by_entity;
         self.resource_count = save.resource_count;
+        self.active_floor = ActiveFloor::from_engine_floor(saved_active_floor);
+        world.set_active_floor(self.active_floor_engine());
         self.sync_runtime_component_stores_with_world(world);
         self.rebuild_active_interactions_from_world_order(world);
         self.rebuild_ai_agents_from_world(world);
@@ -644,6 +692,8 @@ impl GameplayScene {
         self.ai_agents_by_entity.clear();
         self.active_interactions_by_actor.clear();
         self.completed_attack_pairs_this_tick.clear();
+        self.entity_archetype_id_by_entity.clear();
+        self.target_lookup_by_save_id.clear();
         self.next_interaction_id = 0;
     }
 
@@ -655,10 +705,19 @@ impl GameplayScene {
             .retain(|entity_id, _| live_ids.contains(entity_id));
         self.status_sets_by_entity
             .retain(|entity_id, _| live_ids.contains(entity_id));
+        self.entity_archetype_id_by_entity
+            .retain(|entity_id, _| live_ids.contains(entity_id));
+        let def_db = world.def_database();
 
         for entity in world.entities() {
             if entity.actor {
-                let defaults = Self::effective_combat_ai_params(None);
+                let defaults = Self::effective_combat_ai_params(
+                    self.entity_archetype_id_by_entity
+                        .get(&entity.id)
+                        .and_then(|archetype_id| {
+                            def_db.and_then(|db| db.entity_def(*archetype_id))
+                        }),
+                );
                 self.health_by_entity.entry(entity.id).or_insert(Health {
                     current: defaults.health_max,
                     max: defaults.health_max,
@@ -676,11 +735,16 @@ impl GameplayScene {
 
     fn rebuild_ai_agents_from_world(&mut self, world: &SceneWorld) {
         self.ai_agents_by_entity.clear();
+        let def_db = world.def_database();
         for entity in world.entities() {
             if !entity.actor || Some(entity.id) == self.player_id {
                 continue;
             }
-            let defaults = Self::effective_combat_ai_params(None);
+            let defaults = Self::effective_combat_ai_params(
+                self.entity_archetype_id_by_entity
+                    .get(&entity.id)
+                    .and_then(|archetype_id| def_db.and_then(|db| db.entity_def(*archetype_id))),
+            );
             self.ai_agents_by_entity.insert(
                 entity.id,
                 AiAgent::from_home_position(entity.transform.position, defaults),
@@ -1137,6 +1201,8 @@ impl GameplayScene {
                             entity.selectable = true;
                         }
                     }
+                    self.entity_archetype_id_by_entity
+                        .insert(entity_id, archetype_id);
                     stats.spawned_entity_ids.push(entity_id);
 
                     match self.alloc_next_save_id() {
@@ -1447,6 +1513,8 @@ impl GameplayScene {
             current: effective_params.health_max,
             max: effective_params.health_max,
         });
+        self.entity_archetype_id_by_entity
+            .insert(player_id, player_archetype.id);
         self.damage_by_entity
             .entry(player_id)
             .or_insert(effective_params.base_damage);
@@ -1584,10 +1652,11 @@ impl GameplayScene {
 
         self.interactable_cache.clear();
         self.interactable_lookup_by_save_id.clear();
-        let mut target_lookup_by_save_id: HashMap<u64, Vec2> = HashMap::new();
+        self.target_lookup_by_save_id.clear();
         for entity in world.entities() {
             if let Some(target_save_id) = self.entity_save_ids.get(&entity.id).copied() {
-                target_lookup_by_save_id.insert(target_save_id, entity.transform.position);
+                self.target_lookup_by_save_id
+                    .insert(target_save_id, entity.transform.position);
             }
             if let Some(interactable) = entity.interactable {
                 if interactable.remaining_uses > 0 {
@@ -1660,7 +1729,7 @@ impl GameplayScene {
                             entity.transform.position = next;
                         }
                     } else if let Some(target_world) =
-                        target_lookup_by_save_id.get(&target_save_id).copied()
+                        self.target_lookup_by_save_id.get(&target_save_id).copied()
                     {
                         let interaction_radius = self
                             .active_interactions_by_actor
@@ -1695,7 +1764,7 @@ impl GameplayScene {
                         .interactable_lookup_by_save_id
                         .get(&target_save_id)
                         .is_none()
-                        && !target_lookup_by_save_id.contains_key(&target_save_id)
+                        && !self.target_lookup_by_save_id.contains_key(&target_save_id)
                     {
                         entity.order_state = OrderState::Idle;
                     }

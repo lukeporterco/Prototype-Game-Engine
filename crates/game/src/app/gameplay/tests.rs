@@ -62,6 +62,7 @@
         SaveGame {
             save_version: SAVE_VERSION,
             scene_key,
+            active_floor: None,
             camera_position: SavedVec2 { x: 3.0, y: -1.0 },
             camera_zoom: 1.4,
             selected_entity_save_id: Some(10),
@@ -73,8 +74,10 @@
                     save_id: 10,
                     position: SavedVec2 { x: 1.0, y: 2.0 },
                     rotation_radians: None,
+                    floor: None,
                     selectable: true,
                     actor: true,
+                    archetype_def_name: None,
                     move_target_world: Some(SavedVec2 { x: 4.0, y: 2.0 }),
                     interaction_target_save_id: Some(20),
                     job_state: SavedJobState::Working {
@@ -87,8 +90,10 @@
                     save_id: 20,
                     position: SavedVec2 { x: 5.0, y: 6.0 },
                     rotation_radians: None,
+                    floor: None,
                     selectable: false,
                     actor: false,
+                    archetype_def_name: None,
                     move_target_world: None,
                     interaction_target_save_id: None,
                     job_state: SavedJobState::Idle,
@@ -4253,6 +4258,201 @@
     }
 
     #[test]
+    fn apply_save_restores_entity_floors_and_saved_active_floor() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+
+        let mut save = sample_save_game(SavedSceneKey::A);
+        save.active_floor = Some(SavedFloorId::Basement);
+        save.entities[0].floor = Some(SavedFloorId::Main);
+        save.entities[1].floor = Some(SavedFloorId::Rooftop);
+
+        scene.apply_save_game(save, &mut world).expect("apply");
+
+        assert_eq!(scene.active_floor, ActiveFloor::Basement);
+        assert_eq!(world.active_floor(), engine::FloorId::Basement);
+
+        let actor_id = scene
+            .save_id_to_entity
+            .get(&10)
+            .copied()
+            .expect("actor save id mapped");
+        let target_id = scene
+            .save_id_to_entity
+            .get(&20)
+            .copied()
+            .expect("target save id mapped");
+        assert_eq!(
+            world.find_entity(actor_id).expect("actor").floor,
+            engine::FloorId::Main
+        );
+        assert_eq!(
+            world.find_entity(target_id).expect("target").floor,
+            engine::FloorId::Rooftop
+        );
+    }
+
+    #[test]
+    fn old_save_json_without_optional_floor_and_archetype_fields_still_loads() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+
+        let mut value = serde_json::to_value(sample_save_game(SavedSceneKey::A)).expect("to_value");
+        value
+            .as_object_mut()
+            .expect("save object")
+            .remove("active_floor");
+        let entities = value
+            .get_mut("entities")
+            .and_then(|entities| entities.as_array_mut())
+            .expect("entities");
+        for entity in entities {
+            let object = entity.as_object_mut().expect("entity object");
+            object.remove("floor");
+            object.remove("archetype_def_name");
+        }
+
+        let raw = serde_json::to_string(&value).expect("serialize");
+        let parsed = GameplayScene::parse_save_game_json(&raw).expect("parse");
+        GameplayScene::validate_save_game(&parsed, SavedSceneKey::A).expect("validate");
+        scene.apply_save_game(parsed, &mut world).expect("apply");
+
+        assert_eq!(scene.active_floor, ActiveFloor::Main);
+        assert_eq!(world.active_floor(), engine::FloorId::Main);
+        assert!(world
+            .entities()
+            .iter()
+            .all(|entity| entity.floor == engine::FloorId::Main));
+    }
+
+    #[test]
+    fn archetype_identity_persists_across_save_and_load_and_drives_combat_defaults() {
+        let mut source_scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut source_world = SceneWorld::default();
+        seed_def_database(&mut source_world);
+        let def_db = source_world
+            .def_database()
+            .expect("def db available")
+            .clone();
+        let chaser_id = def_db
+            .entity_def_id_by_name("proto.npc_chaser")
+            .expect("npc_chaser id");
+        let dummy_id = def_db
+            .entity_def_id_by_name("proto.npc_dummy")
+            .expect("npc_dummy id");
+
+        source_scene.apply_gameplay_intents_at_safe_point(
+            vec![
+                GameplayIntent::SpawnByArchetypeId {
+                    archetype_id: chaser_id,
+                    position: Vec2 { x: 0.0, y: 0.0 },
+                },
+                GameplayIntent::SpawnByArchetypeId {
+                    archetype_id: dummy_id,
+                    position: Vec2 { x: 2.0, y: 0.0 },
+                },
+            ],
+            &mut source_world,
+        );
+        let save = source_scene.build_save_game(&source_world).expect("save");
+
+        let mut resumed_scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut resumed_world = SceneWorld::default();
+        seed_def_database(&mut resumed_world);
+        resumed_scene
+            .apply_save_game(save, &mut resumed_world)
+            .expect("apply");
+
+        let resumed_db = resumed_world.def_database().expect("resumed def db");
+        let mut chaser_runtime = None::<EntityId>;
+        let mut dummy_runtime = None::<EntityId>;
+        for (entity_id, archetype_id) in &resumed_scene.entity_archetype_id_by_entity {
+            let def_name = resumed_db
+                .entity_def(*archetype_id)
+                .expect("archetype id")
+                .def_name
+                .as_str();
+            if def_name == "proto.npc_chaser" {
+                chaser_runtime = Some(*entity_id);
+            } else if def_name == "proto.npc_dummy" {
+                dummy_runtime = Some(*entity_id);
+            }
+        }
+
+        let chaser_runtime = chaser_runtime.expect("chaser runtime id");
+        let dummy_runtime = dummy_runtime.expect("dummy runtime id");
+        let chaser_health = resumed_scene
+            .health_by_entity
+            .get(&chaser_runtime)
+            .expect("chaser health");
+        let dummy_health = resumed_scene
+            .health_by_entity
+            .get(&dummy_runtime)
+            .expect("dummy health");
+        assert_eq!(chaser_health.max, 200);
+        assert_eq!(dummy_health.max, DEFAULT_MAX_HEALTH);
+        assert_eq!(
+            resumed_scene.damage_by_entity.get(&chaser_runtime).copied(),
+            Some(40)
+        );
+        assert_eq!(
+            resumed_scene.damage_by_entity.get(&dummy_runtime).copied(),
+            Some(ATTACK_DAMAGE_PER_HIT)
+        );
+    }
+
+    #[test]
+    fn target_lookup_reuse_keeps_actor_target_resolution_behavior() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+
+        let actor_id = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let target_id = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.5, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: RenderableKind::Placeholder,
+                debug_name: "target",
+            },
+        );
+        world.apply_pending();
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("sync save ids");
+        let target_save_id = scene
+            .entity_save_ids
+            .get(&target_id)
+            .copied()
+            .expect("target save id");
+        world.find_entity_mut(actor_id).expect("actor").order_state = OrderState::Interact {
+            target_save_id,
+        };
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+
+        assert_eq!(
+            world.find_entity(actor_id).expect("actor").order_state,
+            OrderState::Working {
+                target_save_id,
+                remaining_time: 0.0
+            }
+        );
+    }
+
+    #[test]
     fn sync_save_id_map_assigns_only_missing_and_preserves_existing_ids() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -4343,8 +4543,10 @@
             save_id: 10,
             position: SavedVec2 { x: 0.0, y: 0.0 },
             rotation_radians: None,
+            floor: None,
             selectable: true,
             actor: true,
+            archetype_def_name: None,
             move_target_world: Some(SavedVec2 { x: 9.0, y: 9.0 }),
             interaction_target_save_id: Some(20),
             job_state: SavedJobState::Idle,
