@@ -59,6 +59,7 @@ Inspect first, in this order:
 1) Rules and overview
 - AGENTS.md
 - CODEXNOTES.md
+- `docs/V2_BACKLOG.md` (review before ticket work; append entries when ROADMAP has V2 bullets)
 - `.codex_artifacts/SOME_COMMANDS.md` (canonical thruport start-session workflow)
 - README.md and docs/ (if present)
 
@@ -90,6 +91,18 @@ Suggested sections inside CODEXNOTES.md:
 ## Ticket Format
 When implementing work, follow the ticket’s “CODEX INPUT” section only.  
 If there is a “NOTES” section, treat it as guidance and constraints, not extra scope.
+
+### Ticket structure (Required)
+Every ticket must use exactly these top-level sections, in this order:
+- `CODEX INPUT`
+- `ROADMAP`
+- `NOTES`
+
+### ROADMAP V2 capture rule (Required)
+- `ROADMAP` must include an explicit `V2` subsection (`V2: None` is allowed).
+- If `ROADMAP` includes one or more V2 bullets, append each bullet as its own entry in `docs/V2_BACKLOG.md` in the matching module section.
+- If `ROADMAP` says `V2: None`, do not modify `docs/V2_BACKLOG.md`.
+- Use the strict template in `docs/V2_BACKLOG.md` for every appended entry.
 
 ### Required per-ticket sections (Non-negotiable)
 Every CODEX INPUT must include these subsections.
