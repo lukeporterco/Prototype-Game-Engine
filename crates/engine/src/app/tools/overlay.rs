@@ -8,7 +8,15 @@ const TEXT_SCALE: i32 = 3;
 const GLYPH_ADVANCE: i32 = (GLYPH_WIDTH + 1) * TEXT_SCALE;
 const LINE_ADVANCE: i32 = (GLYPH_HEIGHT + 2) * TEXT_SCALE;
 const OVERLAY_PADDING: i32 = 6 * TEXT_SCALE;
-const OVERLAY_COLOR: [u8; 4] = [230, 240, 180, 255];
+const OVERLAY_PANEL_INSET_X: i32 = 4 * TEXT_SCALE;
+const OVERLAY_PANEL_INSET_Y: i32 = 3 * TEXT_SCALE;
+const OVERLAY_TEXT_PRIMARY_COLOR: [u8; 4] = [244, 248, 252, 255];
+const OVERLAY_TEXT_DIM_COLOR: [u8; 4] = [176, 198, 220, 255];
+const OVERLAY_PANEL_BG_COLOR: [u8; 4] = [10, 12, 16, 210];
+const OVERLAY_PANEL_BORDER_COLOR: [u8; 4] = [92, 106, 126, 255];
+const PERF_SECTION_LABEL: &str = "Perf";
+const SCENE_SECTION_LABEL: &str = "Scene";
+const INSPECT_SECTION_LABEL: &str = "Inspect";
 
 #[derive(Debug, Clone)]
 pub(crate) struct OverlayData {
@@ -30,24 +38,51 @@ pub(crate) fn draw_overlay(frame: &mut [u8], width: u32, height: u32, data: &Ove
     }
 
     let lines = build_overlay_lines(data);
+    if lines.is_empty() {
+        return;
+    }
+
+    let longest_line_chars = lines
+        .iter()
+        .map(|line| line.chars().count() as i32)
+        .max()
+        .unwrap_or(0);
+    let panel_width = longest_line_chars * GLYPH_ADVANCE + OVERLAY_PANEL_INSET_X * 2;
+    let panel_height = lines.len() as i32 * LINE_ADVANCE + OVERLAY_PANEL_INSET_Y * 2;
+    let panel_left = OVERLAY_PADDING - OVERLAY_PANEL_INSET_X;
+    let panel_top = OVERLAY_PADDING - OVERLAY_PANEL_INSET_Y;
+    draw_filled_rect(
+        frame,
+        width,
+        height,
+        panel_left,
+        panel_top,
+        panel_width,
+        panel_height,
+        OVERLAY_PANEL_BG_COLOR,
+    );
+    draw_rect_outline(
+        frame,
+        width,
+        height,
+        panel_left,
+        panel_top,
+        panel_width,
+        panel_height,
+        OVERLAY_PANEL_BORDER_COLOR,
+    );
 
     let mut y = OVERLAY_PADDING;
     for line in lines {
-        draw_text_clipped(
-            frame,
-            width,
-            height,
-            OVERLAY_PADDING,
-            y,
-            &line,
-            OVERLAY_COLOR,
-        );
+        let color = overlay_line_color(&line);
+        draw_text_clipped(frame, width, height, OVERLAY_PADDING, y, &line, color);
         y += LINE_ADVANCE;
     }
 }
 
 fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
     let mut lines = vec![
+        PERF_SECTION_LABEL.to_string(),
         format_fps_line(
             data.metrics.fps,
             data.render_fps_cap,
@@ -57,6 +92,8 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
         format!("Frame: {:.2} ms", data.metrics.frame_time_ms),
         format_perf_line("SIM", data.perf.sim),
         format_perf_line("REN", data.perf.ren),
+        String::new(),
+        SCENE_SECTION_LABEL.to_string(),
         format!("Entities: {}", data.entity_count),
         format!("Content: {}", data.content_status),
         match data.selected_entity {
@@ -71,7 +108,8 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
     ];
 
     if let Some(debug_info) = data.debug_info.as_ref() {
-        lines.push("Inspect".to_string());
+        lines.push(String::new());
+        lines.push(INSPECT_SECTION_LABEL.to_string());
         lines.push(match debug_info.selected_entity {
             Some(id) => format!("sel: {}", id.0),
             None => "sel: none".to_string(),
@@ -104,6 +142,17 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
     }
 
     lines
+}
+
+fn overlay_line_color(line: &str) -> [u8; 4] {
+    if matches!(
+        line,
+        PERF_SECTION_LABEL | SCENE_SECTION_LABEL | INSPECT_SECTION_LABEL
+    ) {
+        OVERLAY_TEXT_DIM_COLOR
+    } else {
+        OVERLAY_TEXT_PRIMARY_COLOR
+    }
 }
 
 fn format_fps_line(current_fps: f32, cap: Option<u32>, slow_frame_delay_ms: u64) -> String {
@@ -230,6 +279,71 @@ fn write_pixel_rgba(frame: &mut [u8], width: usize, x: usize, y: usize, color: [
     }
 
     frame[byte_offset..end].copy_from_slice(&color);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_filled_rect(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    rect_width: i32,
+    rect_height: i32,
+    color: [u8; 4],
+) {
+    let start_x = x.max(0);
+    let start_y = y.max(0);
+    let end_x = (x + rect_width).min(width as i32);
+    let end_y = (y + rect_height).min(height as i32);
+    if end_x <= start_x || end_y <= start_y {
+        return;
+    }
+
+    let width_usize = width as usize;
+    for py in start_y..end_y {
+        for px in start_x..end_x {
+            write_pixel_rgba(frame, width_usize, px as usize, py as usize, color);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_rect_outline(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    rect_width: i32,
+    rect_height: i32,
+    color: [u8; 4],
+) {
+    if rect_width <= 1 || rect_height <= 1 {
+        return;
+    }
+    draw_filled_rect(frame, width, height, x, y, rect_width, 1, color);
+    draw_filled_rect(
+        frame,
+        width,
+        height,
+        x,
+        y + rect_height - 1,
+        rect_width,
+        1,
+        color,
+    );
+    draw_filled_rect(frame, width, height, x, y, 1, rect_height, color);
+    draw_filled_rect(
+        frame,
+        width,
+        height,
+        x + rect_width - 1,
+        y,
+        1,
+        rect_height,
+        color,
+    );
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -571,34 +685,66 @@ mod tests {
     #[test]
     fn unknown_character_is_safe_and_draws_like_space() {
         let mut frame = vec![0u8; 16 * 16 * 4];
-        draw_text_clipped(&mut frame, 16, 16, 0, 0, "\u{1f642}", OVERLAY_COLOR);
+        draw_text_clipped(
+            &mut frame,
+            16,
+            16,
+            0,
+            0,
+            "\u{1f642}",
+            OVERLAY_TEXT_PRIMARY_COLOR,
+        );
         assert!(frame.iter().all(|byte| *byte == 0));
     }
 
     #[test]
     fn clipped_glyph_draw_with_negative_origin_is_safe() {
         let mut frame = vec![0u8; 8 * 8 * 4];
-        draw_text_clipped(&mut frame, 8, 8, -2, -2, "FPS", OVERLAY_COLOR);
+        draw_text_clipped(&mut frame, 8, 8, -2, -2, "FPS", OVERLAY_TEXT_PRIMARY_COLOR);
         assert_eq!(frame.len(), 8 * 8 * 4);
     }
 
     #[test]
     fn clipped_glyph_draw_beyond_bounds_is_safe() {
         let mut frame = vec![0u8; 8 * 8 * 4];
-        draw_text_clipped(&mut frame, 8, 8, 64, 64, "TPS", OVERLAY_COLOR);
+        draw_text_clipped(&mut frame, 8, 8, 64, 64, "TPS", OVERLAY_TEXT_PRIMARY_COLOR);
         assert!(frame.iter().all(|byte| *byte == 0));
     }
 
     #[test]
     fn tiny_viewports_never_panic_or_write_oob() {
         let mut frame_1x1 = vec![0u8; 4];
-        draw_text_clipped(&mut frame_1x1, 1, 1, -10, -10, "Frame", OVERLAY_COLOR);
+        draw_text_clipped(
+            &mut frame_1x1,
+            1,
+            1,
+            -10,
+            -10,
+            "Frame",
+            OVERLAY_TEXT_PRIMARY_COLOR,
+        );
 
         let mut frame_0x8 = vec![];
-        draw_text_clipped(&mut frame_0x8, 0, 8, 0, 0, "Entities", OVERLAY_COLOR);
+        draw_text_clipped(
+            &mut frame_0x8,
+            0,
+            8,
+            0,
+            0,
+            "Entities",
+            OVERLAY_TEXT_PRIMARY_COLOR,
+        );
 
         let mut frame_8x0 = vec![];
-        draw_text_clipped(&mut frame_8x0, 8, 0, 0, 0, "Content", OVERLAY_COLOR);
+        draw_text_clipped(
+            &mut frame_8x0,
+            8,
+            0,
+            0,
+            0,
+            "Content",
+            OVERLAY_TEXT_PRIMARY_COLOR,
+        );
     }
 
     #[test]
@@ -641,18 +787,44 @@ mod tests {
             }),
         };
         let lines = build_overlay_lines(&data);
-        assert_eq!(lines.len(), 19);
-        assert_eq!(lines[10], "Inspect");
+        assert_eq!(lines.len(), 23);
+        assert_eq!(lines[14], INSPECT_SECTION_LABEL);
         assert_eq!(
-            lines[16],
+            lines[20],
             "sys: InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup"
         );
-        assert_eq!(lines[17], "ev: 1");
-        assert_eq!(lines[18], "evk: is:0 ic:0 dm:0 dd:0 sa:1 se:0");
+        assert_eq!(lines[21], "ev: 1");
+        assert_eq!(lines[22], "evk: is:0 ic:0 dm:0 dd:0 sa:1 se:0");
         assert_eq!(
             OVERLAY_PADDING + (lines.len() as i32 - 1) * LINE_ADVANCE,
-            396
+            480
         );
+    }
+
+    #[test]
+    fn draw_overlay_writes_backing_plate_pixels() {
+        let data = OverlayData {
+            metrics: LoopMetricsSnapshot::default(),
+            perf: PerfStatsSnapshot::default(),
+            render_fps_cap: Some(60),
+            slow_frame_delay_ms: 0,
+            entity_count: 1,
+            content_status: "loaded",
+            selected_entity: None,
+            selected_target: None,
+            resource_count: Some(0),
+            debug_info: None,
+        };
+        let mut frame = vec![0u8; 320 * 180 * 4];
+        draw_overlay(&mut frame, 320, 180, &data);
+
+        let has_backing_pixel = frame.chunks_exact(4).any(|px| {
+            px[0] == OVERLAY_PANEL_BG_COLOR[0]
+                && px[1] == OVERLAY_PANEL_BG_COLOR[1]
+                && px[2] == OVERLAY_PANEL_BG_COLOR[2]
+                && px[3] == OVERLAY_PANEL_BG_COLOR[3]
+        });
+        assert!(has_backing_pixel);
     }
 
     #[test]
