@@ -1256,3 +1256,65 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
   3) PASS criteria:
      - Control acks include `ok: sim paused`, `ok: thruport.telemetry v1 enabled:1`, `ok: queued tick 5`, and `ok: sync`.
      - Telemetry output includes exactly 5 lines matching `thruport.frame v1 ... paused:1 ...` for the queued manual ticks.
+
+---
+
+## Migration Notes (2026-03-01)
+- Moved detailed historical notes from `CODEXNOTES.md` into archive to keep `CODEXNOTES.md` as active-context only.
+- Scope moved: status model reminder, Tickets 55-65 detail bullets, and legacy module-boundary dump.
+
+## Ticket Notes (Moved from CODEXNOTES.md on 2026-03-01)
+- Status model reminder: statuses use `StatusId(&'static str)` and shipping slow status id is `status.slow`.
+- Ticket 55 (2026-02-28): renderer now owns a micro-grid snap policy for world-space draw placement (`crates/engine/src/app/rendering/renderer.rs`), defaulting to `MICRO_GRID_RESOLUTION_PX = 1`; simulation transforms and picking logic remain unchanged.
+- Ticket 56 (2026-02-28): added floor-layer runtime contract with `FloorId` (Rooftop/Main/Basement), `Entity.floor`, and `SceneWorld.active_floor`; topmost pick functions now take optional floor filters (`None` keeps legacy behavior) and `floor.set` routes as an engine queueable command to scene-owned behavior.
+- Ticket 57 (2026-02-28): gameplay orderability contract now restricts job/order commands (`order.move`, `order.interact`, right-click job intents) to the authoritative `player_id`; non-player NPC actors remain selectable but are non-jobbable, and combat AI auto-registration now requires archetype combat fields instead of applying to every non-player actor.
+- Ticket 57 (2026-02-28, occlusion assist v0): renderer affordances now support deterministic occlusion assist using renderer overlap order keys (`Entity::renderer_overlap_order_key`) and placeholder-sized screen bounds; `SceneVisualState` gained `targeted_interactable`, gameplay populates it from selected actor `Interact/Working` target on active floor, and renderer draws x-ray outline passes without changing simulation or picking.
+- Ticket 58.1 (2026-02-28): added tiny visual-test sprite assets under `assets/base/sprites/visual_test/` and rewired `proto.player`, `proto.npc_chaser`, and `proto.npc_dummy` sprite keys to those assets; renderer sprite-load fallback remains unchanged, with new rate-limited once-per-key warning logs for missing/invalid/decode-failed sprite loads.
+- Ticket 58.2 (2026-02-28): added gameplay scenario id `visual_sandbox` to `scenario.setup`, which deterministically clears live entities then spawns `proto.player`, `proto.resource_pile`, `proto.door_dummy`, and `proto.stockpile_small` at fixed on-screen coordinates with an intentional overlap at `(0,0)`; success payload schema is `scenario.setup visual_sandbox player:<id> prop:<id> wall:<id> floor:<id>`.
+- Ticket 59 (2026-02-28): sprite renderables now support optional XML `pixelScale` (1..=16, default 1) carried through runtime and content pack (`CONTENT_PACK_FORMAT_VERSION` bumped to 3); renderer applies integer nearest-neighbor sprite enlargement via scaled draw dimensions while keeping pixel-snap placement and all gameplay/picking semantics unchanged.
+- Ticket 60 (2026-02-28): save/load v3 remains backward-compatible but now carries optional floor/archetype identity fields (`SaveGame.active_floor`, `SavedEntityRuntime.floor`, `SavedEntityRuntime.archetype_def_name`); apply-save restores per-entity floors by temporarily setting `SceneWorld.active_floor` before each spawn and then reapplies saved scene active floor. Gameplay now tracks `entity_archetype_id_by_entity` and reuses `target_lookup_by_save_id` across ticks to avoid per-tick map reallocations, while restore/rebuild paths derive combat defaults from persisted archetype identity when available.
+- Ticket 60 (2026-02-28, rendering/transport/content robustness): renderer world pass now consumes an explicit sorted visible draw list (`renderer_overlap_order_key` + `EntityId` tiebreak) instead of relying on entity storage order, and `draw_sprite_centered_scaled` now clips destination bounds once and uses precomputed inverse-scale row/column mapping. Content atomic writes now use a std-only backup-rename replacement flow (no delete gap), and thruport now enforces a per-client control-queue byte cap with oldest-control eviction while preserving control-before-telemetry queue ordering.
+- Ticket 61.1 (2026-02-28): added dev-only Command Palette UI in engine tools (`crates/engine/src/app/tools/command_palette.rs`) that emits command strings into existing console pending-line parsing flow (no parser/routing semantics change). Palette supports immediate buttons plus single-use armed spawn placement (`spawn <def> x y`) with world-space click resolution, right-click cancel, and panel-hit exclusion from placement; spawn presets are sourced from active-world `DefDatabase` def names.
+- Ticket 61.2 (2026-02-28): debug overlay readability pass updated `crates/engine/src/app/tools/overlay.rs` with a high-contrast text palette, deterministic grouped spacing, and an always-on solid alpha backing plate + border behind overlay text; no metrics/simulation/input/gameplay behavior changed.
+- Ticket 62.1 (2026-02-28): added visual-only per-entity action payload contract (`ActionState`, `ActionParams`, `CardinalFacing`, `ActionTargetHint`, `EntityActionVisual`) under `SceneWorld.visual_state.entity_action_visuals` keyed by `EntityId`; missing entries resolve to `Idle` + zero params.
+- Ticket 62.1 (2026-02-28): gameplay now emits player `Idle`/`Walk` + cardinal facing every tick via `SceneWorld::set_entity_action_visual`, with gameplay-owned `last_player_facing` persistence; renderer remains stateless for facing fallback and must not use this payload for simulation decisions.
+- Ticket 62.2 (2026-02-28): sprite renderables now support optional fixed-name anchors stored as integer pixels (`SpriteAnchors` with `SpriteAnchorPx{i16}`), authored via XML `<anchors><anchor .../></anchors>` and persisted through content pack format v4.
+- Ticket 62.2 (2026-02-28): renderer anchor transform policy is West-only horizontal mirror (`x_px -> -x_px`); East/North/South apply no runtime anchor transform and rely on distinct authored sprite art for orientation differences.
+- Ticket 62.2 (2026-02-28): carry attachment remains visual-only: when action visual is `Carry` with `held_visual`, renderer resolves the def and draws its sprite at the entity carry anchor (missing anchor/def safely falls back or skips without per-frame log spam).
+- Ticket 62.3 (2026-02-28): renderer now applies a visual-only procedural offset layer for `Idle`/`Walk`/`Hit` derived from the fixed-step loop tick counter (not frame-dt), so motion remains deterministic across FPS and does not mutate simulation transforms/picking state.
+- Ticket 62.3 (2026-02-28): procedural offsets are applied before the existing micro-grid snap path for both base entity draw and carry attachment draw; `rotation_radians` is computed internally but intentionally unused by current sprite draw routines.
+- Ticket 62.4 (2026-02-28): renderer sprite-variant fallback is scoped to `visual_test/` keys only, with deterministic lookup order `{base}__{state}_{facing}` -> `{base}__{state}` -> `{base}`; non-`visual_test/` keys bypass variant probing entirely.
+- Ticket 62.4 (2026-02-28): `visual_sandbox` keeps the role-stable success payload schema (`player/prop/wall/floor`) and role semantics, while additional demo interactables may spawn outside payload for deterministic showcase coverage.
+- Ticket 62.4 (2026-02-28): sandbox-only player action forcing uses deterministic rules (interaction target tags -> `Interact`/`UseTool`, carry-lane x-threshold -> `Carry`, otherwise movement `Idle`/`Walk`) with no progression/unlock state.
+- Ticket 63 (2026-02-28): gameplay now tracks `pawn_role_by_entity` for actor control roles (`PlayerPawn`, `Settler`, `Npc`), with role entries populated only when spawn intents are applied and a committed live `EntityId` exists.
+- Ticket 63 (2026-02-28): `PlayerPawn` role assignment is authority-owned only (`GameplayScene.player_id`), never inferred from `defName`; `spawn proto.player` remains non-authoritative by default.
+- Ticket 63 (2026-02-28): orderability gates for right-click and `order.move` / `order.interact` now target selected orderable pawns (`PlayerPawn` + `Settler`) while NPC actors stay selectable but non-orderable; keyboard movement remains authoritative-player-only.
+- Ticket 63 (2026-02-28): `scenario.setup visual_sandbox` now also spawns one deterministic settler (`proto.settler`) without changing the success payload schema (`player/prop/wall/floor`).
+- Ticket 64 (2026-03-01): Settler navigation is gameplay-owned (`crates/game/src/app/gameplay/nav.rs`) with deterministic tile A* (4-neighbor `N,E,S,W`) and deterministic open-list tie-break ordering `(f,h,y,x,insertion_order)` using a monotonic insertion counter.
+- Ticket 64 (2026-03-01): nav cache invalidation uses deterministic `TilemapNavKey { width, height, origin bits, tiles_hash }`; `tiles_hash` is stable FNV-1a over tile IDs (no pointer/address identity).
+- Ticket 64 (2026-03-01): Settler `order.move` snaps `goal_tile = world_to_tile(target_world)` and completes at the goal tile center; unreachable/blocked/out-of-bounds goals fail deterministically and settle to `Idle`.
+- Ticket 64 (2026-03-01): added deterministic scenario `scenario.setup nav_sandbox` (`player:<id> settler:<id>`) with a blocked strip (tile id `2`) that forces detour pathing.
+- Ticket 65 (2026-03-01): gameplay now has a first-class runtime `JobBoard` (`JobId`, `JobKind`, `JobTarget`, `JobState`, reservation + assignment map) and Settler runner phases (`Idle`, `Navigating`, `Interacting`).
+- Ticket 65 (2026-03-01): assigning a new job to a Settler deterministically interrupts same-tick prior assignment by failing old job, clearing nav/`OrderState`, and canceling active interaction before new assignment.
+- Ticket 65 (2026-03-01): `OrderState` is now an actuator for Settler jobs; `OrderState::MoveTo` and nav path state must not outlive assigned job lifecycle (completion/failure/interruption clear both assignment and locomotion state atomically).
+- Ticket 65 (2026-03-01): Settler `UseInteractable` jobs complete only from existing `InteractionCompleted` events; job runner never directly mutates target completion/resource outcomes.
+
+## Module Boundaries and Ownership (Legacy Snapshot moved 2026-03-01)
+### A. Module map
+- Core: shared IDs, value types, and cross-module contracts.
+- App/Loop: main loop, window/input pump, scene routing, and queueable command execution.
+- SceneMachine and Scene: scene lifecycle (`load/update/render/unload`) and debug-command seam.
+- World (SceneWorld and runtime state): runtime entities, camera, tilemap, visuals, debug markers, and pick helpers.
+- Rendering: projection, world pass draw policy, sprite/tile draw, and overlay/console composition.
+- Assets and Content Pipeline: XML discovery/compile, cache planning, and DefDatabase runtime load path.
+- Input: action snapshots and edge-trigger semantics for simulation-safe input use.
+- Tools (Overlay, Console): in-game console parsing/queueing and debug overlay text/perf presentation.
+- Placeholders (Physics, Audio, Scripting seam): reserved seams only; no advanced subsystem ownership yet.
+### B. Ownership rules
+- Engine owns render policy, command parsing/routing, and scene machine orchestration.
+- Game owns gameplay rules/state transitions and scene debug command behavior.
+- Runtime simulation state mutates in gameplay safe points, not in rendering paths.
+### C. Seam invariants
+- Dependency direction remains engine -> game boundary-safe with scene trait seam.
+- Rendering/picking policies may read runtime state but must not mutate simulation transforms.
+- Console queueable outputs remain standardized as `ok:` or `error:` lines.
