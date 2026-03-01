@@ -177,6 +177,11 @@ impl GameplaySystemsHost {
             return;
         }
         let is_authoritative_player = Some(actor_id) == context.player_id;
+        let is_settler = context
+            .pawn_role_by_entity
+            .get(&actor_id)
+            .copied()
+            .is_some_and(|role| role == PawnControlRole::Settler);
         if !is_authoritative_player
             && !context
                 .pawn_role_by_entity
@@ -184,6 +189,9 @@ impl GameplaySystemsHost {
                 .copied()
                 .is_some_and(PawnControlRole::is_orderable)
         {
+            return;
+        }
+        if is_settler {
             return;
         }
         if let Some(target_id) = interactable_target {

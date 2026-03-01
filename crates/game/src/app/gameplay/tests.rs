@@ -2136,6 +2136,288 @@
         );
     }
 
+    #[test]
+    fn job_board_lifecycle_open_reserved_inprogress_completed() {
+        let mut board = JobBoard::default();
+        let actor = EntityId(42);
+        let job_id = board.create_job(
+            JobKind::MoveToPoint,
+            JobTarget::WorldPoint(Vec2 { x: 1.0, y: 2.0 }),
+            0,
+        );
+        let created = board.job(job_id).expect("created job");
+        assert_eq!(created.state, JobState::Open);
+        assert_eq!(created.reserved_by, None);
+
+        assert!(board.assign_job_to_entity(job_id, actor));
+        let reserved = board.job(job_id).expect("reserved job");
+        assert_eq!(reserved.state, JobState::Reserved);
+        assert_eq!(reserved.reserved_by, Some(actor));
+        assert_eq!(board.assigned_job_id(actor), Some(job_id));
+
+        board.mark_job_in_progress(job_id);
+        assert_eq!(board.job(job_id).expect("in progress").state, JobState::InProgress);
+
+        board.mark_job_state(job_id, JobState::Completed);
+        board.clear_assignment_for_entity(actor);
+        let completed = board.job(job_id).expect("completed");
+        assert_eq!(completed.state, JobState::Completed);
+        assert_eq!(completed.reserved_by, None);
+        assert_eq!(board.assigned_job_id(actor), None);
+    }
+
+    #[test]
+    fn job_failure_on_missing_target_save_id() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let job_id = scene
+            .assign_job_to_actor_with_interruption(
+                settler_id,
+                JobKind::UseInteractable,
+                JobTarget::TargetSaveId(999_999),
+                &mut world,
+            )
+            .expect("job id");
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+
+        assert_eq!(scene.job_board.assigned_job_id(settler_id), None);
+        assert_eq!(
+            scene.job_board.job(job_id).expect("job record").state,
+            JobState::Failed
+        );
+        assert_eq!(
+            scene
+                .job_phase_by_entity
+                .get(&settler_id)
+                .copied()
+                .unwrap_or(JobPhase::Idle),
+            JobPhase::Idle
+        );
+        assert_eq!(world.find_entity(settler_id).expect("settler").order_state, OrderState::Idle);
+    }
+
+    #[test]
+    fn job_reassignment_interrupts_existing_job_same_tick() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let first_job = scene
+            .assign_job_to_actor_with_interruption(
+                settler_id,
+                JobKind::MoveToPoint,
+                JobTarget::WorldPoint(Vec2 { x: 2.0, y: 0.0 }),
+                &mut world,
+            )
+            .expect("first job");
+
+        scene.nav_path_by_entity.insert(
+            settler_id,
+            NavigationPathState {
+                goal_tile: TileCoord { x: 1, y: 1 },
+                waypoints_world: vec![Vec2 { x: 1.5, y: 1.5 }],
+                next_waypoint_index: 0,
+            },
+        );
+        world.find_entity_mut(settler_id).expect("settler").order_state = OrderState::MoveTo {
+            point: Vec2 { x: 2.0, y: 0.0 },
+        };
+        scene.active_interactions_by_actor.insert(
+            settler_id,
+            ActiveInteraction {
+                actor_id: settler_id,
+                target_id: settler_id,
+                interaction_id: InteractionId(777),
+                kind: ActiveInteractionKind::Use,
+                interaction_range: 1.0,
+                duration_seconds: 1.0,
+                remaining_seconds: None,
+            },
+        );
+
+        let second_job = scene
+            .assign_job_to_actor_with_interruption(
+                settler_id,
+                JobKind::MoveToPoint,
+                JobTarget::WorldPoint(Vec2 { x: 3.0, y: 0.0 }),
+                &mut world,
+            )
+            .expect("second job");
+
+        assert_ne!(first_job, second_job);
+        assert_eq!(
+            scene.job_board.job(first_job).expect("first job record").state,
+            JobState::Failed
+        );
+        assert_eq!(scene.job_board.assigned_job_id(settler_id), Some(second_job));
+        assert!(scene.nav_path_by_entity.get(&settler_id).is_none());
+        assert_eq!(world.find_entity(settler_id).expect("settler").order_state, OrderState::Idle);
+        assert!(!scene.active_interactions_by_actor.contains_key(&settler_id));
+        assert!(scene.system_intents.drain_current_tick().iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::CancelInteraction { actor_id } if *actor_id == settler_id
+            )
+        }));
+    }
+
+    #[test]
+    fn actuator_state_cleared_with_job_completion_or_failure() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let job_id = scene
+            .assign_job_to_actor_with_interruption(
+                settler_id,
+                JobKind::MoveToPoint,
+                JobTarget::WorldPoint(Vec2 { x: 2.0, y: 0.0 }),
+                &mut world,
+            )
+            .expect("job");
+        scene.nav_path_by_entity.insert(
+            settler_id,
+            NavigationPathState {
+                goal_tile: TileCoord { x: 1, y: 1 },
+                waypoints_world: vec![Vec2 { x: 1.5, y: 1.5 }],
+                next_waypoint_index: 0,
+            },
+        );
+        world.find_entity_mut(settler_id).expect("settler").order_state = OrderState::MoveTo {
+            point: Vec2 { x: 2.0, y: 0.0 },
+        };
+        scene.finalize_assigned_job_and_clear_locomotion(
+            settler_id,
+            JobState::Completed,
+            &mut world,
+            false,
+        );
+        assert_eq!(scene.job_board.assigned_job_id(settler_id), None);
+        assert_eq!(
+            scene.job_board.job(job_id).expect("job").state,
+            JobState::Completed
+        );
+        assert!(scene.nav_path_by_entity.get(&settler_id).is_none());
+        assert_eq!(world.find_entity(settler_id).expect("settler").order_state, OrderState::Idle);
+        assert_eq!(
+            scene
+                .job_phase_by_entity
+                .get(&settler_id)
+                .copied()
+                .unwrap_or(JobPhase::Idle),
+            JobPhase::Idle
+        );
+
+        let second_job = scene
+            .assign_job_to_actor_with_interruption(
+                settler_id,
+                JobKind::MoveToPoint,
+                JobTarget::WorldPoint(Vec2 { x: 3.0, y: 0.0 }),
+                &mut world,
+            )
+            .expect("second job");
+        scene.finalize_assigned_job_and_clear_locomotion(
+            settler_id,
+            JobState::Failed,
+            &mut world,
+            true,
+        );
+        assert_eq!(scene.job_board.assigned_job_id(settler_id), None);
+        assert_eq!(
+            scene.job_board.job(second_job).expect("job").state,
+            JobState::Failed
+        );
+        assert!(scene.nav_path_by_entity.get(&settler_id).is_none());
+        assert_eq!(world.find_entity(settler_id).expect("settler").order_state, OrderState::Idle);
+    }
+
+    #[test]
+    fn settler_use_interactable_job_completes_via_interaction_event_and_returns_idle() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: -2.0, y: 0.0 },
+        );
+        let pile_id = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 1);
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("save-id sync");
+        let target_save_id = scene.save_id_for_entity(pile_id).expect("target save id");
+
+        let job_id = scene
+            .assign_job_to_actor_with_interruption(
+                settler_id,
+                JobKind::UseInteractable,
+                JobTarget::TargetSaveId(target_save_id),
+                &mut world,
+            )
+            .expect("job");
+
+        let mut saw_interaction_completed = false;
+        for _ in 0..120 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            if scene.system_events.last_tick_counts().interaction_completed > 0 {
+                saw_interaction_completed = true;
+            }
+            if scene.job_board.assigned_job_id(settler_id).is_none() {
+                break;
+            }
+        }
+
+        assert!(saw_interaction_completed);
+        assert_eq!(scene.job_board.assigned_job_id(settler_id), None);
+        assert_eq!(
+            scene.job_board.job(job_id).expect("job").state,
+            JobState::Completed
+        );
+        assert_eq!(
+            scene
+                .job_phase_by_entity
+                .get(&settler_id)
+                .copied()
+                .unwrap_or(JobPhase::Idle),
+            JobPhase::Idle
+        );
+        assert_eq!(world.find_entity(settler_id).expect("settler").order_state, OrderState::Idle);
+        assert!(scene.nav_path_by_entity.get(&settler_id).is_none());
+    }
+
     fn snapped_tile_center_for_world(tilemap: &Tilemap, world: Vec2) -> Vec2 {
         let tile_x = (world.x - tilemap.origin().x).floor() as i32;
         let tile_y = (world.y - tilemap.origin().y).floor() as i32;
@@ -2278,8 +2560,21 @@
         scene.update(1.0 / 60.0, &InputSnapshot::empty(), &mut world);
         world.apply_pending();
 
-        let settler = world.find_entity(settler_id).expect("settler");
-        assert_eq!(settler.order_state, OrderState::Interact { target_save_id });
+        let assigned_job_id = scene
+            .job_board
+            .assigned_job_id(settler_id)
+            .expect("assigned settler job");
+        let assigned_job = scene.job_board.job(assigned_job_id).expect("job");
+        assert_eq!(assigned_job.kind, JobKind::UseInteractable);
+        assert_eq!(assigned_job.target, JobTarget::TargetSaveId(target_save_id));
+        assert_eq!(
+            scene
+                .job_phase_by_entity
+                .get(&settler_id)
+                .copied()
+                .unwrap_or(JobPhase::Idle),
+            JobPhase::Navigating
+        );
     }
 
     #[test]
@@ -3649,13 +3944,22 @@
         let click = right_click_snapshot(Vec2 { x: 640.0, y: 360.0 }, (1280, 720));
         scene.update(1.0 / 60.0, &click, &mut world);
 
-        let updated = world.find_entity(actor).expect("actor");
-        let target_save_id = scene
-            .entity_save_ids
-            .get(&pile)
-            .copied()
-            .expect("pile save id");
-        assert_eq!(updated.order_state, OrderState::Interact { target_save_id });
+        let target_save_id = scene.entity_save_ids.get(&pile).copied().expect("pile save id");
+        let assigned_job_id = scene
+            .job_board
+            .assigned_job_id(actor)
+            .expect("assigned job for settler");
+        let assigned_job = scene.job_board.job(assigned_job_id).expect("job record");
+        assert_eq!(assigned_job.kind, JobKind::UseInteractable);
+        assert_eq!(assigned_job.target, JobTarget::TargetSaveId(target_save_id));
+        assert_eq!(
+            scene
+                .job_phase_by_entity
+                .get(&actor)
+                .copied()
+                .unwrap_or(JobPhase::Idle),
+            JobPhase::Navigating
+        );
     }
 
     #[test]

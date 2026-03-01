@@ -29,6 +29,8 @@ struct GameplayScene {
     visual_sandbox_demo_active: bool,
     nav_passability_cache: NavigationPassabilityCache,
     nav_path_by_entity: HashMap<EntityId, NavigationPathState>,
+    job_board: JobBoard,
+    job_phase_by_entity: HashMap<EntityId, JobPhase>,
     systems_host: GameplaySystemsHost,
     system_events: GameplayEventBus,
     system_intents: GameplayIntentQueue,
@@ -75,6 +77,8 @@ impl GameplayScene {
             visual_sandbox_demo_active: false,
             nav_passability_cache: NavigationPassabilityCache::default(),
             nav_path_by_entity: HashMap::new(),
+            job_board: JobBoard::default(),
+            job_phase_by_entity: HashMap::new(),
             systems_host: GameplaySystemsHost::default(),
             system_events: GameplayEventBus::default(),
             system_intents: GameplayIntentQueue::default(),
@@ -155,6 +159,63 @@ impl GameplayScene {
         self.pawn_role_by_entity.get(&actor_id).copied() == Some(PawnControlRole::Settler)
     }
 
+    fn clear_actor_locomotion_state(
+        &mut self,
+        actor_id: EntityId,
+        world: &mut SceneWorld,
+        enqueue_cancel_if_needed: bool,
+    ) {
+        self.nav_path_by_entity.remove(&actor_id);
+        if let Some(actor) = world.find_entity_mut(actor_id) {
+            actor.order_state = OrderState::Idle;
+        }
+        if self.active_interactions_by_actor.remove(&actor_id).is_some() && enqueue_cancel_if_needed
+        {
+            self.system_intents
+                .enqueue(GameplayIntent::CancelInteraction { actor_id });
+        }
+        self.job_phase_by_entity.insert(actor_id, JobPhase::Idle);
+    }
+
+    fn finalize_assigned_job_and_clear_locomotion(
+        &mut self,
+        actor_id: EntityId,
+        state: JobState,
+        world: &mut SceneWorld,
+        enqueue_cancel_if_needed: bool,
+    ) {
+        if let Some(job_id) = self.job_board.clear_assignment_for_entity(actor_id) {
+            self.job_board.mark_job_state(job_id, state);
+        }
+        self.clear_actor_locomotion_state(actor_id, world, enqueue_cancel_if_needed);
+    }
+
+    fn assign_job_to_actor_with_interruption(
+        &mut self,
+        actor_id: EntityId,
+        kind: JobKind,
+        target: JobTarget,
+        world: &mut SceneWorld,
+    ) -> Option<JobId> {
+        let actor = world.find_entity(actor_id)?;
+        if !actor.actor || !self.actor_uses_settler_navigation(actor_id) {
+            return None;
+        }
+        if let Some(existing_job_id) = self.job_board.assigned_job_id(actor_id) {
+            self.job_board.mark_job_state(existing_job_id, JobState::Failed);
+            self.job_board.clear_assignment_for_entity(actor_id);
+            self.clear_actor_locomotion_state(actor_id, world, true);
+        }
+        let job_id = self.job_board.create_job(kind, target, 0);
+        if !self.job_board.assign_job_to_entity(job_id, actor_id) {
+            self.job_board.mark_job_state(job_id, JobState::Failed);
+            return None;
+        }
+        self.job_phase_by_entity
+            .insert(actor_id, JobPhase::Navigating);
+        Some(job_id)
+    }
+
     fn refresh_nav_cache_from_world(&mut self, world: &SceneWorld) {
         self.nav_passability_cache.refresh_from_tilemap(world.tilemap());
     }
@@ -215,6 +276,45 @@ impl GameplayScene {
         true
     }
 
+    fn start_use_interaction_for_actor_target(
+        &mut self,
+        actor_id: EntityId,
+        target_id: EntityId,
+        world: &SceneWorld,
+    ) -> bool {
+        let Some(target) = world.find_entity(target_id) else {
+            return false;
+        };
+        if target.interactable.is_none() {
+            return false;
+        }
+        if self.active_interactions_by_actor.contains_key(&actor_id) {
+            return true;
+        }
+        let interaction_id = GameplaySystemsHost::alloc_interaction_id(&mut self.next_interaction_id);
+        let Some(interaction_range) = GameplaySystemsHost::interaction_range_for_use_target(target)
+        else {
+            return false;
+        };
+        let duration_seconds = GameplaySystemsHost::interaction_duration_seconds_for_use_target(target);
+        self.active_interactions_by_actor.insert(
+            actor_id,
+            ActiveInteraction {
+                actor_id,
+                target_id,
+                interaction_id,
+                kind: ActiveInteractionKind::Use,
+                interaction_range,
+                duration_seconds,
+                remaining_seconds: None,
+            },
+        );
+        self.system_events.emit(GameplayEvent::InteractionStarted { actor_id, target_id });
+        self.system_intents
+            .enqueue(GameplayIntent::StartInteraction { actor_id, target_id });
+        true
+    }
+
     fn alloc_next_save_id(&mut self) -> SaveLoadResult<u64> {
         let save_id = self.next_save_id;
         self.next_save_id = self
@@ -238,6 +338,10 @@ impl GameplayScene {
         self.entity_archetype_id_by_entity.remove(&entity_id);
         self.pawn_role_by_entity.remove(&entity_id);
         self.nav_path_by_entity.remove(&entity_id);
+        self.job_phase_by_entity.remove(&entity_id);
+        if let Some(job_id) = self.job_board.clear_assignment_for_entity(entity_id) {
+            self.job_board.mark_job_state(job_id, JobState::Failed);
+        }
     }
 
     fn save_id_for_entity(&self, entity_id: EntityId) -> Option<u64> {
@@ -828,6 +932,8 @@ impl GameplayScene {
         self.target_lookup_by_save_id.clear();
         self.nav_path_by_entity.clear();
         self.nav_passability_cache.clear();
+        self.job_board.clear();
+        self.job_phase_by_entity.clear();
         self.next_interaction_id = 0;
     }
 
@@ -845,6 +951,9 @@ impl GameplayScene {
             .retain(|entity_id, _| live_ids.contains(entity_id));
         self.nav_path_by_entity
             .retain(|entity_id, _| live_ids.contains(entity_id));
+        self.job_phase_by_entity
+            .retain(|entity_id, _| live_ids.contains(entity_id));
+        self.job_board.retain_live_entities(&live_ids);
         let def_db = world.def_database();
 
         for entity in world.entities() {
@@ -1824,6 +1933,269 @@ impl GameplayScene {
         );
     }
 
+    fn run_settler_job_runner_prepass(&mut self, world: &mut SceneWorld) {
+        let mut assigned_actor_ids = self
+            .job_board
+            .assigned_job_by_entity
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        assigned_actor_ids.sort_by_key(|id| id.0);
+
+        for actor_id in assigned_actor_ids {
+            let Some(job_id) = self.job_board.assigned_job_id(actor_id) else {
+                continue;
+            };
+            let Some(job) = self.job_board.job(job_id).cloned() else {
+                self.finalize_assigned_job_and_clear_locomotion(
+                    actor_id,
+                    JobState::Failed,
+                    world,
+                    true,
+                );
+                continue;
+            };
+            let Some(actor) = world.find_entity(actor_id) else {
+                self.finalize_assigned_job_and_clear_locomotion(
+                    actor_id,
+                    JobState::Failed,
+                    world,
+                    true,
+                );
+                continue;
+            };
+            if !actor.actor || !self.actor_uses_settler_navigation(actor_id) {
+                self.finalize_assigned_job_and_clear_locomotion(
+                    actor_id,
+                    JobState::Failed,
+                    world,
+                    true,
+                );
+                continue;
+            }
+            if matches!(job.state, JobState::Reserved) {
+                self.job_board.mark_job_in_progress(job_id);
+            }
+
+            match job.kind {
+                JobKind::MoveToPoint => {
+                    let JobTarget::WorldPoint(point) = job.target else {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                        continue;
+                    };
+                    self.job_phase_by_entity.insert(actor_id, JobPhase::Navigating);
+                    if !self.issue_move_order_with_optional_settler_path(actor_id, point, world) {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                    }
+                }
+                JobKind::UseInteractable => {
+                    let JobTarget::TargetSaveId(target_save_id) = job.target else {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                        continue;
+                    };
+                    let Some(target_id) = self.resolve_runtime_target_id(target_save_id, world) else {
+                        self.job_phase_by_entity.insert(actor_id, JobPhase::Interacting);
+                        continue;
+                    };
+                    let Some(target) = world.find_entity(target_id) else {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                        continue;
+                    };
+                    let Some(interactable) = target.interactable else {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                        continue;
+                    };
+
+                    let Some(actor_world) =
+                        world.find_entity(actor_id).map(|entity| entity.transform.position)
+                    else {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                        continue;
+                    };
+                    let target_world = target.transform.position;
+                    let dx = target_world.x - actor_world.x;
+                    let dy = target_world.y - actor_world.y;
+                    let in_range = dx * dx + dy * dy
+                        <= interactable.interaction_radius * interactable.interaction_radius;
+
+                    if in_range {
+                        self.job_phase_by_entity.insert(actor_id, JobPhase::Interacting);
+                        if !self.start_use_interaction_for_actor_target(actor_id, target_id, world) {
+                            self.finalize_assigned_job_and_clear_locomotion(
+                                actor_id,
+                                JobState::Failed,
+                                world,
+                                true,
+                            );
+                        }
+                    } else {
+                        self.job_phase_by_entity.insert(actor_id, JobPhase::Navigating);
+                        if !self.issue_move_order_with_optional_settler_path(
+                            actor_id,
+                            target_world,
+                            world,
+                        ) {
+                            self.finalize_assigned_job_and_clear_locomotion(
+                                actor_id,
+                                JobState::Failed,
+                                world,
+                                true,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn run_settler_job_runner_postpass(&mut self, world: &mut SceneWorld) {
+        let completed_pairs = self
+            .system_events
+            .iter_emitted_so_far()
+            .filter_map(|event| match event {
+                GameplayEvent::InteractionCompleted { actor_id, target_id } => {
+                    Some((*actor_id, *target_id))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut assigned_actor_ids = self
+            .job_board
+            .assigned_job_by_entity
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        assigned_actor_ids.sort_by_key(|id| id.0);
+
+        for actor_id in assigned_actor_ids {
+            let Some(job_id) = self.job_board.assigned_job_id(actor_id) else {
+                continue;
+            };
+            let Some(job) = self.job_board.job(job_id).cloned() else {
+                self.finalize_assigned_job_and_clear_locomotion(
+                    actor_id,
+                    JobState::Failed,
+                    world,
+                    true,
+                );
+                continue;
+            };
+
+            let Some(actor) = world.find_entity(actor_id) else {
+                self.finalize_assigned_job_and_clear_locomotion(
+                    actor_id,
+                    JobState::Failed,
+                    world,
+                    true,
+                );
+                continue;
+            };
+
+            match (job.kind, job.target) {
+                (JobKind::MoveToPoint, JobTarget::WorldPoint(target_world)) => {
+                    let Some(goal_tile) = self.nav_passability_cache.world_to_tile(target_world) else {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                        continue;
+                    };
+                    let goal_world = self.nav_passability_cache.tile_center_world(goal_tile);
+                    let dx = goal_world.x - actor.transform.position.x;
+                    let dy = goal_world.y - actor.transform.position.y;
+                    let arrived = dx * dx + dy * dy <= MOVE_ARRIVAL_THRESHOLD * MOVE_ARRIVAL_THRESHOLD;
+                    if arrived && matches!(actor.order_state, OrderState::Idle) {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Completed,
+                            world,
+                            false,
+                        );
+                    } else if matches!(actor.order_state, OrderState::Idle) {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                    }
+                }
+                (JobKind::UseInteractable, JobTarget::TargetSaveId(target_save_id)) => {
+                    if completed_pairs
+                        .iter()
+                        .any(|(completed_actor, _)| *completed_actor == actor_id)
+                    {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Completed,
+                            world,
+                            false,
+                        );
+                        continue;
+                    }
+                    let Some(target_id) = self.resolve_runtime_target_id(target_save_id, world) else {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                        continue;
+                    };
+                    if world.find_entity(target_id).is_none() {
+                        self.finalize_assigned_job_and_clear_locomotion(
+                            actor_id,
+                            JobState::Failed,
+                            world,
+                            true,
+                        );
+                    }
+                }
+                _ => {
+                    self.finalize_assigned_job_and_clear_locomotion(
+                        actor_id,
+                        JobState::Failed,
+                        world,
+                        true,
+                    );
+                }
+            }
+        }
+    }
+
     fn apply_gameplay_tick_at_safe_point(
         &mut self,
         fixed_dt_seconds: f32,
@@ -1873,19 +2245,50 @@ impl GameplayScene {
 
                 let mut marker_position = None::<Vec2>;
                 if self.selected_actor_is_orderable(selected_id, world) {
+                    let selected_is_settler = self.actor_uses_settler_navigation(selected_id);
                     let selected_is_interacting = world.find_entity(selected_id).is_some_and(|entity| {
                         GameplaySystemsHost::order_state_indicates_interaction(entity.order_state)
                     });
                     if selected_is_interacting {
                         marker_position = None;
                     } else if let Some(target_world) = interactable_target {
-                        marker_position = Some(target_world);
+                        if selected_is_settler {
+                            if let Some(target_id) = hovered_interactable {
+                                if let Some(target_save_id) = self.save_id_for_entity(target_id) {
+                                    if self
+                                        .assign_job_to_actor_with_interruption(
+                                            selected_id,
+                                            JobKind::UseInteractable,
+                                            JobTarget::TargetSaveId(target_save_id),
+                                            world,
+                                        )
+                                        .is_some()
+                                    {
+                                        marker_position = Some(target_world);
+                                    }
+                                }
+                            }
+                        } else {
+                            marker_position = Some(target_world);
+                        }
+                    } else if selected_is_settler {
+                        if self
+                            .assign_job_to_actor_with_interruption(
+                                selected_id,
+                                JobKind::MoveToPoint,
+                                JobTarget::WorldPoint(ground_target),
+                                world,
+                            )
+                            .is_some()
+                        {
+                            marker_position = Some(ground_target);
+                        }
                     } else if self.issue_move_order_with_optional_settler_path(
                         selected_id,
                         ground_target,
                         world,
                     ) {
-                        marker_position = Some(ground_target);
+                            marker_position = Some(ground_target);
                     }
                 }
                 if let Some(position_world) = marker_position {
@@ -1975,10 +2378,20 @@ impl GameplayScene {
         }
 
         self.refresh_nav_cache_from_world(world);
+        self.run_settler_job_runner_prepass(world);
         self.completed_target_ids.clear();
         let completed_jobs = 0u32;
         for entity in world.entities_mut() {
             if !entity.actor {
+                continue;
+            }
+            if self.actor_uses_settler_navigation(entity.id)
+                && self.job_board.assigned_job_id(entity.id).is_none()
+            {
+                entity.order_state = OrderState::Idle;
+                self.nav_path_by_entity.remove(&entity.id);
+                self.job_phase_by_entity.insert(entity.id, JobPhase::Idle);
+                self.active_interactions_by_actor.remove(&entity.id);
                 continue;
             }
 
@@ -2230,6 +2643,7 @@ impl GameplayScene {
                 }
             }
         }
+        self.run_settler_job_runner_postpass(world);
 
         self.resource_count = self.resource_count.saturating_add(completed_jobs);
         for index in 0..self.completed_target_ids.len() {

@@ -188,8 +188,25 @@ impl Scene for GameplayScene {
                     ));
                 }
                 let point = Vec2 { x, y };
-                self.system_intents
-                    .enqueue(GameplayIntent::SetMoveTarget { actor_id, point });
+                if self.actor_uses_settler_navigation(actor_id) {
+                    if self
+                        .assign_job_to_actor_with_interruption(
+                            actor_id,
+                            JobKind::MoveToPoint,
+                            JobTarget::WorldPoint(point),
+                            world,
+                        )
+                        .is_none()
+                    {
+                        return SceneDebugCommandResult::Error(format!(
+                            "selected entity {} is not an orderable pawn",
+                            actor_id.0
+                        ));
+                    }
+                } else {
+                    self.system_intents
+                        .enqueue(GameplayIntent::SetMoveTarget { actor_id, point });
+                }
                 world.push_debug_marker(DebugMarker {
                     kind: DebugMarkerKind::Order,
                     position_world: point,
@@ -248,42 +265,64 @@ impl Scene for GameplayScene {
                         "target entity {target_entity_id} is not interactable"
                     ));
                 }
-                if self.active_interactions_by_actor.contains_key(&actor_id) {
-                    self.system_intents
-                        .enqueue(GameplayIntent::CancelInteraction { actor_id });
-                }
-                let interaction_id =
-                    GameplaySystemsHost::alloc_interaction_id(&mut self.next_interaction_id);
-                let Some(interaction_range) =
-                    GameplaySystemsHost::interaction_range_for_use_target(target)
-                else {
-                    return SceneDebugCommandResult::Error(format!(
-                        "target entity {target_entity_id} is not interactable"
-                    ));
-                };
-                let duration_seconds =
-                    GameplaySystemsHost::interaction_duration_seconds_for_use_target(target);
-                self.active_interactions_by_actor.insert(
-                    actor_id,
-                    ActiveInteraction {
+                if self.actor_uses_settler_navigation(actor_id) {
+                    let Some(target_save_id) = self.save_id_for_entity(target_id) else {
+                        return SceneDebugCommandResult::Error(format!(
+                            "target entity {target_entity_id} not found"
+                        ));
+                    };
+                    if self
+                        .assign_job_to_actor_with_interruption(
+                            actor_id,
+                            JobKind::UseInteractable,
+                            JobTarget::TargetSaveId(target_save_id),
+                            world,
+                        )
+                        .is_none()
+                    {
+                        return SceneDebugCommandResult::Error(format!(
+                            "selected entity {} is not an orderable pawn",
+                            actor_id.0
+                        ));
+                    }
+                } else {
+                    if self.active_interactions_by_actor.contains_key(&actor_id) {
+                        self.system_intents
+                            .enqueue(GameplayIntent::CancelInteraction { actor_id });
+                    }
+                    let interaction_id =
+                        GameplaySystemsHost::alloc_interaction_id(&mut self.next_interaction_id);
+                    let Some(interaction_range) =
+                        GameplaySystemsHost::interaction_range_for_use_target(target)
+                    else {
+                        return SceneDebugCommandResult::Error(format!(
+                            "target entity {target_entity_id} is not interactable"
+                        ));
+                    };
+                    let duration_seconds =
+                        GameplaySystemsHost::interaction_duration_seconds_for_use_target(target);
+                    self.active_interactions_by_actor.insert(
                         actor_id,
-                        target_id,
-                        interaction_id,
-                        kind: ActiveInteractionKind::Use,
-                        interaction_range,
-                        duration_seconds,
-                        remaining_seconds: None,
-                    },
-                );
-                self.system_events.emit(GameplayEvent::InteractionStarted {
-                    actor_id,
-                    target_id,
-                });
-                self.system_intents
-                    .enqueue(GameplayIntent::StartInteraction {
+                        ActiveInteraction {
+                            actor_id,
+                            target_id,
+                            interaction_id,
+                            kind: ActiveInteractionKind::Use,
+                            interaction_range,
+                            duration_seconds,
+                            remaining_seconds: None,
+                        },
+                    );
+                    self.system_events.emit(GameplayEvent::InteractionStarted {
                         actor_id,
                         target_id,
                     });
+                    self.system_intents
+                        .enqueue(GameplayIntent::StartInteraction {
+                            actor_id,
+                            target_id,
+                        });
+                }
                 SceneDebugCommandResult::Success(format!(
                     "queued interact actor {} target {}",
                     actor_id.0, target_entity_id
@@ -435,10 +474,24 @@ impl Scene for GameplayScene {
         let mut selected_position_world = None;
         let mut selected_order_world = None;
         let mut selected_job_state = DebugJobState::None;
+        let mut selected_role_text = "none".to_string();
+        let mut selected_job_text = "none".to_string();
+        let mut selected_phase_text = "idle".to_string();
 
         if let Some(selected_id) = self.selected_entity {
             if let Some(entity) = world.find_entity(selected_id) {
                 selected_position_world = Some(entity.transform.position);
+                selected_role_text = self
+                    .pawn_role_by_entity
+                    .get(&selected_id)
+                    .copied()
+                    .map(|role| match role {
+                        PawnControlRole::PlayerPawn => "PlayerPawn",
+                        PawnControlRole::Settler => "Settler",
+                        PawnControlRole::Npc => "Npc",
+                    })
+                    .unwrap_or("none")
+                    .to_string();
                 selected_order_world = match entity.order_state {
                     OrderState::Idle => None,
                     OrderState::MoveTo { point } => Some(point),
@@ -454,6 +507,26 @@ impl Scene for GameplayScene {
                     }
                     _ => DebugJobState::Idle,
                 };
+                if let Some(job_id) = self.job_board.assigned_job_id(selected_id) {
+                    if let Some(job) = self.job_board.job(job_id) {
+                        selected_job_text = match job.kind {
+                            JobKind::MoveToPoint => "MoveToPoint",
+                            JobKind::UseInteractable => "UseInteractable",
+                        }
+                        .to_string();
+                    }
+                }
+                selected_phase_text = self
+                    .job_phase_by_entity
+                    .get(&selected_id)
+                    .copied()
+                    .map(|phase| match phase {
+                        JobPhase::Idle => "idle",
+                        JobPhase::Navigating => "navigating",
+                        JobPhase::Interacting => "interacting",
+                    })
+                    .unwrap_or("idle")
+                    .to_string();
             }
         }
 
@@ -553,6 +626,9 @@ impl Scene for GameplayScene {
                 "ai: id:{} wa:{} ch:{} use:{}",
                 ai_counts.idle, ai_counts.wander, ai_counts.chase, ai_counts.use_interaction
             ),
+            format!("role: {}", selected_role_text),
+            format!("job: {}", selected_job_text),
+            format!("phase: {}", selected_phase_text),
             interaction_line,
             interaction_probe_line,
         ];

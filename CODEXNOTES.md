@@ -109,6 +109,10 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 64 (2026-03-01): nav cache invalidation uses deterministic `TilemapNavKey { width, height, origin bits, tiles_hash }`; `tiles_hash` is stable FNV-1a over tile IDs (no pointer/address identity).
 - Ticket 64 (2026-03-01): Settler `order.move` snaps `goal_tile = world_to_tile(target_world)` and completes at the goal tile center; unreachable/blocked/out-of-bounds goals fail deterministically and settle to `Idle`.
 - Ticket 64 (2026-03-01): added deterministic scenario `scenario.setup nav_sandbox` (`player:<id> settler:<id>`) with a blocked strip (tile id `2`) that forces detour pathing.
+- Ticket 65 (2026-03-01): gameplay now has a first-class runtime `JobBoard` (`JobId`, `JobKind`, `JobTarget`, `JobState`, reservation + assignment map) and Settler runner phases (`Idle`, `Navigating`, `Interacting`).
+- Ticket 65 (2026-03-01): assigning a new job to a Settler deterministically interrupts same-tick prior assignment by failing old job, clearing nav/`OrderState`, and canceling active interaction before new assignment.
+- Ticket 65 (2026-03-01): `OrderState` is now an actuator for Settler jobs; `OrderState::MoveTo` and nav path state must not outlive assigned job lifecycle (completion/failure/interruption clear both assignment and locomotion state atomically).
+- Ticket 65 (2026-03-01): Settler `UseInteractable` jobs complete only from existing `InteractionCompleted` events; job runner never directly mutates target completion/resource outcomes.
 
 ## Module Boundaries and Ownership
 ### A. Module map

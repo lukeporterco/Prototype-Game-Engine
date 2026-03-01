@@ -163,6 +163,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `order.move 3.5 -1.25`
 - Targeting notes:
 - Selected `Settler`: snaps goal tile with `goal_tile = world_to_tile(<x,y>)`, then moves to that tile center.
+- Selected `Settler`: creates/assigns a `MoveToPoint` job (first-class job path), then runs movement via job phases.
 - Selected `PlayerPawn`: keeps direct world-point movement.
 - Result examples:
 - `ok: queued move for entity 42 to (3.50, -1.25)`
@@ -176,6 +177,9 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - Syntax: `order.interact <target_entity_id>`
 - Example:
 - `order.interact 77`
+- Targeting notes:
+- Selected `Settler`: creates/assigns a `UseInteractable` job and interaction starts through the existing interaction pipeline when in range.
+- Selected `PlayerPawn`: keeps direct interaction enqueue behavior.
 - Result examples:
 - `ok: queued interact actor 42 target 77`
 - `error: no selected entity`
@@ -347,6 +351,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `order.interact <target_entity_id>`
 - `order.move` / `order.interact` target the currently selected orderable pawn (`PlayerPawn` or `Settler`); NPC actors remain selectable for inspection/debug context but are non-orderable.
 - Settler `order.move` final stop is deterministic tile-center snap (`world_to_tile` of command target), not arbitrary world-point exact stop.
+- Reassigning a Settler job is deterministic and immediate: existing assigned job is failed in the same tick, locomotion/nav state is cleared, and any active interaction is canceled before the new job starts.
 - Processor prints parse errors with usage hints.
 - Unknown commands print `error: unknown command '<name>'. try: help`.
 

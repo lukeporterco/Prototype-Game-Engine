@@ -82,6 +82,131 @@ impl PawnControlRole {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct JobId(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobKind {
+    MoveToPoint,
+    UseInteractable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum JobTarget {
+    WorldPoint(Vec2),
+    TargetSaveId(u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobState {
+    Open,
+    Reserved,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobPhase {
+    Idle,
+    Navigating,
+    Interacting,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct JobRecord {
+    id: JobId,
+    kind: JobKind,
+    target: JobTarget,
+    priority: i32,
+    reserved_by: Option<EntityId>,
+    state: JobState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct JobBoard {
+    next_job_id: u64,
+    jobs_by_id: std::collections::BTreeMap<JobId, JobRecord>,
+    assigned_job_by_entity: HashMap<EntityId, JobId>,
+}
+
+impl JobBoard {
+    fn clear(&mut self) {
+        self.next_job_id = 0;
+        self.jobs_by_id.clear();
+        self.assigned_job_by_entity.clear();
+    }
+
+    fn create_job(&mut self, kind: JobKind, target: JobTarget, priority: i32) -> JobId {
+        let id = JobId(self.next_job_id);
+        self.next_job_id = self.next_job_id.saturating_add(1);
+        self.jobs_by_id.insert(
+            id,
+            JobRecord {
+                id,
+                kind,
+                target,
+                priority,
+                reserved_by: None,
+                state: JobState::Open,
+            },
+        );
+        id
+    }
+
+    fn assign_job_to_entity(&mut self, job_id: JobId, actor_id: EntityId) -> bool {
+        let Some(job) = self.jobs_by_id.get_mut(&job_id) else {
+            return false;
+        };
+        job.reserved_by = Some(actor_id);
+        job.state = JobState::Reserved;
+        self.assigned_job_by_entity.insert(actor_id, job_id);
+        true
+    }
+
+    fn assigned_job_id(&self, actor_id: EntityId) -> Option<JobId> {
+        self.assigned_job_by_entity.get(&actor_id).copied()
+    }
+
+    fn job(&self, job_id: JobId) -> Option<&JobRecord> {
+        self.jobs_by_id.get(&job_id)
+    }
+
+    fn mark_job_in_progress(&mut self, job_id: JobId) {
+        if let Some(job) = self.jobs_by_id.get_mut(&job_id) {
+            job.state = JobState::InProgress;
+        }
+    }
+
+    fn mark_job_state(&mut self, job_id: JobId, state: JobState) {
+        if let Some(job) = self.jobs_by_id.get_mut(&job_id) {
+            job.state = state;
+            if matches!(state, JobState::Completed | JobState::Failed) {
+                job.reserved_by = None;
+            }
+        }
+    }
+
+    fn clear_assignment_for_entity(&mut self, actor_id: EntityId) -> Option<JobId> {
+        self.assigned_job_by_entity.remove(&actor_id)
+    }
+
+    fn retain_live_entities(&mut self, live_ids: &HashSet<EntityId>) {
+        self.assigned_job_by_entity
+            .retain(|entity_id, _| live_ids.contains(entity_id));
+        for job in self.jobs_by_id.values_mut() {
+            if let Some(actor_id) = job.reserved_by {
+                if !live_ids.contains(&actor_id) {
+                    job.reserved_by = None;
+                    if matches!(job.state, JobState::Reserved | JobState::InProgress) {
+                        job.state = JobState::Failed;
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum SavedInteractableKind {
     ResourcePile,

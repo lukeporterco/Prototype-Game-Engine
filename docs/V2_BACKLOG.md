@@ -86,6 +86,26 @@ How to use this doc:
 - Risks: Incorrect epoch propagation can leave actors on stale paths or trigger unnecessary recomputes.
 - Cut: No dynamic obstacle avoidance for moving entities.
 
+### Settler open-job auto-pick
+- Date: 2026-03-01
+- Source: Ticket 65
+- Area: Scene
+- Summary: Let idle settlers scan deterministic open jobs and claim nearest unreserved work automatically.
+- Rationale: Removes per-settler micro-ordering overhead once first-class jobs exist.
+- Dependencies: Stable JobBoard lifecycle, reservation semantics, and deterministic distance tie-break policy.
+- Risks: Non-deterministic claim order if actor/job iteration is not explicitly fixed.
+- Cut: No global colony scheduler and no cross-map batching.
+
+### Job priority and reservation timeout
+- Date: 2026-03-01
+- Source: Ticket 65
+- Area: Scene
+- Summary: Add numeric job priorities and reservation timeout recovery for stuck claims.
+- Rationale: Improves responsiveness and prevents dead reservations in longer simulations.
+- Dependencies: Baseline first-class JobBoard assignment and per-job state transitions.
+- Risks: Priority starvation and timeout churn if policy is not bounded and deterministic.
+- Cut: No UI work planner and no skill/need-based weighting.
+
 ## Rendering
 
 ### Hand/tool anchor emission for UseTool visuals
