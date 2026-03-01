@@ -27,6 +27,8 @@ struct GameplayScene {
     reselect_player_on_respawn: bool,
     selected_completion_enqueued_this_tick: bool,
     visual_sandbox_demo_active: bool,
+    nav_passability_cache: NavigationPassabilityCache,
+    nav_path_by_entity: HashMap<EntityId, NavigationPathState>,
     systems_host: GameplaySystemsHost,
     system_events: GameplayEventBus,
     system_intents: GameplayIntentQueue,
@@ -71,6 +73,8 @@ impl GameplayScene {
             reselect_player_on_respawn: false,
             selected_completion_enqueued_this_tick: false,
             visual_sandbox_demo_active: false,
+            nav_passability_cache: NavigationPassabilityCache::default(),
+            nav_path_by_entity: HashMap::new(),
             systems_host: GameplaySystemsHost::default(),
             system_events: GameplayEventBus::default(),
             system_intents: GameplayIntentQueue::default(),
@@ -147,6 +151,70 @@ impl GameplayScene {
         })
     }
 
+    fn actor_uses_settler_navigation(&self, actor_id: EntityId) -> bool {
+        self.pawn_role_by_entity.get(&actor_id).copied() == Some(PawnControlRole::Settler)
+    }
+
+    fn refresh_nav_cache_from_world(&mut self, world: &SceneWorld) {
+        self.nav_passability_cache.refresh_from_tilemap(world.tilemap());
+    }
+
+    fn rebuild_settler_path_from_world_targets(
+        &mut self,
+        actor_id: EntityId,
+        actor_world: Vec2,
+        goal_world: Vec2,
+    ) -> bool {
+        let Some(path_state) = self
+            .nav_passability_cache
+            .build_path_state_from_world(actor_world, goal_world)
+        else {
+            self.nav_path_by_entity.remove(&actor_id);
+            return false;
+        };
+        self.nav_path_by_entity.insert(actor_id, path_state);
+        true
+    }
+
+    fn issue_move_order_with_optional_settler_path(
+        &mut self,
+        actor_id: EntityId,
+        target_world: Vec2,
+        world: &mut SceneWorld,
+    ) -> bool {
+        let Some(actor) = world.find_entity(actor_id) else {
+            return false;
+        };
+        if !actor.actor {
+            return false;
+        }
+        let actor_world = actor.transform.position;
+        let is_settler = self.actor_uses_settler_navigation(actor_id);
+
+        let path_result = if is_settler {
+            self.refresh_nav_cache_from_world(world);
+            self.nav_passability_cache
+                .build_path_state_from_world(actor_world, target_world)
+        } else {
+            None
+        };
+
+        let Some(actor) = world.find_entity_mut(actor_id) else {
+            return false;
+        };
+        actor.order_state = OrderState::MoveTo { point: target_world };
+        self.nav_path_by_entity.remove(&actor_id);
+
+        if is_settler {
+            if let Some(path_state) = path_result {
+                self.nav_path_by_entity.insert(actor_id, path_state);
+            } else {
+                actor.order_state = OrderState::Idle;
+            }
+        }
+        true
+    }
+
     fn alloc_next_save_id(&mut self) -> SaveLoadResult<u64> {
         let save_id = self.next_save_id;
         self.next_save_id = self
@@ -169,6 +237,7 @@ impl GameplayScene {
         }
         self.entity_archetype_id_by_entity.remove(&entity_id);
         self.pawn_role_by_entity.remove(&entity_id);
+        self.nav_path_by_entity.remove(&entity_id);
     }
 
     fn save_id_for_entity(&self, entity_id: EntityId) -> Option<u64> {
@@ -757,6 +826,8 @@ impl GameplayScene {
         self.entity_archetype_id_by_entity.clear();
         self.pawn_role_by_entity.clear();
         self.target_lookup_by_save_id.clear();
+        self.nav_path_by_entity.clear();
+        self.nav_passability_cache.clear();
         self.next_interaction_id = 0;
     }
 
@@ -771,6 +842,8 @@ impl GameplayScene {
         self.entity_archetype_id_by_entity
             .retain(|entity_id, _| live_ids.contains(entity_id));
         self.pawn_role_by_entity
+            .retain(|entity_id, _| live_ids.contains(entity_id));
+        self.nav_path_by_entity
             .retain(|entity_id, _| live_ids.contains(entity_id));
         let def_db = world.def_database();
 
@@ -1017,6 +1090,7 @@ impl GameplayScene {
         &mut self,
         world: &mut SceneWorld,
     ) -> SaveLoadResult<(EntityId, EntityId, EntityId)> {
+        world.set_tilemap(build_ground_tilemap(self.scene_key()));
         let stale_ids = [
             self.player_id,
             self.combat_chaser_scenario.chaser_id,
@@ -1030,6 +1104,7 @@ impl GameplayScene {
         self.selected_entity = None;
         self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
         self.visual_sandbox_demo_active = false;
+        self.nav_path_by_entity.clear();
 
         let player_id =
             self.apply_spawn_intent_now(world, "proto.player", COMBAT_CHASER_PLAYER_POS)?;
@@ -1053,6 +1128,7 @@ impl GameplayScene {
         &mut self,
         world: &mut SceneWorld,
     ) -> SaveLoadResult<(EntityId, EntityId, EntityId, EntityId)> {
+        world.set_tilemap(build_ground_tilemap(self.scene_key()));
         let stale_ids: Vec<EntityId> = world.entities().iter().map(|entity| entity.id).collect();
         for stale_id in stale_ids {
             self.apply_despawn_intent_now(world, stale_id)?;
@@ -1061,6 +1137,7 @@ impl GameplayScene {
         self.player_id = None;
         self.selected_entity = None;
         self.visual_sandbox_demo_active = false;
+        self.nav_path_by_entity.clear();
 
         let player_id =
             self.apply_spawn_intent_now(world, "proto.player", VISUAL_SANDBOX_PLAYER_POS)?;
@@ -1102,6 +1179,33 @@ impl GameplayScene {
         );
 
         Ok((player_id, prop_id, wall_id, floor_id))
+    }
+
+    fn run_scenario_setup_nav_sandbox(
+        &mut self,
+        world: &mut SceneWorld,
+    ) -> SaveLoadResult<(EntityId, EntityId)> {
+        world.set_tilemap(build_nav_sandbox_tilemap());
+        let stale_ids: Vec<EntityId> = world.entities().iter().map(|entity| entity.id).collect();
+        for stale_id in stale_ids {
+            self.apply_despawn_intent_now(world, stale_id)?;
+        }
+
+        self.player_id = None;
+        self.selected_entity = None;
+        self.visual_sandbox_demo_active = false;
+        self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
+        self.nav_path_by_entity.clear();
+
+        let player_id = self.apply_spawn_intent_now(world, "proto.player", NAV_SANDBOX_PLAYER_POS)?;
+        let settler_id =
+            self.apply_spawn_intent_now(world, "proto.settler", NAV_SANDBOX_SETTLER_POS)?;
+
+        self.player_id = Some(player_id);
+        self.refresh_authoritative_player_role(world);
+        self.selected_entity = Some(player_id);
+
+        Ok((player_id, settler_id))
     }
 
     fn status_multiplier(status_id: StatusId) -> f32 {
@@ -1433,7 +1537,7 @@ impl GameplayScene {
                     }
                 }
                 GameplayIntent::SetMoveTarget { actor_id, point } => {
-                    let Some(actor) = world.find_entity_mut(actor_id) else {
+                    let Some(actor) = world.find_entity(actor_id) else {
                         stats.record_invalid_target();
                         continue;
                     };
@@ -1441,7 +1545,9 @@ impl GameplayScene {
                         stats.record_invalid_target();
                         continue;
                     }
-                    actor.order_state = OrderState::MoveTo { point };
+                    if !self.issue_move_order_with_optional_settler_path(actor_id, point, world) {
+                        stats.record_invalid_target();
+                    }
                 }
                 GameplayIntent::DespawnEntity { entity_id } => {
                     if !world.despawn(entity_id) {
@@ -1566,6 +1672,7 @@ impl GameplayScene {
                         continue;
                     }
                     actor.order_state = OrderState::Interact { target_save_id };
+                    self.nav_path_by_entity.remove(&actor_id);
                 }
                 GameplayIntent::CancelInteraction { actor_id } => {
                     let Some(actor) = world.find_entity_mut(actor_id) else {
@@ -1577,6 +1684,7 @@ impl GameplayScene {
                         continue;
                     }
                     actor.order_state = OrderState::Idle;
+                    self.nav_path_by_entity.remove(&actor_id);
                 }
                 GameplayIntent::CompleteInteraction {
                     actor_id,
@@ -1597,6 +1705,7 @@ impl GameplayScene {
                         continue;
                     }
                     actor.order_state = OrderState::Idle;
+                    self.nav_path_by_entity.remove(&actor_id);
 
                     // Mechanical interaction outcomes for resource piles:
                     // successful completion grants one item and consumes one use.
@@ -1764,19 +1873,19 @@ impl GameplayScene {
 
                 let mut marker_position = None::<Vec2>;
                 if self.selected_actor_is_orderable(selected_id, world) {
-                    if let Some(entity) = world.find_entity_mut(selected_id) {
-                        if GameplaySystemsHost::order_state_indicates_interaction(
-                            entity.order_state,
-                        ) {
-                            marker_position = None;
-                        } else if let Some(target_world) = interactable_target {
-                            marker_position = Some(target_world);
-                        } else {
-                            entity.order_state = OrderState::MoveTo {
-                                point: ground_target,
-                            };
-                            marker_position = Some(ground_target);
-                        }
+                    let selected_is_interacting = world.find_entity(selected_id).is_some_and(|entity| {
+                        GameplaySystemsHost::order_state_indicates_interaction(entity.order_state)
+                    });
+                    if selected_is_interacting {
+                        marker_position = None;
+                    } else if let Some(target_world) = interactable_target {
+                        marker_position = Some(target_world);
+                    } else if self.issue_move_order_with_optional_settler_path(
+                        selected_id,
+                        ground_target,
+                        world,
+                    ) {
+                        marker_position = Some(ground_target);
                     }
                 }
                 if let Some(position_world) = marker_position {
@@ -1865,6 +1974,7 @@ impl GameplayScene {
             }
         }
 
+        self.refresh_nav_cache_from_world(world);
         self.completed_target_ids.clear();
         let completed_jobs = 0u32;
         for entity in world.entities_mut() {
@@ -1873,20 +1983,74 @@ impl GameplayScene {
             }
 
             match entity.order_state {
-                OrderState::Idle => {}
+                OrderState::Idle => {
+                    self.nav_path_by_entity.remove(&entity.id);
+                }
                 OrderState::MoveTo { point } => {
                     let move_speed =
                         self.effective_move_speed_for_entity(entity.id, self.player_move_speed);
-                    let (next, arrived) = step_toward(
-                        entity.transform.position,
-                        point,
-                        move_speed,
-                        fixed_dt_seconds,
-                        MOVE_ARRIVAL_THRESHOLD,
-                    );
-                    entity.transform.position = next;
-                    if arrived {
-                        entity.order_state = OrderState::Idle;
+                    if self.actor_uses_settler_navigation(entity.id) {
+                        let Some(goal_tile) = self.nav_passability_cache.world_to_tile(point) else {
+                            entity.order_state = OrderState::Idle;
+                            self.nav_path_by_entity.remove(&entity.id);
+                            continue;
+                        };
+                        let needs_rebuild = match self.nav_path_by_entity.get(&entity.id) {
+                            Some(path_state) => path_state.goal_tile != goal_tile,
+                            None => true,
+                        };
+                        if needs_rebuild
+                            && !self.rebuild_settler_path_from_world_targets(
+                                entity.id,
+                                entity.transform.position,
+                                point,
+                            )
+                        {
+                            entity.order_state = OrderState::Idle;
+                            self.nav_path_by_entity.remove(&entity.id);
+                            continue;
+                        }
+
+                        let Some(waypoint) = self
+                            .nav_path_by_entity
+                            .get(&entity.id)
+                            .and_then(NavigationPathState::current_waypoint)
+                        else {
+                            entity.order_state = OrderState::Idle;
+                            self.nav_path_by_entity.remove(&entity.id);
+                            continue;
+                        };
+                        let (next, arrived) = step_toward(
+                            entity.transform.position,
+                            waypoint,
+                            move_speed,
+                            fixed_dt_seconds,
+                            MOVE_ARRIVAL_THRESHOLD,
+                        );
+                        entity.transform.position = next;
+                        if arrived {
+                            let mut path_complete = false;
+                            if let Some(path_state) = self.nav_path_by_entity.get_mut(&entity.id) {
+                                path_state.advance_waypoint();
+                                path_complete = path_state.is_complete();
+                            }
+                            if path_complete {
+                                entity.order_state = OrderState::Idle;
+                                self.nav_path_by_entity.remove(&entity.id);
+                            }
+                        }
+                    } else {
+                        let (next, arrived) = step_toward(
+                            entity.transform.position,
+                            point,
+                            move_speed,
+                            fixed_dt_seconds,
+                            MOVE_ARRIVAL_THRESHOLD,
+                        );
+                        entity.transform.position = next;
+                        if arrived {
+                            entity.order_state = OrderState::Idle;
+                        }
                     }
                 }
                 OrderState::Interact { target_save_id } => {
@@ -1902,17 +2066,70 @@ impl GameplayScene {
                                 target_save_id,
                                 remaining_time: JOB_DURATION_SECONDS,
                             };
+                            self.nav_path_by_entity.remove(&entity.id);
                         } else {
                             let move_speed = self
                                 .effective_move_speed_for_entity(entity.id, self.player_move_speed);
-                            let (next, _) = step_toward(
-                                entity.transform.position,
-                                target_world,
-                                move_speed,
-                                fixed_dt_seconds,
-                                MOVE_ARRIVAL_THRESHOLD,
-                            );
-                            entity.transform.position = next;
+                            if self.actor_uses_settler_navigation(entity.id) {
+                                let Some(goal_tile) =
+                                    self.nav_passability_cache.world_to_tile(target_world)
+                                else {
+                                    entity.order_state = OrderState::Idle;
+                                    self.nav_path_by_entity.remove(&entity.id);
+                                    self.active_interactions_by_actor.remove(&entity.id);
+                                    continue;
+                                };
+                                let needs_rebuild = match self.nav_path_by_entity.get(&entity.id) {
+                                    Some(path_state) => path_state.goal_tile != goal_tile,
+                                    None => true,
+                                };
+                                if needs_rebuild
+                                    && !self.rebuild_settler_path_from_world_targets(
+                                        entity.id,
+                                        entity.transform.position,
+                                        target_world,
+                                    )
+                                {
+                                    entity.order_state = OrderState::Idle;
+                                    self.nav_path_by_entity.remove(&entity.id);
+                                    self.active_interactions_by_actor.remove(&entity.id);
+                                    continue;
+                                }
+                                let Some(waypoint) = self
+                                    .nav_path_by_entity
+                                    .get(&entity.id)
+                                    .and_then(NavigationPathState::current_waypoint)
+                                else {
+                                    entity.order_state = OrderState::Idle;
+                                    self.nav_path_by_entity.remove(&entity.id);
+                                    self.active_interactions_by_actor.remove(&entity.id);
+                                    continue;
+                                };
+                                let (next, arrived) = step_toward(
+                                    entity.transform.position,
+                                    waypoint,
+                                    move_speed,
+                                    fixed_dt_seconds,
+                                    MOVE_ARRIVAL_THRESHOLD,
+                                );
+                                entity.transform.position = next;
+                                if arrived {
+                                    if let Some(path_state) =
+                                        self.nav_path_by_entity.get_mut(&entity.id)
+                                    {
+                                        path_state.advance_waypoint();
+                                    }
+                                }
+                            } else {
+                                let (next, _) = step_toward(
+                                    entity.transform.position,
+                                    target_world,
+                                    move_speed,
+                                    fixed_dt_seconds,
+                                    MOVE_ARRIVAL_THRESHOLD,
+                                );
+                                entity.transform.position = next;
+                            }
                         }
                     } else if let Some(target_world) =
                         self.target_lookup_by_save_id.get(&target_save_id).copied()
@@ -1929,20 +2146,75 @@ impl GameplayScene {
                                 target_save_id,
                                 remaining_time: 0.0,
                             };
+                            self.nav_path_by_entity.remove(&entity.id);
                         } else {
                             let move_speed = self
                                 .effective_move_speed_for_entity(entity.id, self.player_move_speed);
-                            let (next, _) = step_toward(
-                                entity.transform.position,
-                                target_world,
-                                move_speed,
-                                fixed_dt_seconds,
-                                MOVE_ARRIVAL_THRESHOLD,
-                            );
-                            entity.transform.position = next;
+                            if self.actor_uses_settler_navigation(entity.id) {
+                                let Some(goal_tile) =
+                                    self.nav_passability_cache.world_to_tile(target_world)
+                                else {
+                                    entity.order_state = OrderState::Idle;
+                                    self.nav_path_by_entity.remove(&entity.id);
+                                    self.active_interactions_by_actor.remove(&entity.id);
+                                    continue;
+                                };
+                                let needs_rebuild = match self.nav_path_by_entity.get(&entity.id) {
+                                    Some(path_state) => path_state.goal_tile != goal_tile,
+                                    None => true,
+                                };
+                                if needs_rebuild
+                                    && !self.rebuild_settler_path_from_world_targets(
+                                        entity.id,
+                                        entity.transform.position,
+                                        target_world,
+                                    )
+                                {
+                                    entity.order_state = OrderState::Idle;
+                                    self.nav_path_by_entity.remove(&entity.id);
+                                    self.active_interactions_by_actor.remove(&entity.id);
+                                    continue;
+                                }
+                                let Some(waypoint) = self
+                                    .nav_path_by_entity
+                                    .get(&entity.id)
+                                    .and_then(NavigationPathState::current_waypoint)
+                                else {
+                                    entity.order_state = OrderState::Idle;
+                                    self.nav_path_by_entity.remove(&entity.id);
+                                    self.active_interactions_by_actor.remove(&entity.id);
+                                    continue;
+                                };
+                                let (next, arrived) = step_toward(
+                                    entity.transform.position,
+                                    waypoint,
+                                    move_speed,
+                                    fixed_dt_seconds,
+                                    MOVE_ARRIVAL_THRESHOLD,
+                                );
+                                entity.transform.position = next;
+                                if arrived {
+                                    if let Some(path_state) =
+                                        self.nav_path_by_entity.get_mut(&entity.id)
+                                    {
+                                        path_state.advance_waypoint();
+                                    }
+                                }
+                            } else {
+                                let (next, _) = step_toward(
+                                    entity.transform.position,
+                                    target_world,
+                                    move_speed,
+                                    fixed_dt_seconds,
+                                    MOVE_ARRIVAL_THRESHOLD,
+                                );
+                                entity.transform.position = next;
+                            }
                         }
                     } else {
                         entity.order_state = OrderState::Idle;
+                        self.nav_path_by_entity.remove(&entity.id);
+                        self.active_interactions_by_actor.remove(&entity.id);
                     }
                 }
                 OrderState::Working { target_save_id, .. } => {
@@ -1953,6 +2225,7 @@ impl GameplayScene {
                         && !self.target_lookup_by_save_id.contains_key(&target_save_id)
                     {
                         entity.order_state = OrderState::Idle;
+                        self.nav_path_by_entity.remove(&entity.id);
                     }
                 }
             }

@@ -66,6 +66,26 @@ How to use this doc:
 - Risks: Selection ordering and per-entity move target fan-out could drift determinism if processing order is not fixed.
 - Cut: No formations, squad tactics, or shared-path steering.
 
+### Diagonal tile movement for settlers
+- Date: 2026-03-01
+- Source: Ticket 64
+- Area: Scene
+- Summary: Extend settler tile pathfinding from 4-way to diagonal movement with explicit corner-cutting rules.
+- Rationale: Produces shorter, more natural routes while preserving deterministic navigation behavior.
+- Dependencies: Stable tile-grid A* seam and clear blocked-corner policy decisions.
+- Risks: Corner-cutting edge cases can introduce path acceptance inconsistencies if rules are not strict.
+- Cut: No navmesh conversion and no crowd steering.
+
+### Tilemap epoch-triggered lightweight re-path
+- Date: 2026-03-01
+- Source: Ticket 64
+- Area: Scene
+- Summary: Add tilemap revision/epoch tracking so settlers can re-path only when relevant tile passability changes.
+- Rationale: Avoids stale routes after terrain edits without per-frame path recomputation.
+- Dependencies: Tilemap change signaling contract available to gameplay scene state.
+- Risks: Incorrect epoch propagation can leave actors on stale paths or trigger unnecessary recomputes.
+- Cut: No dynamic obstacle avoidance for moving entities.
+
 ## Rendering
 
 ### Hand/tool anchor emission for UseTool visuals

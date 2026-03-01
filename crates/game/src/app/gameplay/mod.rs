@@ -50,8 +50,18 @@ const VISUAL_SANDBOX_BENCH_POS: Vec2 = Vec2 { x: 1.5, y: 0.0 };
 const VISUAL_SANDBOX_CARRY_LANE_X: f32 = -0.5;
 const VISUAL_SANDBOX_CARRY_VISUAL_DEF: &str = "proto.visual_carry_item";
 const VISUAL_SANDBOX_EXTRA_INTERACTABLE_DEF: &str = "proto.workbench_demo";
+const NAV_SANDBOX_MAP_WIDTH: u32 = 12;
+const NAV_SANDBOX_MAP_HEIGHT: u32 = 9;
+const NAV_SANDBOX_ORIGIN: Vec2 = Vec2 { x: -6.0, y: -4.5 };
+const NAV_SANDBOX_BLOCKED_STRIP_X: u32 = 5;
+const NAV_SANDBOX_BLOCKED_GAP_Y: u32 = 7;
+const NAV_SANDBOX_PLAYER_POS: Vec2 = Vec2 { x: -4.5, y: 2.5 };
+const NAV_SANDBOX_SETTLER_POS: Vec2 = Vec2 { x: -2.5, y: -0.5 };
+const NAV_SANDBOX_DEFAULT_MOVE_GOAL_WORLD: Vec2 = Vec2 { x: 3.2, y: -0.3 };
+const NAV_SANDBOX_INTERACT_TARGET_POS: Vec2 = Vec2 { x: 3.5, y: 0.5 };
 
 include!("types.rs");
+include!("nav.rs");
 include!("systems.rs");
 include!("scene_state.rs");
 include!("scene_impl.rs");

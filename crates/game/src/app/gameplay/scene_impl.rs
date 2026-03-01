@@ -337,6 +337,13 @@ impl Scene for GameplayScene {
                         }
                         Err(error) => SceneDebugCommandResult::Error(error),
                     },
+                    "nav_sandbox" => match self.run_scenario_setup_nav_sandbox(world) {
+                        Ok((player_id, settler_id)) => SceneDebugCommandResult::Success(format!(
+                            "scenario.setup nav_sandbox player:{} settler:{}",
+                            player_id.0, settler_id.0
+                        )),
+                        Err(error) => SceneDebugCommandResult::Error(error),
+                    },
                     _ => SceneDebugCommandResult::Error(format!("unknown scenario '{scenario_id}'")),
                 }
             }

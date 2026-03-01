@@ -157,10 +157,13 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 
 ### order.move
 - Layer: Active scene debug hook
-- Description: Queues a move order for the currently selected actor to world coordinates.
+- Description: Queues a move order for the currently selected orderable actor.
 - Syntax: `order.move <x> <y>`
 - Example:
 - `order.move 3.5 -1.25`
+- Targeting notes:
+- Selected `Settler`: snaps goal tile with `goal_tile = world_to_tile(<x,y>)`, then moves to that tile center.
+- Selected `PlayerPawn`: keeps direct world-point movement.
 - Result examples:
 - `ok: queued move for entity 42 to (3.50, -1.25)`
 - `error: no selected entity`
@@ -249,13 +252,15 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - Layer: Engine queueable -> active scene debug hook (scene-owned implementation)
 - Description: Sets up a deterministic scenario layout for automation preconditions.
 - Syntax: `scenario.setup <scenario_id>`
-- Supported scenario IDs (GameplayScene): `combat_chaser`, `visual_sandbox`
+- Supported scenario IDs (GameplayScene): `combat_chaser`, `visual_sandbox`, `nav_sandbox`
 - Example:
 - `scenario.setup combat_chaser`
 - `scenario.setup visual_sandbox`
+- `scenario.setup nav_sandbox`
 - Result examples:
 - `ok: scenario.setup combat_chaser player:1 chaser:2 dummy:3`
 - `ok: scenario.setup visual_sandbox player:1 prop:2 wall:3 floor:4`
+- `ok: scenario.setup nav_sandbox player:1 settler:2`
 - `error: unknown scenario 'foo'`
 - `error: active scene does not support this command`
 
@@ -341,6 +346,7 @@ Status: `Ticket 32.3` implements routing/execution for queueable commands.
 - `order.move <x> <y>`
 - `order.interact <target_entity_id>`
 - `order.move` / `order.interact` target the currently selected orderable pawn (`PlayerPawn` or `Settler`); NPC actors remain selectable for inspection/debug context but are non-orderable.
+- Settler `order.move` final stop is deterministic tile-center snap (`world_to_tile` of command target), not arbitrary world-point exact stop.
 - Processor prints parse errors with usage hints.
 - Unknown commands print `error: unknown command '<name>'. try: help`.
 

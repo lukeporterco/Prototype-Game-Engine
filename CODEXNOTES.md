@@ -105,6 +105,10 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 63 (2026-02-28): `PlayerPawn` role assignment is authority-owned only (`GameplayScene.player_id`), never inferred from `defName`; `spawn proto.player` remains non-authoritative by default.
 - Ticket 63 (2026-02-28): orderability gates for right-click and `order.move` / `order.interact` now target selected orderable pawns (`PlayerPawn` + `Settler`) while NPC actors stay selectable but non-orderable; keyboard movement remains authoritative-player-only.
 - Ticket 63 (2026-02-28): `scenario.setup visual_sandbox` now also spawns one deterministic settler (`proto.settler`) without changing the success payload schema (`player/prop/wall/floor`).
+- Ticket 64 (2026-03-01): Settler navigation is gameplay-owned (`crates/game/src/app/gameplay/nav.rs`) with deterministic tile A* (4-neighbor `N,E,S,W`) and deterministic open-list tie-break ordering `(f,h,y,x,insertion_order)` using a monotonic insertion counter.
+- Ticket 64 (2026-03-01): nav cache invalidation uses deterministic `TilemapNavKey { width, height, origin bits, tiles_hash }`; `tiles_hash` is stable FNV-1a over tile IDs (no pointer/address identity).
+- Ticket 64 (2026-03-01): Settler `order.move` snaps `goal_tile = world_to_tile(target_world)` and completes at the goal tile center; unreachable/blocked/out-of-bounds goals fail deterministically and settle to `Idle`.
+- Ticket 64 (2026-03-01): added deterministic scenario `scenario.setup nav_sandbox` (`player:<id> settler:<id>`) with a blocked strip (tile id `2`) that forces detour pathing.
 
 ## Module Boundaries and Ownership
 ### A. Module map

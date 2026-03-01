@@ -24,6 +24,23 @@ fn build_ground_tilemap(scene_key: SceneKey) -> Tilemap {
     .expect("static tilemap shape is valid")
 }
 
+fn build_nav_sandbox_tilemap() -> Tilemap {
+    let width = NAV_SANDBOX_MAP_WIDTH;
+    let height = NAV_SANDBOX_MAP_HEIGHT;
+    let mut tiles = vec![0u16; (width * height) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            let index = (y * width + x) as usize;
+            if x == NAV_SANDBOX_BLOCKED_STRIP_X && y != NAV_SANDBOX_BLOCKED_GAP_Y {
+                tiles[index] = NAV_BLOCKED_TILE_ID;
+            } else if (x + y) % 3 == 0 {
+                tiles[index] = 1;
+            }
+        }
+    }
+    Tilemap::new(width, height, NAV_SANDBOX_ORIGIN, tiles).expect("static tilemap shape is valid")
+}
+
 fn try_resolve_archetype_by_name(
     world: &SceneWorld,
     def_name: &str,

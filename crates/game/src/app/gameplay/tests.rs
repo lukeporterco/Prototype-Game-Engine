@@ -266,6 +266,19 @@
         )
     }
 
+    fn parse_nav_sandbox_setup_ids(message: &str) -> (u64, u64) {
+        let mut player = None::<u64>;
+        let mut settler = None::<u64>;
+        for token in message.split_whitespace() {
+            if let Some(value) = token.strip_prefix("player:") {
+                player = value.parse::<u64>().ok();
+            } else if let Some(value) = token.strip_prefix("settler:") {
+                settler = value.parse::<u64>().ok();
+            }
+        }
+        (player.expect("player id"), settler.expect("settler id"))
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum EntityKindTag {
         Actor,
@@ -2123,6 +2136,15 @@
         );
     }
 
+    fn snapped_tile_center_for_world(tilemap: &Tilemap, world: Vec2) -> Vec2 {
+        let tile_x = (world.x - tilemap.origin().x).floor() as i32;
+        let tile_y = (world.y - tilemap.origin().y).floor() as i32;
+        assert!(tile_x >= 0 && tile_y >= 0, "world target outside tilemap bounds");
+        tilemap
+            .tile_center_world(tile_x as u32, tile_y as u32)
+            .expect("tile center")
+    }
+
     #[test]
     fn debug_order_interact_queues_and_applies_for_selected_actor() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
@@ -2798,6 +2820,102 @@
     }
 
     #[test]
+    fn scenario_setup_nav_sandbox_is_deterministic_and_wired() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let first = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "nav_sandbox".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let first_message = match first {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        assert!(first_message.starts_with("scenario.setup nav_sandbox "));
+        let (first_player_raw, first_settler_raw) = parse_nav_sandbox_setup_ids(&first_message);
+        let first_player_id = EntityId(first_player_raw);
+        let first_settler_id = EntityId(first_settler_raw);
+
+        assert_eq!(world.entity_count(), 2);
+        assert_eq!(scene.player_id, Some(first_player_id));
+        assert_eq!(scene.selected_entity, Some(first_player_id));
+        assert_eq!(
+            world
+                .find_entity(first_player_id)
+                .expect("player")
+                .transform
+                .position,
+            NAV_SANDBOX_PLAYER_POS
+        );
+        assert_eq!(
+            world
+                .find_entity(first_settler_id)
+                .expect("settler")
+                .transform
+                .position,
+            NAV_SANDBOX_SETTLER_POS
+        );
+
+        let tilemap = world.tilemap().expect("nav sandbox tilemap");
+        assert_eq!(tilemap.width(), NAV_SANDBOX_MAP_WIDTH);
+        assert_eq!(tilemap.height(), NAV_SANDBOX_MAP_HEIGHT);
+        assert_eq!(tilemap.origin(), NAV_SANDBOX_ORIGIN);
+        for y in 0..tilemap.height() {
+            let tile = tilemap
+                .tile_at(NAV_SANDBOX_BLOCKED_STRIP_X, y)
+                .expect("blocked strip tile");
+            if y == NAV_SANDBOX_BLOCKED_GAP_Y {
+                assert_ne!(tile, NAV_BLOCKED_TILE_ID);
+            } else {
+                assert_eq!(tile, NAV_BLOCKED_TILE_ID);
+            }
+        }
+
+        let second = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "nav_sandbox".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let second_message = match second {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        assert!(second_message.starts_with("scenario.setup nav_sandbox "));
+        let (second_player_raw, second_settler_raw) = parse_nav_sandbox_setup_ids(&second_message);
+        let second_player_id = EntityId(second_player_raw);
+        let second_settler_id = EntityId(second_settler_raw);
+
+        assert_eq!(world.entity_count(), 2);
+        assert_eq!(scene.player_id, Some(second_player_id));
+        assert_eq!(scene.selected_entity, Some(second_player_id));
+        assert_eq!(
+            world
+                .find_entity(second_player_id)
+                .expect("player")
+                .transform
+                .position,
+            NAV_SANDBOX_PLAYER_POS
+        );
+        assert_eq!(
+            world
+                .find_entity(second_settler_id)
+                .expect("settler")
+                .transform
+                .position,
+            NAV_SANDBOX_SETTLER_POS
+        );
+    }
+
+    #[test]
     fn visual_sandbox_forces_demo_action_states_deterministically() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -3123,6 +3241,179 @@
         };
         assert!((target.x - 1.0).abs() < 0.0001);
         assert!(target.y.abs() < 0.0001);
+    }
+
+    #[test]
+    fn nav_sandbox_selected_settler_order_move_routes_to_snapped_goal_center() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let setup_result = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "nav_sandbox".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let setup_message = match setup_result {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        let (_player_raw, settler_raw) = parse_nav_sandbox_setup_ids(&setup_message);
+        let settler_id = EntityId(settler_raw);
+        scene.selected_entity = Some(settler_id);
+
+        let order_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderMove {
+                x: NAV_SANDBOX_DEFAULT_MOVE_GOAL_WORLD.x,
+                y: NAV_SANDBOX_DEFAULT_MOVE_GOAL_WORLD.y,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(order_result, SceneDebugCommandResult::Success(_)));
+
+        let mut saw_detour = false;
+        for _ in 0..320 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let actor = world.find_entity(settler_id).expect("settler");
+            if (actor.transform.position.y - NAV_SANDBOX_SETTLER_POS.y).abs() > 0.6 {
+                saw_detour = true;
+            }
+            if matches!(actor.order_state, OrderState::Idle) {
+                break;
+            }
+        }
+
+        let tilemap = world.tilemap().expect("tilemap");
+        let expected_goal =
+            snapped_tile_center_for_world(tilemap, NAV_SANDBOX_DEFAULT_MOVE_GOAL_WORLD);
+        let settler = world.find_entity(settler_id).expect("settler");
+        assert_eq!(settler.order_state, OrderState::Idle);
+        assert_vec2_close(settler.transform.position, expected_goal, 0.02);
+        assert!(saw_detour, "expected detour around blocked strip");
+    }
+
+    #[test]
+    fn nav_sandbox_selected_settler_interact_routes_around_blocked_strip() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let setup_result = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "nav_sandbox".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let setup_message = match setup_result {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        let (_player_raw, settler_raw) = parse_nav_sandbox_setup_ids(&setup_message);
+        let settler_id = EntityId(settler_raw);
+        let target_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.resource_pile",
+            NAV_SANDBOX_INTERACT_TARGET_POS,
+        );
+        scene.selected_entity = Some(settler_id);
+
+        let interact_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: target_id.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(interact_result, SceneDebugCommandResult::Success(_)));
+
+        let mut saw_detour = false;
+        let mut saw_working = false;
+        for _ in 0..420 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let settler = world.find_entity(settler_id).expect("settler");
+            if (settler.transform.position.y - NAV_SANDBOX_SETTLER_POS.y).abs() > 0.6 {
+                saw_detour = true;
+            }
+            if matches!(settler.order_state, OrderState::Working { .. }) {
+                saw_working = true;
+            }
+            if scene.resource_count > 0 && matches!(settler.order_state, OrderState::Idle) {
+                break;
+            }
+        }
+
+        let settler = world.find_entity(settler_id).expect("settler");
+        assert!(saw_detour, "expected detour around blocked strip");
+        assert!(saw_working, "expected settler to enter working state");
+        assert!(scene.resource_count > 0, "expected interaction completion");
+        assert_eq!(settler.order_state, OrderState::Idle);
+    }
+
+    #[test]
+    fn unreachable_move_and_interact_leave_settler_idle_without_jitter() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let mut tiles = vec![0u16; 25];
+        for y in 0..5u32 {
+            let index = (y * 5 + 2) as usize;
+            tiles[index] = NAV_BLOCKED_TILE_ID;
+        }
+        world.set_tilemap(
+            Tilemap::new(5, 5, Vec2 { x: 0.0, y: 0.0 }, tiles).expect("unreachable tilemap"),
+        );
+
+        let settler_id =
+            spawn_def_via_console(&mut scene, &mut world, "proto.settler", Vec2 { x: 0.5, y: 2.5 });
+        scene.selected_entity = Some(settler_id);
+        let start_position = world.find_entity(settler_id).expect("settler").transform.position;
+
+        let move_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderMove { x: 4.5, y: 2.5 },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(move_result, SceneDebugCommandResult::Success(_)));
+        advance(&mut scene, &mut world, 60, 0.1);
+        let after_move = world.find_entity(settler_id).expect("settler");
+        assert_eq!(after_move.order_state, OrderState::Idle);
+        assert_vec2_close(after_move.transform.position, start_position, 0.001);
+
+        let target_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.resource_pile",
+            Vec2 { x: 4.5, y: 2.5 },
+        );
+        scene.selected_entity = Some(settler_id);
+        let interact_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: target_id.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(interact_result, SceneDebugCommandResult::Success(_)));
+        advance(&mut scene, &mut world, 80, 0.1);
+
+        let after_interact = world.find_entity(settler_id).expect("settler");
+        assert_eq!(after_interact.order_state, OrderState::Idle);
+        assert_vec2_close(after_interact.transform.position, start_position, 0.001);
+        assert!(!scene.active_interactions_by_actor.contains_key(&settler_id));
     }
 
     #[test]
