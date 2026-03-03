@@ -3452,12 +3452,41 @@
         let (_player_raw, prop_raw, wall_raw, floor_raw) =
             parse_visual_sandbox_setup_ids(&setup_message);
         let player_id = scene.player_id.expect("sandbox player");
+        let workbench_raw = world
+            .entities()
+            .iter()
+            .find(|entity| {
+                archetype_def_name_for_entity(&scene, &world, entity.id)
+                    == VISUAL_SANDBOX_EXTRA_INTERACTABLE_DEF
+            })
+            .map(|entity| entity.id.0)
+            .expect("sandbox workbench");
 
         scene.update(0.1, &InputSnapshot::empty(), &mut world);
         let initial_visual = world.entity_action_visual(player_id);
         assert_eq!(initial_visual.action_state, ActionState::Idle);
         assert_eq!(initial_visual.held_visual, None);
         assert_eq!(initial_visual.action_params.facing, Some(CardinalFacing::South));
+
+        let interact_bench_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: workbench_raw,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(
+            interact_bench_result,
+            SceneDebugCommandResult::Success(_)
+        ));
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+        let bench_use_tool_visual = world.entity_action_visual(player_id);
+        assert_eq!(bench_use_tool_visual.action_state, ActionState::UseTool);
+        assert_eq!(
+            bench_use_tool_visual.held_visual.as_deref(),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
 
         let interact_prop_result = scene.execute_debug_command(
             SceneDebugCommand::OrderInteract {

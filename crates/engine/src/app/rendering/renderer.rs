@@ -48,9 +48,31 @@ const WALK_BOB_AMPLITUDE_PX: f32 = 1.0;
 const WALK_BOB_X_AMPLITUDE_PX: f32 = 0.45;
 const WALK_BOB_CYCLES_PER_TICK: f32 = 0.08;
 const WALK_SPRING_ALPHA_PER_TICK: f32 = 0.25;
-const HIT_KICK_MAX_PX: f32 = 2.5;
-const HIT_KICK_ROTATION_SCALE: f32 = 0.02;
 const PROCEDURAL_ENTITY_PHASE_SEED: f32 = 0.173;
+const PROC_Q4_SHIFT: u32 = 4;
+const PROC_Q4_ONE: i16 = 1_i16 << PROC_Q4_SHIFT;
+const PROCEDURAL_PHASE_MASK: u32 = 0x0f;
+const PROCEDURAL_PHASE_LEN: usize = 16;
+const PROCEDURAL_SEED_MIX_MULTIPLIER: u32 = 0x9E37_79B9;
+const PROCEDURAL_SEED_MIX_ADDEND: u32 = 0x7F4A_7C15;
+const HIT_KICK_MAX_Q4: i16 = 40; // 2.5 px
+const USE_TOOL_RECOIL_MAX_X_Q4: i16 = 18; // 1.125 px
+const USE_TOOL_RECOIL_MAX_Y_Q4: i16 = 9; // 0.5625 px
+const USE_TOOL_RECOIL_PHASE_OFFSET: u32 = 5;
+const USE_TOOL_FLICKER_PHASE_OFFSET: u32 = 9;
+const USE_TOOL_FLICKER_Y_OFFSET_PX: i32 = 4;
+const USE_TOOL_FLICKER_COLOR_RGB: [u8; 3] = [255, 220, 140];
+const HIT_RECOIL_Q4_LUT: [i16; PROCEDURAL_PHASE_LEN] =
+    [0, 8, 16, 24, 32, 40, 32, 24, 16, 8, 4, 0, 0, 0, 0, 0];
+const USE_TOOL_RECOIL_X_Q4_LUT: [i16; PROCEDURAL_PHASE_LEN] =
+    [0, 4, 8, 12, 16, 18, 16, 12, 8, 4, 0, -4, -8, -12, -16, -18];
+const USE_TOOL_RECOIL_Y_Q4_LUT: [i16; PROCEDURAL_PHASE_LEN] =
+    [0, 2, 4, 6, 8, 9, 8, 6, 4, 2, 0, -2, -4, -6, -8, -9];
+const USE_TOOL_FLICKER_ALPHA_LUT: [u8; PROCEDURAL_PHASE_LEN] = [
+    24, 28, 34, 40, 46, 52, 56, 52, 46, 40, 34, 30, 28, 26, 24, 26,
+];
+const USE_TOOL_FLICKER_RADIUS_LUT: [i32; PROCEDURAL_PHASE_LEN] =
+    [3, 3, 4, 4, 5, 5, 5, 5, 4, 4, 4, 3, 3, 3, 3, 3];
 
 #[derive(Debug, Clone, Copy)]
 struct WorldBounds {
@@ -221,6 +243,18 @@ impl Renderer {
                 action_visual,
                 sim_tick_counter,
             );
+            if action_visual.action_state == ActionState::UseTool {
+                draw_use_tool_flicker_halo(
+                    frame,
+                    self.viewport.width,
+                    self.viewport.height,
+                    world.camera(),
+                    entity.transform.position,
+                    procedural_offset.offset_px,
+                    entity.id,
+                    sim_tick_counter,
+                );
+            }
             draw_renderable_at_world_position(
                 frame,
                 self.viewport.width,
@@ -236,7 +270,8 @@ impl Renderer {
                 true,
             );
 
-            let Some(anchor_name) = held_attachment_anchor_name(action_visual.action_state) else {
+            let Some(anchor_name) = held_attachment_anchor_name(entity, action_visual.action_state)
+            else {
                 continue;
             };
             let Some(held_visual_def_name) = action_visual.held_visual.as_deref() else {
@@ -357,10 +392,24 @@ fn draw_renderable_at_world_position(
     }
 }
 
-fn held_attachment_anchor_name(action_state: ActionState) -> Option<SpriteAnchorName> {
+fn held_attachment_anchor_name(
+    entity: &Entity,
+    action_state: ActionState,
+) -> Option<SpriteAnchorName> {
     match action_state {
         ActionState::Carry => Some(SpriteAnchorName::Carry),
-        ActionState::UseTool => Some(SpriteAnchorName::Tool),
+        ActionState::UseTool => {
+            let RenderableKind::Sprite { anchors, .. } = &entity.renderable.kind else {
+                return None;
+            };
+            if anchors.tool.is_some() {
+                Some(SpriteAnchorName::Tool)
+            } else if anchors.hand.is_some() {
+                Some(SpriteAnchorName::Hand)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -596,27 +645,57 @@ fn compute_procedural_offset(
             }
         }
         ActionState::Hit => {
-            let phase01 = action_visual.action_params.phase.clamp(0.0, 1.0);
-            let envelope = if phase01 < 0.2 {
-                phase01 / 0.2
-            } else if phase01 < 0.6 {
-                1.0 - ((phase01 - 0.2) / 0.4)
-            } else {
-                0.0
-            };
-            let magnitude01 = action_visual
-                .action_params
-                .intensity
-                .max(action_visual.action_params.speed01)
-                .clamp(0.0, 1.0);
-            let x = envelope * magnitude01 * HIT_KICK_MAX_PX;
+            let phase_idx = procedural_phase_idx(entity_id, sim_tick_counter, 0);
+            let x_q4 = HIT_RECOIL_Q4_LUT[phase_idx].clamp(0, HIT_KICK_MAX_Q4);
             ProceduralVisualOffset {
-                offset_px: Vec2 { x, y: 0.0 },
-                rotation_radians: x * HIT_KICK_ROTATION_SCALE,
+                offset_px: Vec2 {
+                    x: q4_to_px(x_q4),
+                    y: 0.0,
+                },
+                rotation_radians: 0.0,
+            }
+        }
+        ActionState::UseTool => {
+            let phase_idx =
+                procedural_phase_idx(entity_id, sim_tick_counter, USE_TOOL_RECOIL_PHASE_OFFSET);
+            let x_q4 = USE_TOOL_RECOIL_X_Q4_LUT[phase_idx]
+                .clamp(-USE_TOOL_RECOIL_MAX_X_Q4, USE_TOOL_RECOIL_MAX_X_Q4);
+            let y_q4 = USE_TOOL_RECOIL_Y_Q4_LUT[phase_idx]
+                .clamp(-USE_TOOL_RECOIL_MAX_Y_Q4, USE_TOOL_RECOIL_MAX_Y_Q4);
+            ProceduralVisualOffset {
+                offset_px: Vec2 {
+                    x: q4_to_px(x_q4),
+                    y: q4_to_px(y_q4),
+                },
+                rotation_radians: 0.0,
             }
         }
         _ => ProceduralVisualOffset::default(),
     }
+}
+
+fn procedural_seed_phase(entity_id: crate::app::EntityId) -> u32 {
+    let mixed = (entity_id.0 as u32)
+        .wrapping_mul(PROCEDURAL_SEED_MIX_MULTIPLIER)
+        .wrapping_add(PROCEDURAL_SEED_MIX_ADDEND);
+    (mixed >> PROC_Q4_SHIFT) & PROCEDURAL_PHASE_MASK
+}
+
+fn procedural_phase_idx(
+    entity_id: crate::app::EntityId,
+    sim_tick_counter: u64,
+    phase_offset: u32,
+) -> usize {
+    let tick_low = sim_tick_counter as u32;
+    let phase = tick_low
+        .wrapping_add(procedural_seed_phase(entity_id))
+        .wrapping_add(phase_offset)
+        & PROCEDURAL_PHASE_MASK;
+    phase as usize
+}
+
+fn q4_to_px(value_q4: i16) -> f32 {
+    value_q4 as f32 / PROC_Q4_ONE as f32
 }
 
 fn update_walk_spring_amplitude(
@@ -1350,6 +1429,144 @@ fn draw_cross(
     }
 }
 
+fn use_tool_flicker_alpha_and_radius(
+    entity_id: crate::app::EntityId,
+    sim_tick_counter: u64,
+) -> (u8, i32) {
+    let idx = procedural_phase_idx(entity_id, sim_tick_counter, USE_TOOL_FLICKER_PHASE_OFFSET);
+    (
+        USE_TOOL_FLICKER_ALPHA_LUT[idx],
+        USE_TOOL_FLICKER_RADIUS_LUT[idx],
+    )
+}
+
+fn draw_use_tool_flicker_halo(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    camera: &Camera2D,
+    world_position: Vec2,
+    visual_offset_px: Vec2,
+    entity_id: crate::app::EntityId,
+    sim_tick_counter: u64,
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let (alpha, radius_px) = use_tool_flicker_alpha_and_radius(entity_id, sim_tick_counter);
+    if alpha == 0 || radius_px <= 0 {
+        return;
+    }
+    let (cx, cy) = world_to_snapped_screen_px_with_offset(
+        camera,
+        (width, height),
+        world_position,
+        visual_offset_px,
+    );
+    draw_filled_circle_source_over(
+        frame,
+        width,
+        height,
+        cx,
+        cy + USE_TOOL_FLICKER_Y_OFFSET_PX,
+        radius_px,
+        [
+            USE_TOOL_FLICKER_COLOR_RGB[0],
+            USE_TOOL_FLICKER_COLOR_RGB[1],
+            USE_TOOL_FLICKER_COLOR_RGB[2],
+            alpha,
+        ],
+    );
+}
+
+fn draw_filled_circle_source_over(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    cx: i32,
+    cy: i32,
+    radius_px: i32,
+    color: [u8; 4],
+) {
+    let radius = radius_px.max(0);
+    let radius_sq = radius.saturating_mul(radius);
+    for y in (cy - radius)..=(cy + radius) {
+        let dy = y - cy;
+        let dy_sq = dy.saturating_mul(dy);
+        for x in (cx - radius)..=(cx + radius) {
+            let dx = x - cx;
+            if dx.saturating_mul(dx).saturating_add(dy_sq) > radius_sq {
+                continue;
+            }
+            blend_source_over_pixel_clipped(frame, width, height, x, y, color);
+        }
+    }
+}
+
+fn blend_source_over_pixel_clipped(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    src_rgba: [u8; 4],
+) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    let x = x as usize;
+    let y = y as usize;
+    let width = width as usize;
+    let Some(pixel_offset) = y.checked_mul(width).and_then(|row| row.checked_add(x)) else {
+        return;
+    };
+    let Some(byte_offset) = pixel_offset.checked_mul(4) else {
+        return;
+    };
+    let Some(end) = byte_offset.checked_add(4) else {
+        return;
+    };
+    if end > frame.len() {
+        return;
+    }
+    blend_source_over_pixel_at_offset(frame, byte_offset, src_rgba);
+}
+
+fn blend_source_over_pixel_at_offset(frame: &mut [u8], dst_offset: usize, src_rgba: [u8; 4]) {
+    let src_a = src_rgba[3];
+    if src_a == 0 {
+        return;
+    }
+    if src_a == 255 {
+        frame[dst_offset] = src_rgba[0];
+        frame[dst_offset + 1] = src_rgba[1];
+        frame[dst_offset + 2] = src_rgba[2];
+        frame[dst_offset + 3] = 255;
+        return;
+    }
+
+    let src_r = src_rgba[0] as u16;
+    let src_g = src_rgba[1] as u16;
+    let src_b = src_rgba[2] as u16;
+    let src_a_u16 = src_a as u16;
+    let inv_a = 255u16 - src_a_u16;
+
+    let dst_r = frame[dst_offset] as u16;
+    let dst_g = frame[dst_offset + 1] as u16;
+    let dst_b = frame[dst_offset + 2] as u16;
+    let dst_a = frame[dst_offset + 3] as u16;
+
+    let out_r = (src_r * src_a_u16 + dst_r * inv_a + 127) / 255;
+    let out_g = (src_g * src_a_u16 + dst_g * inv_a + 127) / 255;
+    let out_b = (src_b * src_a_u16 + dst_b * inv_a + 127) / 255;
+    let out_a = src_a_u16 + ((dst_a * inv_a + 127) / 255);
+
+    frame[dst_offset] = out_r as u8;
+    frame[dst_offset + 1] = out_g as u8;
+    frame[dst_offset + 2] = out_b as u8;
+    frame[dst_offset + 3] = out_a as u8;
+}
+
 fn normalized_sprite_scale(scale: f32) -> f32 {
     if scale.is_finite() && scale > 0.0 {
         scale
@@ -1413,39 +1630,14 @@ fn draw_sprite_centered_scaled(
             let src_x = ((dx as f32) * inv_scale).floor() as u32;
             let src_x = src_x.min(sprite.width - 1) as usize;
             let src_offset = src_row_offset + src_x * 4;
-            let src_a = sprite.rgba[src_offset + 3];
-            if src_a == 0 {
-                continue;
-            }
             let dst_offset = dst_row_offset + out_x as usize * 4;
-            if src_a == 255 {
-                frame[dst_offset] = sprite.rgba[src_offset];
-                frame[dst_offset + 1] = sprite.rgba[src_offset + 1];
-                frame[dst_offset + 2] = sprite.rgba[src_offset + 2];
-                frame[dst_offset + 3] = 255;
-                continue;
-            }
-
-            let src_r = sprite.rgba[src_offset] as u16;
-            let src_g = sprite.rgba[src_offset + 1] as u16;
-            let src_b = sprite.rgba[src_offset + 2] as u16;
-            let src_a_u16 = src_a as u16;
-            let inv_a = 255u16 - src_a_u16;
-
-            let dst_r = frame[dst_offset] as u16;
-            let dst_g = frame[dst_offset + 1] as u16;
-            let dst_b = frame[dst_offset + 2] as u16;
-            let dst_a = frame[dst_offset + 3] as u16;
-
-            let out_r = (src_r * src_a_u16 + dst_r * inv_a + 127) / 255;
-            let out_g = (src_g * src_a_u16 + dst_g * inv_a + 127) / 255;
-            let out_b = (src_b * src_a_u16 + dst_b * inv_a + 127) / 255;
-            let out_a = src_a_u16 + ((dst_a * inv_a + 127) / 255);
-
-            frame[dst_offset] = out_r as u8;
-            frame[dst_offset + 1] = out_g as u8;
-            frame[dst_offset + 2] = out_b as u8;
-            frame[dst_offset + 3] = out_a as u8;
+            let src_rgba = [
+                sprite.rgba[src_offset],
+                sprite.rgba[src_offset + 1],
+                sprite.rgba[src_offset + 2],
+                sprite.rgba[src_offset + 3],
+            ];
+            blend_source_over_pixel_at_offset(frame, dst_offset, src_rgba);
         }
     }
 }
@@ -1690,17 +1882,56 @@ mod tests {
         assert!(visual_test_variant_candidate_keys("npc/chaser_red", &visual).is_none());
     }
 
+    fn spawn_sprite_entity_for_anchor_test(anchors: SpriteAnchors) -> Entity {
+        let mut world = SceneWorld::default();
+        let id = world.spawn(
+            crate::app::Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            crate::app::RenderableDesc {
+                kind: RenderableKind::Sprite {
+                    key: "visual_test/pawn_blue".to_string(),
+                    pixel_scale: 3,
+                    anchors,
+                },
+                debug_name: "anchor_test",
+            },
+        );
+        world.apply_pending();
+        world.find_entity(id).expect("anchor test entity").clone()
+    }
+
     #[test]
-    fn held_attachment_anchor_routes_carry_and_use_tool() {
+    fn usetool_anchor_resolution_prefers_tool_then_hand_then_none() {
+        let both = spawn_sprite_entity_for_anchor_test(SpriteAnchors {
+            tool: Some(SpriteAnchorPx { x_px: 5, y_px: -2 }),
+            hand: Some(SpriteAnchorPx { x_px: 4, y_px: -1 }),
+            ..SpriteAnchors::default()
+        });
+        let hand_only = spawn_sprite_entity_for_anchor_test(SpriteAnchors {
+            hand: Some(SpriteAnchorPx { x_px: 4, y_px: -1 }),
+            ..SpriteAnchors::default()
+        });
+        let none = spawn_sprite_entity_for_anchor_test(SpriteAnchors::default());
+
         assert_eq!(
-            held_attachment_anchor_name(ActionState::Carry),
+            held_attachment_anchor_name(&both, ActionState::Carry),
             Some(SpriteAnchorName::Carry)
         );
         assert_eq!(
-            held_attachment_anchor_name(ActionState::UseTool),
+            held_attachment_anchor_name(&both, ActionState::UseTool),
             Some(SpriteAnchorName::Tool)
         );
-        assert_eq!(held_attachment_anchor_name(ActionState::Idle), None);
+        assert_eq!(
+            held_attachment_anchor_name(&hand_only, ActionState::UseTool),
+            Some(SpriteAnchorName::Hand)
+        );
+        assert_eq!(
+            held_attachment_anchor_name(&none, ActionState::UseTool),
+            None
+        );
+        assert_eq!(held_attachment_anchor_name(&none, ActionState::Idle), None);
     }
 
     fn approx_eq_f32(a: f32, b: f32) -> bool {
@@ -1775,32 +2006,96 @@ mod tests {
     }
 
     #[test]
-    fn hit_impulse_curve_is_bounded_and_decays() {
+    fn hit_and_usetool_recoil_q4_are_bounded_by_caps() {
         let mut spring = HashMap::new();
-        let early = EntityActionVisual {
+        let hit = EntityActionVisual {
             action_state: ActionState::Hit,
+            action_params: ActionParams::default(),
+            held_visual: None,
+        };
+        let use_tool = EntityActionVisual {
+            action_state: ActionState::UseTool,
             action_params: ActionParams {
-                phase: 0.2,
-                intensity: 1.0,
                 ..ActionParams::default()
             },
             held_visual: None,
         };
-        let late = EntityActionVisual {
-            action_state: ActionState::Hit,
-            action_params: ActionParams {
-                phase: 0.8,
-                intensity: 1.0,
-                ..ActionParams::default()
-            },
-            held_visual: None,
-        };
-        let early_offset = compute_procedural_offset(&mut spring, EntityId(9), &early, 80);
-        let late_offset = compute_procedural_offset(&mut spring, EntityId(9), &late, 81);
+        for tick in 0..64 {
+            let hit_offset = compute_procedural_offset(&mut spring, EntityId(9), &hit, tick);
+            let use_tool_offset =
+                compute_procedural_offset(&mut spring, EntityId(11), &use_tool, tick);
+            assert!(hit_offset.offset_px.x >= 0.0);
+            assert!(hit_offset.offset_px.x <= q4_to_px(HIT_KICK_MAX_Q4) + 0.001);
+            assert!(
+                use_tool_offset.offset_px.x.abs() <= q4_to_px(USE_TOOL_RECOIL_MAX_X_Q4) + 0.001
+            );
+            assert!(
+                use_tool_offset.offset_px.y.abs() <= q4_to_px(USE_TOOL_RECOIL_MAX_Y_Q4) + 0.001
+            );
+        }
+    }
 
-        assert!(early_offset.offset_px.x >= 0.0);
-        assert!(early_offset.offset_px.x <= HIT_KICK_MAX_PX + 0.001);
-        assert!(late_offset.offset_px.x <= early_offset.offset_px.x);
+    #[test]
+    fn procedural_recoil_q4_is_deterministic_for_same_seed_and_tick() {
+        let mut spring = HashMap::new();
+        let visual = EntityActionVisual {
+            action_state: ActionState::UseTool,
+            action_params: ActionParams::default(),
+            held_visual: None,
+        };
+        let first = compute_procedural_offset(&mut spring, EntityId(77), &visual, 220);
+        let second = compute_procedural_offset(&mut spring, EntityId(77), &visual, 220);
+        assert!(approx_eq_vec2(first.offset_px, second.offset_px));
+    }
+
+    #[test]
+    fn flicker_lut_is_tick_driven_and_seed_stable() {
+        let a0 = use_tool_flicker_alpha_and_radius(EntityId(5), 900);
+        let a0_repeat = use_tool_flicker_alpha_and_radius(EntityId(5), 900);
+        let a1 = use_tool_flicker_alpha_and_radius(EntityId(5), 901);
+        assert_eq!(a0, a0_repeat);
+        assert_ne!(a0, a1);
+    }
+
+    #[test]
+    fn missing_anchor_or_missing_tool_visual_is_no_panic_no_draw_side_effect() {
+        let mut frame = vec![0u8; 16 * 16 * 4];
+        let before = frame.clone();
+        draw_use_tool_flicker_halo(
+            &mut frame,
+            0,
+            0,
+            &Camera2D::default(),
+            Vec2 { x: 0.0, y: 0.0 },
+            Vec2 { x: 0.0, y: 0.0 },
+            EntityId(1),
+            10,
+        );
+        assert_eq!(frame, before);
+    }
+
+    #[test]
+    fn halo_blend_uses_same_source_over_math_as_sprite_path() {
+        let mut frame_a = vec![10u8, 20, 30, 255];
+        let mut frame_b = vec![10u8, 20, 30, 255];
+        let src = [200u8, 100, 50, 128];
+        blend_source_over_pixel_at_offset(&mut frame_a, 0, src);
+
+        let src_r = src[0] as u16;
+        let src_g = src[1] as u16;
+        let src_b = src[2] as u16;
+        let src_a = src[3] as u16;
+        let inv_a = 255u16 - src_a;
+        let dst_r = frame_b[0] as u16;
+        let dst_g = frame_b[1] as u16;
+        let dst_b = frame_b[2] as u16;
+        let dst_a = frame_b[3] as u16;
+        frame_b[0] = ((src_r * src_a + dst_r * inv_a + 127) / 255) as u8;
+        frame_b[1] = ((src_g * src_a + dst_g * inv_a + 127) / 255) as u8;
+        frame_b[2] = ((src_b * src_a + dst_b * inv_a + 127) / 255) as u8;
+        frame_b[3] = (src_a + ((dst_a * inv_a + 127) / 255)) as u8;
+
+        assert_eq!(frame_a, frame_b);
     }
 
     #[test]
@@ -1987,6 +2282,15 @@ mod tests {
             resolve_cached_carry_sprite(&mut cache, Some(&def_db), "proto.not_sprite");
         assert!(miss_second.is_none());
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn missing_tool_visual_def_resolves_none_without_panic() {
+        let mut cache = HashMap::<String, Option<CachedCarrySprite>>::new();
+        let def_db = DefDatabase::from_entity_defs(Vec::new());
+        let missing = resolve_cached_carry_sprite(&mut cache, Some(&def_db), "proto.missing_tool");
+        assert!(missing.is_none());
+        assert_eq!(cache.len(), 1);
     }
 
     #[test]

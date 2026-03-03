@@ -1451,6 +1451,19 @@ impl GameplayScene {
         self.carry_visual_by_actor.get(&actor_id).cloned()
     }
 
+    fn actor_is_using_sandbox_workbench(&self, world: &SceneWorld, actor_id: EntityId) -> bool {
+        if !self.visual_sandbox_demo_active {
+            return false;
+        }
+        let Some(interaction) = self.active_interactions_by_actor.get(&actor_id) else {
+            return false;
+        };
+        if interaction.kind != ActiveInteractionKind::Use {
+            return false;
+        }
+        self.entity_has_archetype_tag(world, interaction.target_id, "workbench_demo")
+    }
+
     fn tick_hit_timers(&mut self) {
         self.hit_ticks_remaining_by_actor.retain(|_, remaining| {
             if *remaining > 0 {
@@ -3043,7 +3056,11 @@ impl GameplayScene {
             }
 
             let action_state = if GameplaySystemsHost::order_state_indicates_interaction(order_state) {
-                ActionState::Interact
+                if self.actor_is_using_sandbox_workbench(world, actor_id) {
+                    ActionState::UseTool
+                } else {
+                    ActionState::Interact
+                }
             } else if self
                 .hit_ticks_remaining_by_actor
                 .get(&actor_id)
@@ -3057,6 +3074,10 @@ impl GameplayScene {
             } else {
                 movement_action_state
             };
+            let mut held_visual = self.actor_held_visual(actor_id);
+            if action_state == ActionState::UseTool && held_visual.is_none() {
+                held_visual = Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF.to_string());
+            }
 
             world.set_entity_action_visual(
                 actor_id,
@@ -3070,7 +3091,7 @@ impl GameplayScene {
                     target_hint: None,
                     is_looping: true,
                 },
-                    held_visual: self.actor_held_visual(actor_id),
+                    held_visual,
                 },
             );
         }

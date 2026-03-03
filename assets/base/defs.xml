@@ -4,6 +4,7 @@
     <label>Player</label>
     <renderable kind="Sprite" spriteKey="visual_test/pawn_blue" pixelScale="3">
       <anchors>
+        <anchor name="hand" x="4" y="-1" />
         <anchor name="carry" x="3" y="-2" />
         <anchor name="tool" x="4" y="-1" />
       </anchors>
