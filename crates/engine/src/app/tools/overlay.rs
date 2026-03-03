@@ -118,6 +118,9 @@ fn build_overlay_lines(data: &OverlayData) -> Vec<String> {
             Some(pos) => format!("pos: {:.1},{:.1}", pos.x, pos.y),
             None => "pos: none".to_string(),
         });
+        if let Some(role) = debug_info.selected_role_text.as_deref() {
+            lines.push(format!("role: {role}"));
+        }
         lines.push(match debug_info.selected_order_world {
             Some(target) => format!("ord: {:.1},{:.1}", target.x, target.y),
             None => "ord: idle".to_string(),
@@ -770,6 +773,7 @@ mod tests {
             debug_info: Some(DebugInfoSnapshot {
                 selected_entity: Some(EntityId(1)),
                 selected_position_world: Some(crate::app::Vec2 { x: 1.0, y: 2.0 }),
+                selected_role_text: Some("Settler".to_string()),
                 selected_order_world: None,
                 selected_job_state: DebugJobState::Working {
                     remaining_time: 1.5,
@@ -787,18 +791,49 @@ mod tests {
             }),
         };
         let lines = build_overlay_lines(&data);
-        assert_eq!(lines.len(), 23);
+        assert_eq!(lines.len(), 24);
         assert_eq!(lines[14], INSPECT_SECTION_LABEL);
+        assert_eq!(lines[17], "role: Settler");
         assert_eq!(
-            lines[20],
+            lines[21],
             "sys: InputIntent>Interaction>AI>CombatResolution>StatusEffects>Cleanup"
         );
-        assert_eq!(lines[21], "ev: 1");
-        assert_eq!(lines[22], "evk: is:0 ic:0 dm:0 dd:0 sa:1 se:0");
+        assert_eq!(lines[22], "ev: 1");
+        assert_eq!(lines[23], "evk: is:0 ic:0 dm:0 dd:0 sa:1 se:0");
         assert_eq!(
             OVERLAY_PADDING + (lines.len() as i32 - 1) * LINE_ADVANCE,
-            480
+            501
         );
+    }
+
+    #[test]
+    fn inspect_block_omits_role_line_when_selected_role_absent() {
+        let data = OverlayData {
+            metrics: LoopMetricsSnapshot::default(),
+            perf: PerfStatsSnapshot::default(),
+            render_fps_cap: Some(240),
+            slow_frame_delay_ms: 0,
+            entity_count: 1,
+            content_status: "loaded",
+            selected_entity: Some(EntityId(1)),
+            selected_target: None,
+            resource_count: Some(0),
+            debug_info: Some(DebugInfoSnapshot {
+                selected_entity: Some(EntityId(1)),
+                selected_position_world: Some(crate::app::Vec2 { x: 0.0, y: 0.0 }),
+                selected_role_text: None,
+                selected_order_world: None,
+                selected_job_state: DebugJobState::Idle,
+                entity_count: 1,
+                actor_count: 1,
+                interactable_count: 0,
+                resource_count: 0,
+                system_order: "test".to_string(),
+                extra_debug_lines: None,
+            }),
+        };
+        let lines = build_overlay_lines(&data);
+        assert!(!lines.iter().any(|line| line.starts_with("role: ")));
     }
 
     #[test]

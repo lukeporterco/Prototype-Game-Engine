@@ -239,6 +239,12 @@ fn run_app_with_metrics_and_hooks(
     let mut tick_counter = 0u64;
     let mut console = ConsoleState::default();
     let mut command_palette = CommandPaletteState::new(cfg!(debug_assertions));
+    command_palette.set_macro_file_path(
+        app_paths
+            .cache_dir
+            .join("tools")
+            .join("command_palette_macros.v1.json"),
+    );
     let mut console_command_processor = ConsoleCommandProcessor::new();
     let mut drained_debug_commands = Vec::<DebugCommand>::new();
     let mut remote_console_lines = Vec::<String>::new();
@@ -456,6 +462,9 @@ fn run_app_with_metrics_and_hooks(
                             &collect_spawn_def_names(&scenes),
                             input_collector.cursor_position_px(),
                         );
+                        if let Some(message) = command_palette.take_load_error_line() {
+                            console.append_output_line(format!("error: {message}"));
+                        }
                         let palette_render_data = command_palette.render_data();
 
                         // render_ms boundary start:
@@ -1411,6 +1420,23 @@ fn handle_command_palette_mouse_press(
                 CommandPaletteButtonKind::SpawnPlacement { def_name } => {
                     command_palette.arm_spawn(def_name);
                 }
+                CommandPaletteButtonKind::Macro { macro_index } => {
+                    command_palette.clear_armed_spawn();
+                    command_palette.clear_status_line();
+                    let Some(macro_def) = command_palette.macro_by_index(macro_index) else {
+                        console.append_output_line("error: command palette macro not found");
+                        return true;
+                    };
+                    if !CommandPaletteState::is_macro_within_queue_limit(macro_def) {
+                        console.append_output_line(
+                            "error: command palette macro exceeds queued bytes limit",
+                        );
+                        return true;
+                    }
+                    for command in &macro_def.commands {
+                        enqueue_console_submission_line(console, command);
+                    }
+                }
             }
             return true;
         }
@@ -1800,9 +1826,13 @@ fn zoom_steps_from_scroll_delta(delta: MouseScrollDelta) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::{Arc, Mutex};
 
+    use crate::app::Vec2;
+
     use super::*;
+    use tempfile::TempDir;
 
     struct NoopScene;
 
@@ -2038,6 +2068,7 @@ mod tests {
         let snapshot = super::super::DebugInfoSnapshot {
             selected_entity: None,
             selected_position_world: None,
+            selected_role_text: None,
             selected_order_world: None,
             selected_job_state: super::super::DebugJobState::None,
             entity_count: 0,
@@ -2064,6 +2095,7 @@ mod tests {
         let malformed = super::super::DebugInfoSnapshot {
             selected_entity: None,
             selected_position_world: None,
+            selected_role_text: None,
             selected_order_world: None,
             selected_job_state: super::super::DebugJobState::None,
             entity_count: 0,
@@ -2274,6 +2306,108 @@ mod tests {
         let mut queued = Vec::new();
         processor.drain_pending_debug_commands_into(&mut queued);
         assert_eq!(queued, vec![DebugCommand::PauseSim]);
+    }
+
+    #[test]
+    fn palette_macro_click_enqueues_commands_in_order_via_submission_path() {
+        let mut scenes = SceneMachine::new(Box::new(NoopScene), Box::new(NoopScene), SceneKey::A);
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let temp = TempDir::new().expect("temp");
+        let tools_dir = temp.path().join("tools");
+        fs::create_dir_all(&tools_dir).expect("tools dir");
+        let macro_path = tools_dir.join("command_palette_macros.v1.json");
+        fs::write(
+            &macro_path,
+            r#"{"version":1,"macros":[{"name":"Setup","commands":["pause_sim","sync"]}]}"#,
+        )
+        .expect("write macro file");
+
+        let mut palette = CommandPaletteState::new(true);
+        palette.set_macro_file_path(macro_path);
+        palette.rebuild_layout((1280, 720), &collect_spawn_def_names(&scenes), None);
+        let macro_button = palette
+            .render_data()
+            .expect("render data")
+            .buttons
+            .iter()
+            .find(|button| matches!(button.kind, CommandPaletteButtonKind::Macro { .. }))
+            .expect("macro button");
+        let click_cursor = Vec2 {
+            x: (macro_button.rect.left + 2) as f32,
+            y: (macro_button.rect.top + 2) as f32,
+        };
+
+        let mut console = ConsoleState::default();
+        let mut input_collector = InputCollector::new(1280, 720);
+        input_collector.set_cursor_position_px(click_cursor.x, click_cursor.y);
+        let consumed = handle_command_palette_mouse_press(
+            &mut palette,
+            &mut console,
+            &input_collector,
+            MouseButton::Left,
+            &scenes,
+        );
+        assert!(consumed);
+
+        let mut processor = ConsoleCommandProcessor::new();
+        processor.process_pending_lines(&mut console);
+        let mut queued = Vec::new();
+        processor.drain_pending_debug_commands_into(&mut queued);
+        assert_eq!(queued, vec![DebugCommand::PauseSim, DebugCommand::Sync]);
+    }
+
+    #[test]
+    fn palette_macro_click_over_byte_cap_emits_single_error_and_enqueues_none() {
+        let mut scenes = SceneMachine::new(Box::new(NoopScene), Box::new(NoopScene), SceneKey::A);
+        scenes.load_active();
+        scenes.apply_pending_active();
+
+        let huge = "x".repeat(4096);
+        let json = format!(
+            r#"{{"version":1,"macros":[{{"name":"TooBig","commands":["{}","y"]}}]}}"#,
+            huge
+        );
+        let temp = TempDir::new().expect("temp");
+        let tools_dir = temp.path().join("tools");
+        fs::create_dir_all(&tools_dir).expect("tools dir");
+        let macro_path = tools_dir.join("command_palette_macros.v1.json");
+        fs::write(&macro_path, json).expect("write macro file");
+
+        let mut palette = CommandPaletteState::new(true);
+        palette.set_macro_file_path(macro_path);
+        palette.rebuild_layout((1280, 720), &collect_spawn_def_names(&scenes), None);
+        let macro_button = palette
+            .render_data()
+            .expect("render data")
+            .buttons
+            .iter()
+            .find(|button| matches!(button.kind, CommandPaletteButtonKind::Macro { .. }))
+            .expect("macro button");
+        let click_cursor = Vec2 {
+            x: (macro_button.rect.left + 2) as f32,
+            y: (macro_button.rect.top + 2) as f32,
+        };
+
+        let mut console = ConsoleState::default();
+        let mut input_collector = InputCollector::new(1280, 720);
+        input_collector.set_cursor_position_px(click_cursor.x, click_cursor.y);
+        let consumed = handle_command_palette_mouse_press(
+            &mut palette,
+            &mut console,
+            &input_collector,
+            MouseButton::Left,
+            &scenes,
+        );
+        assert!(consumed);
+        assert_eq!(
+            console.output_lines().collect::<Vec<_>>(),
+            vec!["error: command palette macro exceeds queued bytes limit"]
+        );
+        let mut pending_lines = Vec::new();
+        console.drain_pending_lines_into(&mut pending_lines);
+        assert!(pending_lines.is_empty());
     }
 
     #[test]

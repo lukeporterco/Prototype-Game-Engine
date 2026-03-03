@@ -517,6 +517,7 @@ pub enum DebugJobState {
 pub struct DebugInfoSnapshot {
     pub selected_entity: Option<EntityId>,
     pub selected_position_world: Option<Vec2>,
+    pub selected_role_text: Option<String>,
     pub selected_order_world: Option<Vec2>,
     pub selected_job_state: DebugJobState,
     pub entity_count: usize,
@@ -1189,6 +1190,7 @@ mod tests {
             Some(DebugInfoSnapshot {
                 selected_entity: Some(EntityId(7)),
                 selected_position_world: Some(Vec2 { x: 1.0, y: 2.0 }),
+                selected_role_text: None,
                 selected_order_world: None,
                 selected_job_state: DebugJobState::Idle,
                 entity_count: world.entity_count(),

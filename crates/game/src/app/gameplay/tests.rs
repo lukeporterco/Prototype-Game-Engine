@@ -5771,6 +5771,59 @@
     }
 
     #[test]
+    fn debug_info_snapshot_includes_selected_role_text_for_selected_actor() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 2.0, y: 3.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "settler",
+            },
+        );
+        world.apply_pending();
+        scene.selected_entity = Some(actor);
+        scene.pawn_role_by_entity.insert(actor, PawnControlRole::Settler);
+
+        let snapshot = scene
+            .debug_info_snapshot(&world)
+            .expect("debug snapshot exists");
+        assert_eq!(snapshot.selected_role_text.as_deref(), Some("Settler"));
+    }
+
+    #[test]
+    fn debug_info_snapshot_selected_role_absent_when_selection_missing_or_non_actor() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let prop = world.spawn(
+            Transform {
+                position: Vec2 { x: 4.0, y: 5.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "prop",
+            },
+        );
+        world.apply_pending();
+
+        scene.selected_entity = Some(prop);
+        let non_actor_snapshot = scene
+            .debug_info_snapshot(&world)
+            .expect("debug snapshot exists");
+        assert_eq!(non_actor_snapshot.selected_role_text, None);
+
+        scene.selected_entity = Some(EntityId(999_999));
+        let missing_snapshot = scene
+            .debug_info_snapshot(&world)
+            .expect("debug snapshot exists");
+        assert_eq!(missing_snapshot.selected_role_text, None);
+    }
+
+    #[test]
     fn dump_state_format_includes_required_fields_and_v1_header() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();

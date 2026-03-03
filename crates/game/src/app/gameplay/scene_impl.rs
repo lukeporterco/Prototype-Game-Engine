@@ -491,7 +491,7 @@ impl Scene for GameplayScene {
         let mut selected_position_world = None;
         let mut selected_order_world = None;
         let mut selected_job_state = DebugJobState::None;
-        let mut selected_role_text = "none".to_string();
+        let mut selected_role_text = None::<String>;
         let mut selected_job_text = "none".to_string();
         let mut selected_phase_text = "idle".to_string();
 
@@ -507,8 +507,7 @@ impl Scene for GameplayScene {
                         PawnControlRole::Settler => "Settler",
                         PawnControlRole::Npc => "Npc",
                     })
-                    .unwrap_or("none")
-                    .to_string();
+                    .map(ToString::to_string);
                 selected_order_world = match entity.order_state {
                     OrderState::Idle => None,
                     OrderState::MoveTo { point } => Some(point),
@@ -643,7 +642,6 @@ impl Scene for GameplayScene {
                 "ai: id:{} wa:{} ch:{} use:{}",
                 ai_counts.idle, ai_counts.wander, ai_counts.chase, ai_counts.use_interaction
             ),
-            format!("role: {}", selected_role_text),
             format!("job: {}", selected_job_text),
             format!("phase: {}", selected_phase_text),
             interaction_line,
@@ -653,6 +651,7 @@ impl Scene for GameplayScene {
         Some(DebugInfoSnapshot {
             selected_entity: self.selected_entity,
             selected_position_world,
+            selected_role_text,
             selected_order_world,
             selected_job_state,
             entity_count,
