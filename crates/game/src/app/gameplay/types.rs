@@ -120,6 +120,8 @@ struct JobRecord {
     target: JobTarget,
     priority: i32,
     reserved_by: Option<EntityId>,
+    reserved_tick: Option<u64>,
+    last_progress_tick: Option<u64>,
     state: JobState,
 }
 
@@ -148,6 +150,8 @@ impl JobBoard {
                 target,
                 priority,
                 reserved_by: None,
+                reserved_tick: None,
+                last_progress_tick: None,
                 state: JobState::Open,
             },
         );
@@ -155,10 +159,16 @@ impl JobBoard {
     }
 
     fn assign_job_to_entity(&mut self, job_id: JobId, actor_id: EntityId) -> bool {
+        self.assign_job_to_entity_at_tick(job_id, actor_id, 0)
+    }
+
+    fn assign_job_to_entity_at_tick(&mut self, job_id: JobId, actor_id: EntityId, tick: u64) -> bool {
         let Some(job) = self.jobs_by_id.get_mut(&job_id) else {
             return false;
         };
         job.reserved_by = Some(actor_id);
+        job.reserved_tick = Some(tick);
+        job.last_progress_tick = Some(tick);
         job.state = JobState::Reserved;
         self.assigned_job_by_entity.insert(actor_id, job_id);
         true
@@ -173,8 +183,13 @@ impl JobBoard {
     }
 
     fn mark_job_in_progress(&mut self, job_id: JobId) {
+        self.mark_job_in_progress_at_tick(job_id, 0);
+    }
+
+    fn mark_job_in_progress_at_tick(&mut self, job_id: JobId, tick: u64) {
         if let Some(job) = self.jobs_by_id.get_mut(&job_id) {
             job.state = JobState::InProgress;
+            job.last_progress_tick = Some(tick);
         }
     }
 
@@ -183,6 +198,8 @@ impl JobBoard {
             job.state = state;
             if matches!(state, JobState::Completed | JobState::Failed) {
                 job.reserved_by = None;
+                job.reserved_tick = None;
+                job.last_progress_tick = None;
             }
         }
     }
@@ -198,6 +215,8 @@ impl JobBoard {
             if let Some(actor_id) = job.reserved_by {
                 if !live_ids.contains(&actor_id) {
                     job.reserved_by = None;
+                    job.reserved_tick = None;
+                    job.last_progress_tick = None;
                     if matches!(job.state, JobState::Reserved | JobState::InProgress) {
                         job.state = JobState::Failed;
                     }
@@ -267,6 +286,8 @@ struct SavedEntityRuntime {
     move_target_world: Option<SavedVec2>,
     interaction_target_save_id: Option<u64>,
     job_state: SavedJobState,
+    #[serde(default)]
+    carry_visual_def: Option<String>,
     interactable: Option<SavedInteractableRuntime>,
 }
 
@@ -555,7 +576,7 @@ impl GameplayEventBus {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum GameplayIntent {
     SpawnByArchetypeId {
         archetype_id: EntityDefId,
@@ -592,6 +613,24 @@ enum GameplayIntent {
         actor_id: EntityId,
         target_id: EntityId,
     },
+    SetCarryVisual {
+        actor_id: EntityId,
+        carry_visual_def: String,
+    },
+    ClearCarryVisual {
+        actor_id: EntityId,
+    },
+    DecrementInteractableUses {
+        target_id: EntityId,
+        amount: u32,
+    },
+    IncrementResourceCount {
+        amount: u32,
+    },
+    StartHitVisualTimer {
+        actor_id: EntityId,
+        ticks: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -605,10 +644,15 @@ enum GameplayIntentKind {
     StartInteraction,
     CancelInteraction,
     CompleteInteraction,
+    SetCarryVisual,
+    ClearCarryVisual,
+    DecrementInteractableUses,
+    IncrementResourceCount,
+    StartHitVisualTimer,
 }
 
 impl GameplayIntent {
-    fn kind(self) -> GameplayIntentKind {
+    fn kind(&self) -> GameplayIntentKind {
         match self {
             Self::SpawnByArchetypeId { .. } => GameplayIntentKind::SpawnByArchetypeId,
             Self::SetMoveTarget { .. } => GameplayIntentKind::SetMoveTarget,
@@ -619,6 +663,11 @@ impl GameplayIntent {
             Self::StartInteraction { .. } => GameplayIntentKind::StartInteraction,
             Self::CancelInteraction { .. } => GameplayIntentKind::CancelInteraction,
             Self::CompleteInteraction { .. } => GameplayIntentKind::CompleteInteraction,
+            Self::SetCarryVisual { .. } => GameplayIntentKind::SetCarryVisual,
+            Self::ClearCarryVisual { .. } => GameplayIntentKind::ClearCarryVisual,
+            Self::DecrementInteractableUses { .. } => GameplayIntentKind::DecrementInteractableUses,
+            Self::IncrementResourceCount { .. } => GameplayIntentKind::IncrementResourceCount,
+            Self::StartHitVisualTimer { .. } => GameplayIntentKind::StartHitVisualTimer,
         }
     }
 }
@@ -635,6 +684,11 @@ struct GameplayIntentApplyStats {
     start_interaction: u32,
     cancel_interaction: u32,
     complete_interaction: u32,
+    set_carry_visual: u32,
+    clear_carry_visual: u32,
+    decrement_interactable_uses: u32,
+    increment_resource_count: u32,
+    start_hit_visual_timer: u32,
     invalid_target_count: u32,
     spawned_entity_ids: Vec<EntityId>,
 }
@@ -667,6 +721,22 @@ impl GameplayIntentApplyStats {
             }
             GameplayIntentKind::CompleteInteraction => {
                 self.complete_interaction = self.complete_interaction.saturating_add(1)
+            }
+            GameplayIntentKind::SetCarryVisual => {
+                self.set_carry_visual = self.set_carry_visual.saturating_add(1)
+            }
+            GameplayIntentKind::ClearCarryVisual => {
+                self.clear_carry_visual = self.clear_carry_visual.saturating_add(1)
+            }
+            GameplayIntentKind::DecrementInteractableUses => {
+                self.decrement_interactable_uses =
+                    self.decrement_interactable_uses.saturating_add(1)
+            }
+            GameplayIntentKind::IncrementResourceCount => {
+                self.increment_resource_count = self.increment_resource_count.saturating_add(1)
+            }
+            GameplayIntentKind::StartHitVisualTimer => {
+                self.start_hit_visual_timer = self.start_hit_visual_timer.saturating_add(1)
             }
         }
     }

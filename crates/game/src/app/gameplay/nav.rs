@@ -1,6 +1,8 @@
 const FNV1A_OFFSET_BASIS_64: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A_PRIME_64: u64 = 0x0000_0100_0000_01b3;
 const NAV_BLOCKED_TILE_ID: u16 = 2;
+const NAV_CARDINAL_COST: u32 = 10;
+const NAV_DIAGONAL_COST: u32 = 14;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TileCoord {
@@ -20,6 +22,7 @@ struct TilemapNavKey {
 #[derive(Debug, Clone, PartialEq)]
 struct NavigationPathState {
     goal_tile: TileCoord,
+    planned_epoch: u64,
     waypoints_world: Vec<Vec2>,
     next_waypoint_index: usize,
 }
@@ -43,6 +46,7 @@ impl NavigationPathState {
 #[derive(Debug, Clone, PartialEq)]
 struct NavigationPassabilityCache {
     key: Option<TilemapNavKey>,
+    tilemap_epoch: Option<u64>,
     width: u32,
     height: u32,
     origin: Vec2,
@@ -53,6 +57,7 @@ impl Default for NavigationPassabilityCache {
     fn default() -> Self {
         Self {
             key: None,
+            tilemap_epoch: None,
             width: 0,
             height: 0,
             origin: Vec2 { x: 0.0, y: 0.0 },
@@ -64,19 +69,24 @@ impl Default for NavigationPassabilityCache {
 impl NavigationPassabilityCache {
     fn clear(&mut self) {
         self.key = None;
+        self.tilemap_epoch = None;
         self.width = 0;
         self.height = 0;
         self.origin = Vec2 { x: 0.0, y: 0.0 };
         self.walkable.clear();
     }
 
-    fn refresh_from_tilemap(&mut self, tilemap: Option<&Tilemap>) {
+    fn refresh_from_tilemap(&mut self, tilemap: Option<&Tilemap>, tilemap_epoch: u64) {
         let Some(tilemap) = tilemap else {
             self.clear();
             return;
         };
+        if self.tilemap_epoch == Some(tilemap_epoch) {
+            return;
+        }
         let key = compute_tilemap_nav_key(tilemap);
         if self.key == Some(key) {
+            self.tilemap_epoch = Some(tilemap_epoch);
             return;
         }
 
@@ -91,6 +101,7 @@ impl NavigationPassabilityCache {
         }
 
         self.key = Some(key);
+        self.tilemap_epoch = Some(tilemap_epoch);
         self.width = width;
         self.height = height;
         self.origin = tilemap.origin();
@@ -126,6 +137,7 @@ impl NavigationPassabilityCache {
         &self,
         start_world: Vec2,
         goal_world: Vec2,
+        planned_epoch: u64,
     ) -> Option<NavigationPathState> {
         let start_tile = self.world_to_tile(start_world)?;
         let goal_tile = self.world_to_tile(goal_world)?;
@@ -149,6 +161,7 @@ impl NavigationPassabilityCache {
 
         Some(NavigationPathState {
             goal_tile,
+            planned_epoch,
             waypoints_world,
             next_waypoint_index: 0,
         })
@@ -212,10 +225,11 @@ impl NavigationPassabilityCache {
             }
 
             let current_g = best_g[current_index];
-            for neighbor in self.neighbors(current.coord) {
-                let Some(neighbor) = neighbor else {
+            for step in self.neighbors(current.coord) {
+                let Some(step) = step else {
                     continue;
                 };
+                let neighbor = step.coord;
                 let Some(neighbor_index) = self.index_of(neighbor) else {
                     continue;
                 };
@@ -223,7 +237,7 @@ impl NavigationPassabilityCache {
                     continue;
                 }
 
-                let tentative_g = current_g.saturating_add(1);
+                let tentative_g = current_g.saturating_add(step.step_cost);
                 if tentative_g >= best_g[neighbor_index] {
                     continue;
                 }
@@ -244,40 +258,78 @@ impl NavigationPassabilityCache {
         None
     }
 
-    fn neighbors(&self, coord: TileCoord) -> [Option<TileCoord>; 4] {
-        let north = if coord.y < self.height.saturating_sub(1) {
-            Some(TileCoord {
-                x: coord.x,
-                y: coord.y + 1,
-            })
-        } else {
-            None
-        };
-        let east = if coord.x < self.width.saturating_sub(1) {
-            Some(TileCoord {
-                x: coord.x + 1,
-                y: coord.y,
-            })
-        } else {
-            None
-        };
-        let south = if coord.y > 0 {
-            Some(TileCoord {
-                x: coord.x,
-                y: coord.y - 1,
-            })
-        } else {
-            None
-        };
-        let west = if coord.x > 0 {
-            Some(TileCoord {
-                x: coord.x - 1,
-                y: coord.y,
-            })
-        } else {
-            None
-        };
-        [north, east, south, west]
+    fn neighbors(&self, coord: TileCoord) -> [Option<NeighborStep>; 8] {
+        let north = self.coord_offset(coord, 0, 1);
+        let east = self.coord_offset(coord, 1, 0);
+        let south = self.coord_offset(coord, 0, -1);
+        let west = self.coord_offset(coord, -1, 0);
+
+        let north_east = self
+            .coord_offset(coord, 1, 1)
+            .filter(|_| north.is_some_and(|tile| self.is_walkable(tile)))
+            .filter(|_| east.is_some_and(|tile| self.is_walkable(tile)));
+        let south_east = self
+            .coord_offset(coord, 1, -1)
+            .filter(|_| south.is_some_and(|tile| self.is_walkable(tile)))
+            .filter(|_| east.is_some_and(|tile| self.is_walkable(tile)));
+        let south_west = self
+            .coord_offset(coord, -1, -1)
+            .filter(|_| south.is_some_and(|tile| self.is_walkable(tile)))
+            .filter(|_| west.is_some_and(|tile| self.is_walkable(tile)));
+        let north_west = self
+            .coord_offset(coord, -1, 1)
+            .filter(|_| north.is_some_and(|tile| self.is_walkable(tile)))
+            .filter(|_| west.is_some_and(|tile| self.is_walkable(tile)));
+
+        [
+            north.map(|value| NeighborStep::cardinal(value)),
+            east.map(|value| NeighborStep::cardinal(value)),
+            south.map(|value| NeighborStep::cardinal(value)),
+            west.map(|value| NeighborStep::cardinal(value)),
+            north_east.map(|value| NeighborStep::diagonal(value)),
+            south_east.map(|value| NeighborStep::diagonal(value)),
+            south_west.map(|value| NeighborStep::diagonal(value)),
+            north_west.map(|value| NeighborStep::diagonal(value)),
+        ]
+    }
+
+    fn coord_offset(&self, coord: TileCoord, dx: i32, dy: i32) -> Option<TileCoord> {
+        let next_x = coord.x as i32 + dx;
+        let next_y = coord.y as i32 + dy;
+        if next_x < 0 || next_y < 0 {
+            return None;
+        }
+        let next_x = next_x as u32;
+        let next_y = next_y as u32;
+        if next_x >= self.width || next_y >= self.height {
+            return None;
+        }
+        Some(TileCoord {
+            x: next_x,
+            y: next_y,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NeighborStep {
+    coord: TileCoord,
+    step_cost: u32,
+}
+
+impl NeighborStep {
+    fn cardinal(coord: TileCoord) -> Self {
+        Self {
+            coord,
+            step_cost: NAV_CARDINAL_COST,
+        }
+    }
+
+    fn diagonal(coord: TileCoord) -> Self {
+        Self {
+            coord,
+            step_cost: NAV_DIAGONAL_COST,
+        }
     }
 }
 
@@ -338,7 +390,13 @@ fn reconstruct_tile_path(
 }
 
 fn manhattan_distance(a: TileCoord, b: TileCoord) -> u32 {
-    a.x.abs_diff(b.x).saturating_add(a.y.abs_diff(b.y))
+    let dx = a.x.abs_diff(b.x);
+    let dy = a.y.abs_diff(b.y);
+    let diagonal_steps = dx.min(dy);
+    let cardinal_steps = dx.max(dy).saturating_sub(diagonal_steps);
+    diagonal_steps
+        .saturating_mul(NAV_DIAGONAL_COST)
+        .saturating_add(cardinal_steps.saturating_mul(NAV_CARDINAL_COST))
 }
 
 fn compute_tilemap_nav_key(tilemap: &Tilemap) -> TilemapNavKey {
@@ -372,7 +430,7 @@ mod nav_tests {
 
     fn cache_from_tilemap(tilemap: Tilemap) -> NavigationPassabilityCache {
         let mut cache = NavigationPassabilityCache::default();
-        cache.refresh_from_tilemap(Some(&tilemap));
+        cache.refresh_from_tilemap(Some(&tilemap), 1);
         cache
     }
 
@@ -396,7 +454,7 @@ mod nav_tests {
         let start = cache.tile_center_world(TileCoord { x: 1, y: 2 });
         let goal = cache.tile_center_world(TileCoord { x: 5, y: 2 });
         let path = cache
-            .build_path_state_from_world(start, goal)
+            .build_path_state_from_world(start, goal, 1)
             .expect("expected reachable path");
         assert!(!path.waypoints_world.is_empty());
         for waypoint in path.waypoints_world {
@@ -416,11 +474,44 @@ mod nav_tests {
         let start = cache.tile_center_world(TileCoord { x: 0, y: 2 });
         let goal = cache.tile_center_world(TileCoord { x: 4, y: 2 });
         let first = cache
-            .build_path_state_from_world(start, goal)
+            .build_path_state_from_world(start, goal, 1)
             .expect("first path");
         let second = cache
-            .build_path_state_from_world(start, goal)
+            .build_path_state_from_world(start, goal, 1)
             .expect("second path");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn astar_diagonal_corner_cut_is_blocked_when_adjacent_cardinals_are_blocked() {
+        let width = 2u32;
+        let height = 2u32;
+        let mut tiles = vec![0u16; (width * height) as usize];
+        tiles[(0 * width + 1) as usize] = NAV_BLOCKED_TILE_ID;
+        tiles[(1 * width + 0) as usize] = NAV_BLOCKED_TILE_ID;
+        let cache = cache_from_tilemap(tilemap_with_tiles(width, height, tiles));
+
+        let start = cache.tile_center_world(TileCoord { x: 0, y: 0 });
+        let goal = cache.tile_center_world(TileCoord { x: 1, y: 1 });
+        let path = cache.build_path_state_from_world(start, goal, 1);
+        assert!(
+            path.is_none(),
+            "diagonal corner cut should be rejected when both adjacent cardinals are blocked"
+        );
+    }
+
+    #[test]
+    fn astar_uses_shorter_diagonal_route_on_open_grid() {
+        let width = 5u32;
+        let height = 5u32;
+        let tiles = vec![0u16; (width * height) as usize];
+        let cache = cache_from_tilemap(tilemap_with_tiles(width, height, tiles));
+
+        let start = cache.tile_center_world(TileCoord { x: 0, y: 0 });
+        let goal = cache.tile_center_world(TileCoord { x: 4, y: 4 });
+        let path = cache
+            .build_path_state_from_world(start, goal, 1)
+            .expect("open grid path");
+        assert_eq!(path.waypoints_world.len(), 4);
     }
 }

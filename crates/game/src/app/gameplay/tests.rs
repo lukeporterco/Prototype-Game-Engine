@@ -84,6 +84,7 @@
                         target_save_id: 20,
                         remaining_time: 1.5,
                     },
+                    carry_visual_def: None,
                     interactable: None,
                 },
                 SavedEntityRuntime {
@@ -97,6 +98,7 @@
                     move_target_world: None,
                     interaction_target_save_id: None,
                     job_state: SavedJobState::Idle,
+                    carry_visual_def: None,
                     interactable: Some(SavedInteractableRuntime {
                         kind: SavedInteractableKind::ResourcePile,
                         interaction_radius: 0.75,
@@ -2167,6 +2169,127 @@
     }
 
     #[test]
+    fn settler_auto_pick_prefers_priority_then_distance_then_job_id() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler_a = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let settler_b = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 4.0, y: 0.0 },
+        );
+
+        let low_priority = scene.job_board.create_job(
+            JobKind::MoveToPoint,
+            JobTarget::WorldPoint(Vec2 { x: 4.2, y: 0.0 }),
+            -5,
+        );
+        let high_priority_far = scene.job_board.create_job(
+            JobKind::MoveToPoint,
+            JobTarget::WorldPoint(Vec2 { x: 10.0, y: 0.0 }),
+            5,
+        );
+        let high_priority_near = scene.job_board.create_job(
+            JobKind::MoveToPoint,
+            JobTarget::WorldPoint(Vec2 { x: 0.2, y: 0.0 }),
+            5,
+        );
+        assert!(low_priority.0 < high_priority_far.0 && high_priority_far.0 < high_priority_near.0);
+
+        scene.run_settler_open_job_auto_pick(&mut world);
+
+        assert_eq!(scene.job_board.assigned_job_id(settler_a), Some(high_priority_near));
+        assert_eq!(scene.job_board.assigned_job_id(settler_b), Some(high_priority_far));
+        assert_eq!(
+            scene
+                .job_board
+                .job(low_priority)
+                .expect("low priority job")
+                .state,
+            JobState::Open
+        );
+        assert_eq!(
+            scene
+                .job_board
+                .job(high_priority_near)
+                .expect("near high priority")
+                .reserved_by,
+            Some(settler_a)
+        );
+        assert_eq!(
+            scene
+                .job_board
+                .job(high_priority_far)
+                .expect("far high priority")
+                .reserved_by,
+            Some(settler_b)
+        );
+    }
+
+    #[test]
+    fn reservation_timeout_releases_stuck_job_and_allows_recovery() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let job_id = scene.job_board.create_job(
+            JobKind::MoveToPoint,
+            JobTarget::WorldPoint(Vec2 { x: 1.0, y: 0.0 }),
+            0,
+        );
+        assert!(scene
+            .job_board
+            .assign_job_to_entity_at_tick(job_id, settler, scene.current_tick));
+        let reserved_tick = scene
+            .job_board
+            .job(job_id)
+            .and_then(|job| job.reserved_tick)
+            .expect("reserved tick");
+        scene.job_phase_by_entity.insert(settler, JobPhase::Navigating);
+        world.find_entity_mut(settler).expect("settler").order_state = OrderState::MoveTo {
+            point: Vec2 { x: 1.0, y: 0.0 },
+        };
+
+        scene.current_tick = reserved_tick.saturating_add(JOB_RESERVATION_TIMEOUT_TICKS);
+        scene.run_job_reservation_timeout_release_pass(&mut world);
+        assert_eq!(scene.job_board.assigned_job_id(settler), None);
+        let released = scene.job_board.job(job_id).expect("job record");
+        assert_eq!(released.state, JobState::Open);
+        assert_eq!(released.reserved_by, None);
+        assert_eq!(world.find_entity(settler).expect("settler").order_state, OrderState::Idle);
+
+        scene.run_job_reservation_timeout_release_pass(&mut world);
+        let still_open = scene.job_board.job(job_id).expect("job record");
+        assert_eq!(still_open.state, JobState::Open);
+        assert_eq!(still_open.reserved_by, None);
+
+        scene.run_settler_open_job_auto_pick(&mut world);
+        assert_eq!(scene.job_board.assigned_job_id(settler), Some(job_id));
+        assert_eq!(
+            scene.job_board.job(job_id).expect("job").state,
+            JobState::Reserved
+        );
+    }
+
+    #[test]
     fn job_failure_on_missing_target_save_id() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -2237,6 +2360,7 @@
                 goal_tile: TileCoord { x: 1, y: 1 },
                 waypoints_world: vec![Vec2 { x: 1.5, y: 1.5 }],
                 next_waypoint_index: 0,
+                planned_epoch: 0,
             },
         );
         world.find_entity_mut(settler_id).expect("settler").order_state = OrderState::MoveTo {
@@ -2309,6 +2433,7 @@
                 goal_tile: TileCoord { x: 1, y: 1 },
                 waypoints_world: vec![Vec2 { x: 1.5, y: 1.5 }],
                 next_waypoint_index: 0,
+                planned_epoch: 0,
             },
         );
         world.find_entity_mut(settler_id).expect("settler").order_state = OrderState::MoveTo {
@@ -2938,6 +3063,100 @@
     }
 
     #[test]
+    fn box_select_multi_selects_settlers_and_right_click_fans_out_in_stable_order() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler_a = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: -1.0, y: 0.0 },
+        );
+        let settler_b = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 1.0, y: 0.0 },
+        );
+        let npc_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.npc_dummy",
+            Vec2 { x: 2.5, y: 0.0 },
+        );
+        let (ax, ay) =
+            engine::world_to_screen_px(world.camera(), (1280, 720), Vec2 { x: -1.0, y: 0.0 });
+        let (bx, by) =
+            engine::world_to_screen_px(world.camera(), (1280, 720), Vec2 { x: 1.0, y: 0.0 });
+        let drag_start = Vec2 {
+            x: ax.min(bx) as f32 - 16.0,
+            y: ay.min(by) as f32 - 16.0,
+        };
+        let drag_end = Vec2 {
+            x: ax.max(bx) as f32 + 16.0,
+            y: ay.max(by) as f32 + 16.0,
+        };
+
+        let drag_begin = InputSnapshot::empty()
+            .with_window_size((1280, 720))
+            .with_cursor_position_px(Some(drag_start))
+            .with_left_click_pressed(true);
+        scene.update(0.1, &drag_begin, &mut world);
+        world.apply_pending();
+        let drag_hold = InputSnapshot::empty()
+            .with_window_size((1280, 720))
+            .with_cursor_position_px(Some(drag_end))
+            .with_left_mouse_held(true);
+        scene.update(0.1, &drag_hold, &mut world);
+        world.apply_pending();
+        let drag_release = InputSnapshot::empty()
+            .with_window_size((1280, 720))
+            .with_cursor_position_px(Some(drag_end))
+            .with_left_click_released(true);
+        scene.update(0.1, &drag_release, &mut world);
+        world.apply_pending();
+
+        let mut expected_settlers = vec![settler_a, settler_b];
+        scene.sort_entities_stable(&mut expected_settlers);
+        assert_eq!(scene.selected_settlers, expected_settlers);
+        assert_eq!(scene.selected_entity, expected_settlers.first().copied());
+        assert!(!scene.selected_settlers.contains(&npc_id));
+
+        let order_target_world = Vec2 { x: 4.0, y: 0.5 };
+        let (tx, ty) =
+            engine::world_to_screen_px(world.camera(), (1280, 720), order_target_world);
+        let order_click = right_click_snapshot(
+            Vec2 {
+                x: tx as f32,
+                y: ty as f32,
+            },
+            (1280, 720),
+        );
+        scene.update(0.1, &order_click, &mut world);
+        world.apply_pending();
+
+        let first_job = scene
+            .job_board
+            .assigned_job_id(expected_settlers[0])
+            .expect("first settler job");
+        let second_job = scene
+            .job_board
+            .assigned_job_id(expected_settlers[1])
+            .expect("second settler job");
+        assert!(first_job.0 < second_job.0);
+        for settler_id in expected_settlers {
+            let job_id = scene.job_board.assigned_job_id(settler_id).expect("assigned job");
+            let job = scene.job_board.job(job_id).expect("job record");
+            assert_eq!(job.kind, JobKind::MoveToPoint);
+            assert_eq!(job.target, JobTarget::WorldPoint(order_target_world));
+        }
+    }
+
+    #[test]
     fn scenario_setup_visual_sandbox_is_deterministic_and_wired() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -2964,7 +3183,7 @@
         let first_wall_id = EntityId(first_wall_raw);
         let first_floor_id = EntityId(first_floor_raw);
 
-        assert_eq!(world.entity_count(), 6);
+        assert_eq!(world.entity_count(), 9);
         assert_eq!(scene.player_id, Some(first_player_id));
         assert_eq!(scene.selected_entity, Some(first_player_id));
 
@@ -3039,7 +3258,7 @@
         let second_wall_id = EntityId(second_wall_raw);
         let second_floor_id = EntityId(second_floor_raw);
 
-        assert_eq!(world.entity_count(), 6);
+        assert_eq!(world.entity_count(), 9);
         assert_eq!(scene.player_id, Some(second_player_id));
         assert_eq!(scene.selected_entity, Some(second_player_id));
 
@@ -3230,57 +3449,57 @@
             SceneDebugCommandResult::Success(message) => message,
             other => panic!("expected success result, got {other:?}"),
         };
-        let (_player_raw, _prop_raw, wall_raw, floor_raw) =
+        let (_player_raw, prop_raw, wall_raw, floor_raw) =
             parse_visual_sandbox_setup_ids(&setup_message);
         let player_id = scene.player_id.expect("sandbox player");
 
         scene.update(0.1, &InputSnapshot::empty(), &mut world);
         let initial_visual = world.entity_action_visual(player_id);
         assert_eq!(initial_visual.action_state, ActionState::Idle);
-        assert_eq!(
-            initial_visual.held_visual.as_deref(),
-            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
-        );
+        assert_eq!(initial_visual.held_visual, None);
         assert_eq!(initial_visual.action_params.facing, Some(CardinalFacing::South));
-        let initial_x = world
-            .find_entity(player_id)
-            .expect("player exists")
-            .transform
-            .position
-            .x;
 
-        let east_input = snapshot_from_actions(&[InputAction::MoveRight]);
-        scene.update(0.1, &east_input, &mut world);
-        let east_visual = world.entity_action_visual(player_id);
-        assert_eq!(east_visual.action_state, ActionState::Walk);
-        assert_eq!(east_visual.action_params.facing, Some(CardinalFacing::East));
+        let interact_prop_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: prop_raw,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(
+            interact_prop_result,
+            SceneDebugCommandResult::Success(_)
+        ));
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+        let prop_interact_visual = world.entity_action_visual(player_id);
+        assert_eq!(prop_interact_visual.action_state, ActionState::Interact);
+
+        let mut saw_carry = false;
+        for _ in 0..80 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let visual = world.entity_action_visual(player_id);
+            if visual.action_state == ActionState::Carry {
+                saw_carry = true;
+                break;
+            }
+        }
+        assert!(saw_carry, "expected carry after resource pickup");
         assert_eq!(
-            east_visual.held_visual.as_deref(),
+            scene.carry_visual_by_actor.get(&player_id).map(String::as_str),
             Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
         );
-        let east_x = world
-            .find_entity(player_id)
-            .expect("player exists")
-            .transform
-            .position
-            .x;
-        assert!(east_x > initial_x);
 
-        let west_input = snapshot_from_actions(&[InputAction::MoveLeft]);
-        for _ in 0..3 {
-            scene.update(0.1, &west_input, &mut world);
-        }
-        let west_visual = world.entity_action_visual(player_id);
-        assert_eq!(west_visual.action_state, ActionState::Carry);
-        assert_eq!(west_visual.action_params.facing, Some(CardinalFacing::West));
-        let west_x = world
-            .find_entity(player_id)
-            .expect("player exists")
-            .transform
-            .position
-            .x;
-        assert!(west_x < east_x);
-        assert!(west_x <= VISUAL_SANDBOX_CARRY_LANE_X);
+        let moving_input = snapshot_from_actions(&[InputAction::MoveRight]);
+        scene.update(0.1, &moving_input, &mut world);
+        world.apply_pending();
+        let moving_visual = world.entity_action_visual(player_id);
+        assert_eq!(moving_visual.action_state, ActionState::Carry);
+        assert_eq!(
+            moving_visual.held_visual.as_deref(),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
 
         let interact_floor_result = scene.execute_debug_command(
             SceneDebugCommand::OrderInteract {
@@ -3294,11 +3513,26 @@
             SceneDebugCommandResult::Success(_)
         ));
         scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
         let interact_visual = world.entity_action_visual(player_id);
         assert_eq!(interact_visual.action_state, ActionState::Interact);
+        assert!(scene.carry_visual_by_actor.contains_key(&player_id));
+
+        let start_count = scene.resource_count;
+        let mut deposited = false;
+        for _ in 0..80 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            if !scene.carry_visual_by_actor.contains_key(&player_id) {
+                deposited = true;
+                break;
+            }
+        }
+        assert!(deposited, "expected deposit to clear carry");
+        assert_eq!(scene.resource_count, start_count + 1);
         assert_eq!(
-            interact_visual.held_visual.as_deref(),
-            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+            world.entity_action_visual(player_id).held_visual.as_deref(),
+            None
         );
 
         let interact_wall_result = scene.execute_debug_command(
@@ -3313,12 +3547,20 @@
             SceneDebugCommandResult::Success(_)
         ));
         scene.update(0.1, &InputSnapshot::empty(), &mut world);
-        let tool_visual = world.entity_action_visual(player_id);
-        assert_eq!(tool_visual.action_state, ActionState::UseTool);
-        assert_eq!(
-            tool_visual.held_visual.as_deref(),
-            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
-        );
+        world.apply_pending();
+        let wall_interact_visual = world.entity_action_visual(player_id);
+        assert_eq!(wall_interact_visual.action_state, ActionState::Interact);
+
+        let mut saw_hit = false;
+        for _ in 0..80 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            if world.entity_action_visual(player_id).action_state == ActionState::Hit {
+                saw_hit = true;
+                break;
+            }
+        }
+        assert!(saw_hit, "expected deterministic hit window after door interaction");
     }
 
     #[test]
@@ -3663,6 +3905,85 @@
     }
 
     #[test]
+    fn tilemap_epoch_change_repaths_stale_settler_navigation_path() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let setup_result = scene.execute_debug_command(
+            SceneDebugCommand::ScenarioSetup {
+                scenario_id: "nav_sandbox".to_string(),
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        let setup_message = match setup_result {
+            SceneDebugCommandResult::Success(message) => message,
+            other => panic!("expected success result, got {other:?}"),
+        };
+        let (_player_raw, settler_raw) = parse_nav_sandbox_setup_ids(&setup_message);
+        let settler_id = EntityId(settler_raw);
+        scene.selected_entity = Some(settler_id);
+
+        let order_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderMove {
+                x: NAV_SANDBOX_DEFAULT_MOVE_GOAL_WORLD.x,
+                y: NAV_SANDBOX_DEFAULT_MOVE_GOAL_WORLD.y,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(order_result, SceneDebugCommandResult::Success(_)));
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+
+        let initial_path = scene
+            .nav_path_by_entity
+            .get(&settler_id)
+            .cloned()
+            .expect("initial path");
+        let initial_epoch = world.tilemap_epoch();
+        assert_eq!(initial_path.planned_epoch, initial_epoch);
+
+        let tilemap = world.tilemap().expect("tilemap").clone();
+        let mut mutated_tiles = Vec::with_capacity((tilemap.width() * tilemap.height()) as usize);
+        for y in 0..tilemap.height() {
+            for x in 0..tilemap.width() {
+                let mut tile_id = tilemap.tile_at(x, y).expect("tile");
+                if x == 0 && y == 0 {
+                    tile_id = NAV_BLOCKED_TILE_ID;
+                }
+                mutated_tiles.push(tile_id);
+            }
+        }
+        let mutated = Tilemap::new(tilemap.width(), tilemap.height(), tilemap.origin(), mutated_tiles)
+            .expect("mutated tilemap");
+        world.set_tilemap(mutated);
+        let mutated_epoch = world.tilemap_epoch();
+        assert!(mutated_epoch > initial_epoch);
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+        let repathed_path = scene
+            .nav_path_by_entity
+            .get(&settler_id)
+            .cloned()
+            .expect("repathed path");
+        assert_eq!(repathed_path.planned_epoch, mutated_epoch);
+
+        scene.update(0.1, &InputSnapshot::empty(), &mut world);
+        world.apply_pending();
+        let stable_path = scene
+            .nav_path_by_entity
+            .get(&settler_id)
+            .cloned()
+            .expect("stable path");
+        assert_eq!(stable_path.planned_epoch, mutated_epoch);
+    }
+
+    #[test]
     fn nav_sandbox_selected_settler_interact_routes_around_blocked_strip() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
@@ -3702,6 +4023,11 @@
 
         let mut saw_detour = false;
         let mut saw_working = false;
+        let initial_uses = world
+            .find_entity(target_id)
+            .and_then(|entity| entity.interactable)
+            .map(|interactable| interactable.remaining_uses)
+            .expect("target interactable uses");
         for _ in 0..420 {
             scene.update(0.1, &InputSnapshot::empty(), &mut world);
             world.apply_pending();
@@ -3712,7 +4038,9 @@
             if matches!(settler.order_state, OrderState::Working { .. }) {
                 saw_working = true;
             }
-            if scene.resource_count > 0 && matches!(settler.order_state, OrderState::Idle) {
+            if scene.carry_visual_by_actor.contains_key(&settler_id)
+                && matches!(settler.order_state, OrderState::Idle)
+            {
                 break;
             }
         }
@@ -3720,7 +4048,20 @@
         let settler = world.find_entity(settler_id).expect("settler");
         assert!(saw_detour, "expected detour around blocked strip");
         assert!(saw_working, "expected settler to enter working state");
-        assert!(scene.resource_count > 0, "expected interaction completion");
+        assert!(
+            scene.carry_visual_by_actor.contains_key(&settler_id),
+            "expected interaction completion to set carry"
+        );
+        if initial_uses <= 1 {
+            assert!(world.find_entity(target_id).is_none());
+        } else {
+            let remaining = world
+                .find_entity(target_id)
+                .and_then(|entity| entity.interactable)
+                .map(|interactable| interactable.remaining_uses)
+                .expect("remaining uses");
+            assert_eq!(remaining, initial_uses - 1);
+        }
         assert_eq!(settler.order_state, OrderState::Idle);
     }
 
@@ -4359,6 +4700,551 @@
             .filter(|intent| matches!(intent, GameplayIntent::CompleteInteraction { .. }))
             .count();
         assert_eq!(complete_count, 1);
+    }
+
+    #[test]
+    fn complete_interaction_is_mechanical_only_no_resource_side_effects() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let actor_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let pile_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.resource_pile",
+            Vec2 { x: 0.5, y: 0.0 },
+        );
+        let target_save_id = scene.entity_save_ids.get(&pile_id).copied().expect("pile save id");
+        world.find_entity_mut(actor_id).expect("actor").order_state = OrderState::Working {
+            target_save_id,
+            remaining_time: 0.5,
+        };
+        scene.nav_path_by_entity.insert(
+            actor_id,
+            NavigationPathState {
+                goal_tile: TileCoord { x: 0, y: 0 },
+                planned_epoch: 0,
+                waypoints_world: vec![Vec2 { x: 0.5, y: 0.5 }],
+                next_waypoint_index: 0,
+            },
+        );
+        scene.resource_count = 7;
+        scene
+            .carry_visual_by_actor
+            .insert(actor_id, VISUAL_SANDBOX_CARRY_VISUAL_DEF.to_string());
+        let uses_before = world
+            .find_entity(pile_id)
+            .and_then(|entity| entity.interactable)
+            .map(|interactable| interactable.remaining_uses)
+            .expect("pile uses");
+
+        let stats = scene.apply_gameplay_intents_at_safe_point(
+            vec![GameplayIntent::CompleteInteraction {
+                actor_id,
+                target_id: pile_id,
+            }],
+            &mut world,
+        );
+
+        assert_eq!(stats.complete_interaction, 1);
+        assert_eq!(world.find_entity(actor_id).expect("actor").order_state, OrderState::Idle);
+        assert!(!scene.nav_path_by_entity.contains_key(&actor_id));
+        assert_eq!(scene.resource_count, 7);
+        assert_eq!(
+            scene.carry_visual_by_actor.get(&actor_id).map(String::as_str),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
+        let uses_after = world
+            .find_entity(pile_id)
+            .and_then(|entity| entity.interactable)
+            .map(|interactable| interactable.remaining_uses)
+            .expect("pile uses");
+        assert_eq!(uses_after, uses_before);
+    }
+
+    #[test]
+    fn combat_resolution_emits_resource_pile_intents_from_interaction_completed() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let actor_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let pile_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.resource_pile",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        world
+            .find_entity_mut(pile_id)
+            .and_then(|entity| entity.interactable.as_mut())
+            .expect("pile interactable")
+            .remaining_uses = 1;
+        let interaction_range = world
+            .find_entity(pile_id)
+            .and_then(|entity| entity.interactable)
+            .map(|interactable| interactable.interaction_radius)
+            .expect("interaction radius");
+        scene.active_interactions_by_actor.insert(
+            actor_id,
+            ActiveInteraction {
+                actor_id,
+                target_id: pile_id,
+                interaction_id: InteractionId(101),
+                kind: ActiveInteractionKind::Use,
+                interaction_range,
+                duration_seconds: 0.0,
+                remaining_seconds: None,
+            },
+        );
+
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let intents = scene.system_intents.drain_current_tick();
+
+        assert!(intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::CompleteInteraction { actor_id: id, target_id }
+                    if *id == actor_id && *target_id == pile_id
+            )
+        }));
+        assert!(intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::SetCarryVisual {
+                    actor_id: id,
+                    carry_visual_def
+                } if *id == actor_id && carry_visual_def == VISUAL_SANDBOX_CARRY_VISUAL_DEF
+            )
+        }));
+        assert!(intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::DecrementInteractableUses { target_id, amount }
+                    if *target_id == pile_id && *amount == 1
+            )
+        }));
+        assert!(intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::DespawnEntity { entity_id } if *entity_id == pile_id
+            )
+        }));
+    }
+
+    #[test]
+    fn combat_resolution_emits_stockpile_deposit_intents_only_when_carrying() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let actor_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let stockpile_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.stockpile_small",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let interaction_range = world
+            .find_entity(stockpile_id)
+            .and_then(|entity| entity.interactable)
+            .map(|interactable| interactable.interaction_radius)
+            .expect("interaction radius");
+
+        let enqueue_instant_interaction = |scene: &mut GameplayScene| {
+            scene.active_interactions_by_actor.insert(
+                actor_id,
+                ActiveInteraction {
+                    actor_id,
+                    target_id: stockpile_id,
+                    interaction_id: InteractionId(202),
+                    kind: ActiveInteractionKind::Use,
+                    interaction_range,
+                    duration_seconds: 0.0,
+                    remaining_seconds: None,
+                },
+            );
+        };
+
+        enqueue_instant_interaction(&mut scene);
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let no_carry_intents = scene.system_intents.drain_current_tick();
+        assert!(!no_carry_intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::ClearCarryVisual { actor_id: id } if *id == actor_id
+            )
+        }));
+        assert!(!no_carry_intents.iter().any(|intent| {
+            matches!(intent, GameplayIntent::IncrementResourceCount { .. })
+        }));
+
+        scene
+            .carry_visual_by_actor
+            .insert(actor_id, VISUAL_SANDBOX_CARRY_VISUAL_DEF.to_string());
+        enqueue_instant_interaction(&mut scene);
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let carry_intents = scene.system_intents.drain_current_tick();
+        assert!(carry_intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::ClearCarryVisual { actor_id: id } if *id == actor_id
+            )
+        }));
+        assert!(carry_intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::IncrementResourceCount { amount } if *amount == 1
+            )
+        }));
+    }
+
+    #[test]
+    fn combat_resolution_emits_door_dummy_hit_timer_intent() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let actor_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let door_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.door_dummy",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let interaction_range = world
+            .find_entity(door_id)
+            .and_then(|entity| entity.interactable)
+            .map(|interactable| interactable.interaction_radius)
+            .expect("interaction radius");
+
+        scene.active_interactions_by_actor.insert(
+            actor_id,
+            ActiveInteraction {
+                actor_id,
+                target_id: door_id,
+                interaction_id: InteractionId(303),
+                kind: ActiveInteractionKind::Use,
+                interaction_range,
+                duration_seconds: 0.0,
+                remaining_seconds: None,
+            },
+        );
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let no_demo_intents = scene.system_intents.drain_current_tick();
+        assert!(!no_demo_intents.iter().any(|intent| {
+            matches!(intent, GameplayIntent::StartHitVisualTimer { .. })
+        }));
+
+        scene.visual_sandbox_demo_active = true;
+        scene.active_interactions_by_actor.insert(
+            actor_id,
+            ActiveInteraction {
+                actor_id,
+                target_id: door_id,
+                interaction_id: InteractionId(304),
+                kind: ActiveInteractionKind::Use,
+                interaction_range,
+                duration_seconds: 0.0,
+                remaining_seconds: None,
+            },
+        );
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let demo_intents = scene.system_intents.drain_current_tick();
+        assert!(demo_intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::StartHitVisualTimer { actor_id: id, ticks }
+                    if *id == actor_id && *ticks == VISUAL_SANDBOX_HIT_DURATION_TICKS
+            )
+        }));
+    }
+
+    #[test]
+    fn safe_point_apply_set_clear_carry_and_increment_resource_and_decrement_uses() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        let actor_id = world.spawn_actor(
+            Transform {
+                position: Vec2 { x: 0.0, y: 0.0 },
+                rotation_radians: None,
+            },
+            RenderableDesc {
+                kind: engine::RenderableKind::Placeholder,
+                debug_name: "actor",
+            },
+        );
+        let pile_id = spawn_interactable_pile(&mut world, Vec2 { x: 0.0, y: 0.0 }, 3);
+        scene
+            .sync_save_id_map_with_world(&world)
+            .expect("save-id sync");
+        let uses_before = world
+            .find_entity(pile_id)
+            .and_then(|entity| entity.interactable)
+            .map(|interactable| interactable.remaining_uses)
+            .expect("pile uses");
+
+        let stats = scene.apply_gameplay_intents_at_safe_point(
+            vec![
+                GameplayIntent::SetCarryVisual {
+                    actor_id,
+                    carry_visual_def: VISUAL_SANDBOX_CARRY_VISUAL_DEF.to_string(),
+                },
+                GameplayIntent::DecrementInteractableUses {
+                    target_id: pile_id,
+                    amount: 1,
+                },
+                GameplayIntent::IncrementResourceCount { amount: 2 },
+                GameplayIntent::StartHitVisualTimer {
+                    actor_id,
+                    ticks: 5,
+                },
+            ],
+            &mut world,
+        );
+        assert_eq!(stats.set_carry_visual, 1);
+        assert_eq!(stats.decrement_interactable_uses, 1);
+        assert_eq!(stats.increment_resource_count, 1);
+        assert_eq!(stats.start_hit_visual_timer, 1);
+        assert_eq!(
+            scene.carry_visual_by_actor.get(&actor_id).map(String::as_str),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
+        assert_eq!(scene.resource_count, 2);
+        let uses_after = world
+            .find_entity(pile_id)
+            .and_then(|entity| entity.interactable)
+            .map(|interactable| interactable.remaining_uses)
+            .expect("pile uses");
+        assert_eq!(uses_after, uses_before - 1);
+        assert_eq!(scene.hit_ticks_remaining_by_actor.get(&actor_id), Some(&5));
+
+        let clear_stats = scene.apply_gameplay_intents_at_safe_point(
+            vec![GameplayIntent::ClearCarryVisual { actor_id }],
+            &mut world,
+        );
+        assert_eq!(clear_stats.clear_carry_visual, 1);
+        assert!(!scene.carry_visual_by_actor.contains_key(&actor_id));
+    }
+
+    #[test]
+    fn same_tick_multiple_completions_on_one_pile_are_prediction_safe_and_deterministic() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let actor_a = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let actor_b = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let pile_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.resource_pile",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        world
+            .find_entity_mut(pile_id)
+            .and_then(|entity| entity.interactable.as_mut())
+            .expect("pile interactable")
+            .remaining_uses = 1;
+        let interaction_range = world
+            .find_entity(pile_id)
+            .and_then(|entity| entity.interactable)
+            .map(|interactable| interactable.interaction_radius)
+            .expect("interaction range");
+
+        scene.active_interactions_by_actor.insert(
+            actor_a,
+            ActiveInteraction {
+                actor_id: actor_a,
+                target_id: pile_id,
+                interaction_id: InteractionId(401),
+                kind: ActiveInteractionKind::Use,
+                interaction_range,
+                duration_seconds: 0.0,
+                remaining_seconds: None,
+            },
+        );
+        scene.active_interactions_by_actor.insert(
+            actor_b,
+            ActiveInteraction {
+                actor_id: actor_b,
+                target_id: pile_id,
+                interaction_id: InteractionId(402),
+                kind: ActiveInteractionKind::Use,
+                interaction_range,
+                duration_seconds: 0.0,
+                remaining_seconds: None,
+            },
+        );
+
+        scene.run_gameplay_systems_once(0.1, &InputSnapshot::empty(), &world);
+        let intents = scene.system_intents.drain_current_tick();
+        let set_carry_intents = intents
+            .iter()
+            .filter(|intent| matches!(intent, GameplayIntent::SetCarryVisual { .. }))
+            .count();
+        let decrement_intents = intents
+            .iter()
+            .filter(|intent| matches!(intent, GameplayIntent::DecrementInteractableUses { .. }))
+            .count();
+        let despawn_intents = intents
+            .iter()
+            .filter(|intent| matches!(intent, GameplayIntent::DespawnEntity { entity_id } if *entity_id == pile_id))
+            .count();
+        assert_eq!(set_carry_intents, 1);
+        assert_eq!(decrement_intents, 1);
+        assert_eq!(despawn_intents, 1);
+
+        let mut expected_carrier = actor_a;
+        if actor_b.0 < expected_carrier.0 {
+            expected_carrier = actor_b;
+        }
+        assert!(intents.iter().any(|intent| {
+            matches!(
+                intent,
+                GameplayIntent::SetCarryVisual { actor_id, .. } if *actor_id == expected_carrier
+            )
+        }));
+
+        scene.apply_gameplay_intents_at_safe_point(intents, &mut world);
+        world.apply_pending();
+        assert!(world.find_entity(pile_id).is_none(), "pile should despawn exactly once");
+        assert_eq!(scene.carry_visual_by_actor.len(), 1);
+        assert_eq!(
+            scene
+                .carry_visual_by_actor
+                .get(&expected_carrier)
+                .map(String::as_str),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
+    }
+
+    #[test]
+    fn settler_pickup_then_deposit_workflow_updates_visual_state_store() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+
+        let settler_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.settler",
+            Vec2 { x: -1.5, y: 0.0 },
+        );
+        let pile_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.resource_pile",
+            Vec2 { x: -0.5, y: 0.0 },
+        );
+        let stockpile_id = spawn_def_via_console(
+            &mut scene,
+            &mut world,
+            "proto.stockpile_small",
+            Vec2 { x: 1.0, y: 0.0 },
+        );
+
+        scene.selected_entity = Some(settler_id);
+        let pickup_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: pile_id.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(pickup_result, SceneDebugCommandResult::Success(_)));
+
+        let mut saw_pickup_interact = false;
+        let mut saw_carry = false;
+        for _ in 0..240 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let visual = world.entity_action_visual(settler_id);
+            if visual.action_state == ActionState::Interact {
+                saw_pickup_interact = true;
+            }
+            if visual.action_state == ActionState::Carry
+                && scene.carry_visual_by_actor.contains_key(&settler_id)
+            {
+                saw_carry = true;
+                break;
+            }
+        }
+        assert!(saw_pickup_interact, "expected pickup interaction visual");
+        assert!(saw_carry, "expected carry visual after pickup");
+        let resource_before = scene.resource_count;
+
+        scene.selected_entity = Some(settler_id);
+        let deposit_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderInteract {
+                target_entity_id: stockpile_id.0,
+            },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(deposit_result, SceneDebugCommandResult::Success(_)));
+
+        let mut saw_deposit_interact = false;
+        let mut saw_deposit_complete = false;
+        for _ in 0..240 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+            let visual = world.entity_action_visual(settler_id);
+            if visual.action_state == ActionState::Interact {
+                saw_deposit_interact = true;
+            }
+            if !scene.carry_visual_by_actor.contains_key(&settler_id)
+                && scene.resource_count == resource_before + 1
+            {
+                saw_deposit_complete = true;
+                break;
+            }
+        }
+        assert!(saw_deposit_interact, "expected deposit interaction visual");
+        assert!(saw_deposit_complete, "expected deterministic deposit completion");
     }
 
     #[test]
@@ -5349,6 +6235,7 @@
             let object = entity.as_object_mut().expect("entity object");
             object.remove("floor");
             object.remove("archetype_def_name");
+            object.remove("carry_visual_def");
         }
 
         let raw = serde_json::to_string(&value).expect("serialize");
@@ -5362,6 +6249,62 @@
             .entities()
             .iter()
             .all(|entity| entity.floor == engine::FloorId::Main));
+        assert!(scene.carry_visual_by_actor.is_empty());
+    }
+
+    #[test]
+    fn save_apply_restore_preserves_carry_visual_runtime_state() {
+        let mut source_scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut source_world = SceneWorld::default();
+        seed_def_database(&mut source_world);
+        source_scene.load(&mut source_world);
+        source_world.apply_pending();
+
+        let actor_id = spawn_def_via_console(
+            &mut source_scene,
+            &mut source_world,
+            "proto.settler",
+            Vec2 { x: 0.0, y: 0.0 },
+        );
+        let actor_save_id = source_scene
+            .entity_save_ids
+            .get(&actor_id)
+            .copied()
+            .expect("actor save id");
+        source_scene.carry_visual_by_actor.insert(
+            actor_id,
+            VISUAL_SANDBOX_CARRY_VISUAL_DEF.to_string(),
+        );
+
+        let save = source_scene.build_save_game(&source_world).expect("save");
+        let saved_actor = save
+            .entities
+            .iter()
+            .find(|entity| entity.save_id == actor_save_id)
+            .expect("saved actor");
+        assert_eq!(
+            saved_actor.carry_visual_def.as_deref(),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
+
+        let mut resumed_scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut resumed_world = SceneWorld::default();
+        seed_def_database(&mut resumed_world);
+        resumed_scene
+            .apply_save_game(save, &mut resumed_world)
+            .expect("apply");
+        let resumed_actor_id = resumed_scene
+            .save_id_to_entity
+            .get(&actor_save_id)
+            .copied()
+            .expect("resumed actor id");
+        assert_eq!(
+            resumed_scene
+                .carry_visual_by_actor
+                .get(&resumed_actor_id)
+                .map(String::as_str),
+            Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF)
+        );
     }
 
     #[test]
@@ -5587,6 +6530,7 @@
             move_target_world: Some(SavedVec2 { x: 9.0, y: 9.0 }),
             interaction_target_save_id: Some(20),
             job_state: SavedJobState::Idle,
+            carry_visual_def: None,
             interactable: None,
         };
 
@@ -5894,13 +6838,13 @@
         assert_eq!(digest_a, digest_b);
 
         let (_, final_digest) = digest_a.last().expect("final checkpoint digest");
-        assert_eq!(final_digest.resource_count, 1);
+        assert_eq!(final_digest.resource_count, 0);
         assert!(
-            !final_digest
+            final_digest
                 .entities
                 .iter()
                 .any(|entity| entity.save_id == target_save_id_a),
-            "expected target save_id {} to be consumed by completion",
+            "expected mechanical-only completion to keep target save_id {}",
             target_save_id_a
         );
     }

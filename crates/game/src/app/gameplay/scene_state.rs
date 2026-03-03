@@ -4,10 +4,14 @@ struct GameplayScene {
     player_spawn: Vec2,
     player_id: Option<EntityId>,
     selected_entity: Option<EntityId>,
+    selected_settlers: Vec<EntityId>,
+    selection_drag_start_px: Option<Vec2>,
+    selection_drag_cursor_px: Option<Vec2>,
     active_floor: ActiveFloor,
     last_player_facing: CardinalFacing,
     player_move_speed: f32,
     resource_count: u32,
+    current_tick: u64,
     interactable_cache: Vec<(EntityId, Vec2, f32)>,
     interactable_lookup_by_save_id: HashMap<u64, (EntityId, Vec2, f32)>,
     target_lookup_by_save_id: HashMap<u64, Vec2>,
@@ -27,6 +31,8 @@ struct GameplayScene {
     reselect_player_on_respawn: bool,
     selected_completion_enqueued_this_tick: bool,
     visual_sandbox_demo_active: bool,
+    carry_visual_by_actor: HashMap<EntityId, String>,
+    hit_ticks_remaining_by_actor: HashMap<EntityId, u32>,
     nav_passability_cache: NavigationPassabilityCache,
     nav_path_by_entity: HashMap<EntityId, NavigationPathState>,
     job_board: JobBoard,
@@ -44,6 +50,14 @@ struct CombatChaserScenarioSlot {
     dummy_id: Option<EntityId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteractionOutcomeTargetKind {
+    ResourcePile,
+    StockpileSmall,
+    DoorDummy,
+    OtherInteractable,
+}
+
 impl GameplayScene {
     fn new(scene_name: &'static str, switch_target: SceneKey, player_spawn: Vec2) -> Self {
         Self {
@@ -52,10 +66,14 @@ impl GameplayScene {
             player_spawn,
             player_id: None,
             selected_entity: None,
+            selected_settlers: Vec::new(),
+            selection_drag_start_px: None,
+            selection_drag_cursor_px: None,
             active_floor: ActiveFloor::Main,
             last_player_facing: CardinalFacing::South,
             player_move_speed: 5.0,
             resource_count: 0,
+            current_tick: 0,
             interactable_cache: Vec::new(),
             interactable_lookup_by_save_id: HashMap::new(),
             target_lookup_by_save_id: HashMap::new(),
@@ -75,6 +93,8 @@ impl GameplayScene {
             reselect_player_on_respawn: false,
             selected_completion_enqueued_this_tick: false,
             visual_sandbox_demo_active: false,
+            carry_visual_by_actor: HashMap::new(),
+            hit_ticks_remaining_by_actor: HashMap::new(),
             nav_passability_cache: NavigationPassabilityCache::default(),
             nav_path_by_entity: HashMap::new(),
             job_board: JobBoard::default(),
@@ -206,8 +226,13 @@ impl GameplayScene {
             self.job_board.clear_assignment_for_entity(actor_id);
             self.clear_actor_locomotion_state(actor_id, world, true);
         }
-        let job_id = self.job_board.create_job(kind, target, 0);
-        if !self.job_board.assign_job_to_entity(job_id, actor_id) {
+        let job_id = self
+            .job_board
+            .create_job(kind, target, Self::clamp_job_priority(0));
+        if !self
+            .job_board
+            .assign_job_to_entity_at_tick(job_id, actor_id, self.current_tick)
+        {
             self.job_board.mark_job_state(job_id, JobState::Failed);
             return None;
         }
@@ -216,8 +241,13 @@ impl GameplayScene {
         Some(job_id)
     }
 
+    fn clamp_job_priority(priority: i32) -> i32 {
+        priority.clamp(-JOB_PRIORITY_ABS_MAX, JOB_PRIORITY_ABS_MAX)
+    }
+
     fn refresh_nav_cache_from_world(&mut self, world: &SceneWorld) {
-        self.nav_passability_cache.refresh_from_tilemap(world.tilemap());
+        self.nav_passability_cache
+            .refresh_from_tilemap(world.tilemap(), world.tilemap_epoch());
     }
 
     fn rebuild_settler_path_from_world_targets(
@@ -225,10 +255,11 @@ impl GameplayScene {
         actor_id: EntityId,
         actor_world: Vec2,
         goal_world: Vec2,
+        planned_epoch: u64,
     ) -> bool {
         let Some(path_state) = self
             .nav_passability_cache
-            .build_path_state_from_world(actor_world, goal_world)
+            .build_path_state_from_world(actor_world, goal_world, planned_epoch)
         else {
             self.nav_path_by_entity.remove(&actor_id);
             return false;
@@ -254,8 +285,9 @@ impl GameplayScene {
 
         let path_result = if is_settler {
             self.refresh_nav_cache_from_world(world);
+            let planned_epoch = world.tilemap_epoch();
             self.nav_passability_cache
-                .build_path_state_from_world(actor_world, target_world)
+                .build_path_state_from_world(actor_world, target_world, planned_epoch)
         } else {
             None
         };
@@ -274,6 +306,47 @@ impl GameplayScene {
             }
         }
         true
+    }
+
+    fn stable_entity_sort_key(&self, entity_id: EntityId) -> (u64, u64) {
+        let save_id = self
+            .entity_save_ids
+            .get(&entity_id)
+            .copied()
+            .unwrap_or(u64::MAX);
+        (save_id, entity_id.0)
+    }
+
+    fn sort_entities_stable(&self, ids: &mut [EntityId]) {
+        ids.sort_by_key(|entity_id| self.stable_entity_sort_key(*entity_id));
+    }
+
+    fn sync_settler_multi_selection_from_primary(&mut self, world: &SceneWorld) {
+        self.selected_settlers.clear();
+        let Some(selected_id) = self.selected_entity else {
+            return;
+        };
+        if world.find_entity(selected_id).is_none() {
+            return;
+        }
+        if self.actor_uses_settler_navigation(selected_id) {
+            self.selected_settlers.push(selected_id);
+        }
+    }
+
+    fn sanitize_settler_multi_selection(&mut self, world: &SceneWorld) {
+        let active_floor = self.active_floor_engine();
+        let mut retained = Vec::with_capacity(self.selected_settlers.len());
+        for entity_id in self.selected_settlers.iter().copied() {
+            let on_active_floor = world
+                .find_entity(entity_id)
+                .is_some_and(|entity| entity.floor == active_floor);
+            if on_active_floor && self.actor_uses_settler_navigation(entity_id) {
+                retained.push(entity_id);
+            }
+        }
+        self.sort_entities_stable(&mut retained);
+        self.selected_settlers = retained;
     }
 
     fn start_use_interaction_for_actor_target(
@@ -339,6 +412,9 @@ impl GameplayScene {
         self.pawn_role_by_entity.remove(&entity_id);
         self.nav_path_by_entity.remove(&entity_id);
         self.job_phase_by_entity.remove(&entity_id);
+        self.carry_visual_by_actor.remove(&entity_id);
+        self.hit_ticks_remaining_by_actor.remove(&entity_id);
+        self.selected_settlers.retain(|selected_id| *selected_id != entity_id);
         if let Some(job_id) = self.job_board.clear_assignment_for_entity(entity_id) {
             self.job_board.mark_job_state(job_id, JobState::Failed);
         }
@@ -748,6 +824,7 @@ impl GameplayScene {
                     move_target_world,
                     interaction_target_save_id,
                     job_state,
+                    carry_visual_def: self.actor_held_visual(entity.id),
                     interactable: entity.interactable.map(|interactable| {
                         SavedInteractableRuntime {
                             kind: match interactable.kind {
@@ -811,6 +888,9 @@ impl GameplayScene {
         self.interactable_lookup_by_save_id.clear();
         self.target_lookup_by_save_id.clear();
         self.completed_target_ids.clear();
+        self.selected_settlers.clear();
+        self.selection_drag_start_px = None;
+        self.selection_drag_cursor_px = None;
         self.entity_save_ids.clear();
         self.save_id_to_entity.clear();
         self.entity_archetype_id_by_entity.clear();
@@ -899,11 +979,16 @@ impl GameplayScene {
                 interaction_radius: interactable.interaction_radius,
                 remaining_uses: interactable.remaining_uses,
             });
+            if let Some(carry_visual_def) = &saved_entity.carry_visual_def {
+                self.carry_visual_by_actor
+                    .insert(id, carry_visual_def.clone());
+            }
         }
 
         self.selected_entity = save
             .selected_entity_save_id
             .and_then(|save_id| spawned_ids_by_save_id.get(&save_id).copied());
+        self.sync_settler_multi_selection_from_primary(world);
         self.player_id = save
             .player_entity_save_id
             .and_then(|save_id| spawned_ids_by_save_id.get(&save_id).copied());
@@ -916,6 +1001,7 @@ impl GameplayScene {
         self.sync_runtime_component_stores_with_world(world);
         self.rebuild_active_interactions_from_world_order(world);
         self.rebuild_ai_agents_from_world(world);
+        self.sync_settler_multi_selection_from_primary(world);
         Ok(())
     }
 }
@@ -934,6 +1020,8 @@ impl GameplayScene {
         self.nav_passability_cache.clear();
         self.job_board.clear();
         self.job_phase_by_entity.clear();
+        self.carry_visual_by_actor.clear();
+        self.hit_ticks_remaining_by_actor.clear();
         self.next_interaction_id = 0;
     }
 
@@ -979,6 +1067,7 @@ impl GameplayScene {
             self.status_sets_by_entity.entry(entity.id).or_default();
         }
         self.refresh_authoritative_player_role(world);
+        self.sanitize_settler_multi_selection(world);
     }
 
     fn rebuild_ai_agents_from_world(&mut self, world: &SceneWorld) {
@@ -1211,8 +1300,13 @@ impl GameplayScene {
 
         self.player_id = None;
         self.selected_entity = None;
+        self.selected_settlers.clear();
+        self.selection_drag_start_px = None;
+        self.selection_drag_cursor_px = None;
         self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
         self.visual_sandbox_demo_active = false;
+        self.carry_visual_by_actor.clear();
+        self.hit_ticks_remaining_by_actor.clear();
         self.nav_path_by_entity.clear();
 
         let player_id =
@@ -1225,6 +1319,7 @@ impl GameplayScene {
         self.player_id = Some(player_id);
         self.refresh_authoritative_player_role(world);
         self.selected_entity = Some(player_id);
+        self.sync_settler_multi_selection_from_primary(world);
         self.combat_chaser_scenario = CombatChaserScenarioSlot {
             chaser_id: Some(chaser_id),
             dummy_id: Some(dummy_id),
@@ -1245,7 +1340,12 @@ impl GameplayScene {
 
         self.player_id = None;
         self.selected_entity = None;
+        self.selected_settlers.clear();
+        self.selection_drag_start_px = None;
+        self.selection_drag_cursor_px = None;
         self.visual_sandbox_demo_active = false;
+        self.carry_visual_by_actor.clear();
+        self.hit_ticks_remaining_by_actor.clear();
         self.nav_path_by_entity.clear();
 
         let player_id =
@@ -1266,26 +1366,24 @@ impl GameplayScene {
             VISUAL_SANDBOX_EXTRA_INTERACTABLE_DEF,
             VISUAL_SANDBOX_BENCH_POS,
         )?;
+        let _second_prop_id = self.apply_spawn_intent_now(
+            world,
+            "proto.resource_pile",
+            VISUAL_SANDBOX_SECOND_PROP_POS,
+        )?;
+        let _second_wall_id =
+            self.apply_spawn_intent_now(world, "proto.door_dummy", VISUAL_SANDBOX_SECOND_WALL_POS)?;
+        let _second_floor_id = self.apply_spawn_intent_now(
+            world,
+            "proto.stockpile_small",
+            VISUAL_SANDBOX_SECOND_FLOOR_POS,
+        )?;
 
         self.player_id = Some(player_id);
         self.refresh_authoritative_player_role(world);
         self.selected_entity = Some(player_id);
+        self.sync_settler_multi_selection_from_primary(world);
         self.visual_sandbox_demo_active = true;
-        world.set_entity_action_visual(
-            player_id,
-            EntityActionVisual {
-                action_state: ActionState::Carry,
-                action_params: ActionParams {
-                    phase: 0.0,
-                    intensity: 0.0,
-                    speed01: 0.0,
-                    facing: Some(self.last_player_facing),
-                    target_hint: None,
-                    is_looping: true,
-                },
-                held_visual: Some(VISUAL_SANDBOX_CARRY_VISUAL_DEF.to_string()),
-            },
-        );
 
         Ok((player_id, prop_id, wall_id, floor_id))
     }
@@ -1302,8 +1400,13 @@ impl GameplayScene {
 
         self.player_id = None;
         self.selected_entity = None;
+        self.selected_settlers.clear();
+        self.selection_drag_start_px = None;
+        self.selection_drag_cursor_px = None;
         self.visual_sandbox_demo_active = false;
         self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
+        self.carry_visual_by_actor.clear();
+        self.hit_ticks_remaining_by_actor.clear();
         self.nav_path_by_entity.clear();
 
         let player_id = self.apply_spawn_intent_now(world, "proto.player", NAV_SANDBOX_PLAYER_POS)?;
@@ -1313,6 +1416,7 @@ impl GameplayScene {
         self.player_id = Some(player_id);
         self.refresh_authoritative_player_role(world);
         self.selected_entity = Some(player_id);
+        self.sync_settler_multi_selection_from_primary(world);
 
         Ok((player_id, settler_id))
     }
@@ -1339,49 +1443,30 @@ impl GameplayScene {
         base_speed * self.movement_speed_multiplier_for_entity(entity_id)
     }
 
-    fn resolve_player_action_state_for_visual_sandbox(
-        &self,
-        world: &SceneWorld,
-        player_id: EntityId,
-        movement_action_state: ActionState,
-    ) -> ActionState {
-        if !self.visual_sandbox_demo_active {
-            return movement_action_state;
-        }
-
-        let Some(player) = world.find_entity(player_id) else {
-            return movement_action_state;
-        };
-
-        let target_save_id = match player.order_state {
-            OrderState::Interact { target_save_id }
-            | OrderState::Working { target_save_id, .. } => Some(target_save_id),
-            _ => None,
-        };
-
-        if let Some(target_save_id) = target_save_id {
-            if self.visual_sandbox_target_has_immediate_use_tag(world, target_save_id) {
-                return ActionState::UseTool;
-            }
-            return ActionState::Interact;
-        }
-
-        if player.transform.position.x <= VISUAL_SANDBOX_CARRY_LANE_X {
-            ActionState::Carry
-        } else {
-            movement_action_state
-        }
+    fn actor_is_carrying(&self, actor_id: EntityId) -> bool {
+        self.carry_visual_by_actor.contains_key(&actor_id)
     }
 
-    fn visual_sandbox_target_has_immediate_use_tag(
+    fn actor_held_visual(&self, actor_id: EntityId) -> Option<String> {
+        self.carry_visual_by_actor.get(&actor_id).cloned()
+    }
+
+    fn tick_hit_timers(&mut self) {
+        self.hit_ticks_remaining_by_actor.retain(|_, remaining| {
+            if *remaining > 0 {
+                *remaining = remaining.saturating_sub(1);
+            }
+            *remaining > 0
+        });
+    }
+
+    fn entity_has_archetype_tag(
         &self,
         world: &SceneWorld,
-        target_save_id: u64,
+        entity_id: EntityId,
+        tag: &str,
     ) -> bool {
-        let Some(target_id) = self.resolve_runtime_target_id(target_save_id, world) else {
-            return false;
-        };
-        let Some(archetype_id) = self.entity_archetype_id_by_entity.get(&target_id).copied() else {
+        let Some(archetype_id) = self.entity_archetype_id_by_entity.get(&entity_id).copied() else {
             return false;
         };
         let Some(def_db) = world.def_database() else {
@@ -1390,7 +1475,29 @@ impl GameplayScene {
         let Some(archetype) = def_db.entity_def(archetype_id) else {
             return false;
         };
-        archetype.tags.iter().any(|tag| tag == "immediate_use")
+        archetype.tags.iter().any(|candidate| candidate == tag)
+    }
+
+    fn interaction_outcome_target_kind(
+        &self,
+        world: &SceneWorld,
+        target_id: EntityId,
+    ) -> Option<InteractionOutcomeTargetKind> {
+        let target = world.find_entity(target_id)?;
+        if target.interactable.is_none() {
+            return None;
+        }
+
+        if self.entity_has_archetype_tag(world, target_id, "stockpile_small") {
+            return Some(InteractionOutcomeTargetKind::StockpileSmall);
+        }
+        if self.entity_has_archetype_tag(world, target_id, "door_dummy") {
+            return Some(InteractionOutcomeTargetKind::DoorDummy);
+        }
+        if self.entity_has_archetype_tag(world, target_id, "resource_pile") {
+            return Some(InteractionOutcomeTargetKind::ResourcePile);
+        }
+        Some(InteractionOutcomeTargetKind::OtherInteractable)
     }
 
     fn facing_from_movement_delta(delta: Vec2) -> Option<CardinalFacing> {
@@ -1506,7 +1613,10 @@ impl GameplayScene {
             input,
             self.player_id,
             self.selected_entity,
+            self.visual_sandbox_demo_active,
             &self.pawn_role_by_entity,
+            &self.entity_archetype_id_by_entity,
+            &self.carry_visual_by_actor,
             &mut self.ai_agents_by_entity,
             &mut self.status_sets_by_entity,
             &mut self.active_interactions_by_actor,
@@ -1529,7 +1639,7 @@ impl GameplayScene {
         let mut cursor = 0usize;
 
         while cursor < pending.len() {
-            let intent = pending[cursor];
+            let intent = pending[cursor].clone();
             cursor = cursor.saturating_add(1);
             stats.record_intent(intent.kind());
             match intent {
@@ -1815,29 +1925,56 @@ impl GameplayScene {
                     }
                     actor.order_state = OrderState::Idle;
                     self.nav_path_by_entity.remove(&actor_id);
-
-                    // Mechanical interaction outcomes for resource piles:
-                    // successful completion grants one item and consumes one use.
-                    let mut should_despawn_target = false;
-                    if let Some(target) = world.find_entity_mut(target_id) {
-                        if let Some(interactable) = target.interactable.as_mut() {
-                            if interactable.remaining_uses > 0 {
-                                interactable.remaining_uses -= 1;
-                                self.resource_count = self.resource_count.saturating_add(1);
-                            }
-                            should_despawn_target = interactable.remaining_uses == 0;
-                        }
+                    let _ = target_id;
+                }
+                GameplayIntent::SetCarryVisual {
+                    actor_id,
+                    carry_visual_def,
+                } => {
+                    let Some(actor) = world.find_entity(actor_id) else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    if !actor.actor {
+                        stats.record_invalid_target();
+                        continue;
                     }
-
-                    if should_despawn_target {
-                        if world.despawn(target_id) {
-                            self.remove_entity_save_mapping(target_id);
-                        }
-                        self.health_by_entity.remove(&target_id);
-                        self.damage_by_entity.remove(&target_id);
-                        self.status_sets_by_entity.remove(&target_id);
-                        self.ai_agents_by_entity.remove(&target_id);
-                        self.active_interactions_by_actor.remove(&target_id);
+                    self.carry_visual_by_actor.insert(actor_id, carry_visual_def);
+                }
+                GameplayIntent::ClearCarryVisual { actor_id } => {
+                    if world.find_entity(actor_id).is_none() {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    self.carry_visual_by_actor.remove(&actor_id);
+                }
+                GameplayIntent::DecrementInteractableUses { target_id, amount } => {
+                    let Some(target) = world.find_entity_mut(target_id) else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    let Some(interactable) = target.interactable.as_mut() else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    interactable.remaining_uses = interactable.remaining_uses.saturating_sub(amount);
+                }
+                GameplayIntent::IncrementResourceCount { amount } => {
+                    self.resource_count = self.resource_count.saturating_add(amount);
+                }
+                GameplayIntent::StartHitVisualTimer { actor_id, ticks } => {
+                    let Some(actor) = world.find_entity(actor_id) else {
+                        stats.record_invalid_target();
+                        continue;
+                    };
+                    if !actor.actor {
+                        stats.record_invalid_target();
+                        continue;
+                    }
+                    if ticks == 0 {
+                        self.hit_ticks_remaining_by_actor.remove(&actor_id);
+                    } else {
+                        self.hit_ticks_remaining_by_actor.insert(actor_id, ticks);
                     }
                 }
             }
@@ -1933,6 +2070,127 @@ impl GameplayScene {
         );
     }
 
+    fn run_job_reservation_timeout_release_pass(&mut self, world: &mut SceneWorld) {
+        let mut timed_out = Vec::<(JobId, EntityId)>::new();
+        for (job_id, job) in &self.job_board.jobs_by_id {
+            if !matches!(job.state, JobState::Reserved | JobState::InProgress) {
+                continue;
+            }
+            let Some(actor_id) = job.reserved_by else {
+                continue;
+            };
+            let last_progress_tick = job.last_progress_tick.or(job.reserved_tick).unwrap_or(0);
+            if self.current_tick.saturating_sub(last_progress_tick) >= JOB_RESERVATION_TIMEOUT_TICKS
+            {
+                timed_out.push((*job_id, actor_id));
+            }
+        }
+        timed_out.sort_by_key(|(job_id, actor_id)| (job_id.0, actor_id.0));
+
+        for (job_id, actor_id) in timed_out {
+            if self.job_board.assigned_job_id(actor_id) == Some(job_id) {
+                self.job_board.clear_assignment_for_entity(actor_id);
+            }
+            if let Some(job) = self.job_board.jobs_by_id.get_mut(&job_id) {
+                if job.reserved_by == Some(actor_id)
+                    && matches!(job.state, JobState::Reserved | JobState::InProgress)
+                {
+                    job.state = JobState::Open;
+                    job.reserved_by = None;
+                    job.reserved_tick = None;
+                    job.last_progress_tick = None;
+                }
+            }
+            self.clear_actor_locomotion_state(actor_id, world, true);
+        }
+    }
+
+    fn open_job_target_world_for_worker(
+        &self,
+        job: &JobRecord,
+        world: &SceneWorld,
+        worker_floor: FloorId,
+    ) -> Option<Vec2> {
+        match job.target {
+            JobTarget::WorldPoint(point) => Some(point),
+            JobTarget::TargetSaveId(target_save_id) => {
+                let target_id = self.resolve_runtime_target_id(target_save_id, world)?;
+                let target = world.find_entity(target_id)?;
+                if target.floor != worker_floor {
+                    return None;
+                }
+                Some(target.transform.position)
+            }
+        }
+    }
+
+    fn run_settler_open_job_auto_pick(&mut self, world: &mut SceneWorld) {
+        let active_floor = self.active_floor_engine();
+        let mut idle_settlers = world
+            .entities()
+            .iter()
+            .filter(|entity| entity.actor && entity.floor == active_floor)
+            .filter(|entity| self.actor_uses_settler_navigation(entity.id))
+            .filter(|entity| self.job_board.assigned_job_id(entity.id).is_none())
+            .map(|entity| entity.id)
+            .collect::<Vec<_>>();
+        self.sort_entities_stable(&mut idle_settlers);
+
+        for actor_id in idle_settlers {
+            let Some(actor) = world.find_entity(actor_id) else {
+                continue;
+            };
+            if !matches!(actor.order_state, OrderState::Idle) {
+                continue;
+            }
+            let actor_pos = actor.transform.position;
+            let actor_floor = actor.floor;
+
+            let mut best_job = None::<(JobId, i32, f32)>;
+            for (job_id, job) in &self.job_board.jobs_by_id {
+                if !matches!(job.state, JobState::Open) || job.reserved_by.is_some() {
+                    continue;
+                }
+                let Some(target_world) = self.open_job_target_world_for_worker(job, world, actor_floor)
+                else {
+                    continue;
+                };
+                let dx = target_world.x - actor_pos.x;
+                let dy = target_world.y - actor_pos.y;
+                let distance_sq = dx * dx + dy * dy;
+                let priority = Self::clamp_job_priority(job.priority);
+                let replace = match best_job {
+                    None => true,
+                    Some((best_id, best_priority, best_distance_sq)) => {
+                        if priority != best_priority {
+                            priority > best_priority
+                        } else {
+                            let ord = distance_sq.total_cmp(&best_distance_sq);
+                            if ord != std::cmp::Ordering::Equal {
+                                ord == std::cmp::Ordering::Less
+                            } else {
+                                job_id.0 < best_id.0
+                            }
+                        }
+                    }
+                };
+                if replace {
+                    best_job = Some((*job_id, priority, distance_sq));
+                }
+            }
+
+            let Some((job_id, _, _)) = best_job else {
+                continue;
+            };
+            if self
+                .job_board
+                .assign_job_to_entity_at_tick(job_id, actor_id, self.current_tick)
+            {
+                self.job_phase_by_entity.insert(actor_id, JobPhase::Navigating);
+            }
+        }
+    }
+
     fn run_settler_job_runner_prepass(&mut self, world: &mut SceneWorld) {
         let mut assigned_actor_ids = self
             .job_board
@@ -1940,7 +2198,7 @@ impl GameplayScene {
             .keys()
             .copied()
             .collect::<Vec<_>>();
-        assigned_actor_ids.sort_by_key(|id| id.0);
+        self.sort_entities_stable(&mut assigned_actor_ids);
 
         for actor_id in assigned_actor_ids {
             let Some(job_id) = self.job_board.assigned_job_id(actor_id) else {
@@ -1974,7 +2232,12 @@ impl GameplayScene {
                 continue;
             }
             if matches!(job.state, JobState::Reserved) {
-                self.job_board.mark_job_in_progress(job_id);
+                self.job_board
+                    .mark_job_in_progress_at_tick(job_id, self.current_tick);
+            } else if !matches!(actor.order_state, OrderState::Idle) {
+                if let Some(job) = self.job_board.jobs_by_id.get_mut(&job_id) {
+                    job.last_progress_tick = Some(self.current_tick);
+                }
             }
 
             match job.kind {
@@ -2096,7 +2359,7 @@ impl GameplayScene {
             .keys()
             .copied()
             .collect::<Vec<_>>();
-        assigned_actor_ids.sort_by_key(|id| id.0);
+        self.sort_entities_stable(&mut assigned_actor_ids);
 
         for actor_id in assigned_actor_ids {
             let Some(job_id) = self.job_board.assigned_job_id(actor_id) else {
@@ -2202,6 +2465,7 @@ impl GameplayScene {
         input: &InputSnapshot,
         world: &mut SceneWorld,
     ) {
+        self.current_tick = self.current_tick.saturating_add(1);
         world
             .camera_mut()
             .apply_zoom_steps(input.zoom_delta_steps());
@@ -2219,9 +2483,13 @@ impl GameplayScene {
             None => true,
         }) {
             self.selected_entity = None;
+            self.selected_settlers.clear();
         }
+        self.sanitize_settler_multi_selection(world);
 
         if input.left_click_pressed() {
+            self.selection_drag_start_px = input.cursor_position_px();
+            self.selection_drag_cursor_px = input.cursor_position_px();
             self.selected_entity = input.cursor_position_px().and_then(|cursor_px| {
                 world.pick_topmost_selectable_at_cursor(
                     cursor_px,
@@ -2229,6 +2497,53 @@ impl GameplayScene {
                     Some(self.active_floor.to_engine_floor()),
                 )
             });
+            self.sync_settler_multi_selection_from_primary(world);
+        } else if input.left_mouse_held() && self.selection_drag_start_px.is_some() {
+            self.selection_drag_cursor_px = input.cursor_position_px().or(self.selection_drag_cursor_px);
+        }
+
+        if input.left_click_released() {
+            let release_cursor = input.cursor_position_px().or(self.selection_drag_cursor_px);
+            if let (Some(start), Some(end)) = (self.selection_drag_start_px, release_cursor) {
+                let dx = end.x - start.x;
+                let dy = end.y - start.y;
+                let drag_distance_sq = dx * dx + dy * dy;
+                if drag_distance_sq >= BOX_SELECT_MIN_DRAG_PX * BOX_SELECT_MIN_DRAG_PX {
+                    let min_x = start.x.min(end.x);
+                    let max_x = start.x.max(end.x);
+                    let min_y = start.y.min(end.y);
+                    let max_y = start.y.max(end.y);
+                    let mut selected = world
+                        .entities()
+                        .iter()
+                        .filter(|entity| entity.actor && entity.floor == active_floor && entity.selectable)
+                        .filter(|entity| self.actor_uses_settler_navigation(entity.id))
+                        .filter_map(|entity| {
+                            let (x, y) = engine::world_to_screen_px(
+                                world.camera(),
+                                input.window_size(),
+                                entity.transform.position,
+                            );
+                            let screen_x = x as f32;
+                            let screen_y = y as f32;
+                            if screen_x >= min_x
+                                && screen_x <= max_x
+                                && screen_y >= min_y
+                                && screen_y <= max_y
+                            {
+                                Some(entity.id)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    self.sort_entities_stable(&mut selected);
+                    self.selected_settlers = selected;
+                    self.selected_entity = self.selected_settlers.first().copied();
+                }
+            }
+            self.selection_drag_start_px = None;
+            self.selection_drag_cursor_px = None;
         }
 
         if input.right_click_pressed() {
@@ -2244,7 +2559,38 @@ impl GameplayScene {
                 });
 
                 let mut marker_position = None::<Vec2>;
-                if self.selected_actor_is_orderable(selected_id, world) {
+                if !self.selected_settlers.is_empty() && hovered_interactable.is_none() {
+                    let mut issued_any = false;
+                    let mut fanout_targets = self.selected_settlers.clone();
+                    self.sort_entities_stable(&mut fanout_targets);
+                    for settler_id in fanout_targets {
+                        let Some(actor) = world.find_entity(settler_id) else {
+                            continue;
+                        };
+                        if !actor.actor || actor.floor != active_floor {
+                            continue;
+                        }
+                        if !self.actor_uses_settler_navigation(settler_id)
+                            || !self.selected_actor_is_orderable(settler_id, world)
+                        {
+                            continue;
+                        }
+                        if self
+                            .assign_job_to_actor_with_interruption(
+                                settler_id,
+                                JobKind::MoveToPoint,
+                                JobTarget::WorldPoint(ground_target),
+                                world,
+                            )
+                            .is_some()
+                        {
+                            issued_any = true;
+                        }
+                    }
+                    if issued_any {
+                        marker_position = Some(ground_target);
+                    }
+                } else if self.selected_actor_is_orderable(selected_id, world) {
                     let selected_is_settler = self.actor_uses_settler_navigation(selected_id);
                     let selected_is_interacting = world.find_entity(selected_id).is_some_and(|entity| {
                         GameplaySystemsHost::order_state_indicates_interaction(entity.order_state)
@@ -2381,9 +2727,11 @@ impl GameplayScene {
         }
 
         self.refresh_nav_cache_from_world(world);
+        self.run_job_reservation_timeout_release_pass(world);
+        self.run_settler_open_job_auto_pick(world);
         self.run_settler_job_runner_prepass(world);
         self.completed_target_ids.clear();
-        let completed_jobs = 0u32;
+        let tilemap_epoch = world.tilemap_epoch();
         for entity in world.entities_mut() {
             if !entity.actor {
                 continue;
@@ -2412,7 +2760,10 @@ impl GameplayScene {
                             continue;
                         };
                         let needs_rebuild = match self.nav_path_by_entity.get(&entity.id) {
-                            Some(path_state) => path_state.goal_tile != goal_tile,
+                            Some(path_state) => {
+                                path_state.goal_tile != goal_tile
+                                    || path_state.planned_epoch != tilemap_epoch
+                            }
                             None => true,
                         };
                         if needs_rebuild
@@ -2420,6 +2771,7 @@ impl GameplayScene {
                                 entity.id,
                                 entity.transform.position,
                                 point,
+                                tilemap_epoch,
                             )
                         {
                             entity.order_state = OrderState::Idle;
@@ -2496,7 +2848,10 @@ impl GameplayScene {
                                     continue;
                                 };
                                 let needs_rebuild = match self.nav_path_by_entity.get(&entity.id) {
-                                    Some(path_state) => path_state.goal_tile != goal_tile,
+                                    Some(path_state) => {
+                                        path_state.goal_tile != goal_tile
+                                            || path_state.planned_epoch != tilemap_epoch
+                                    }
                                     None => true,
                                 };
                                 if needs_rebuild
@@ -2504,6 +2859,7 @@ impl GameplayScene {
                                         entity.id,
                                         entity.transform.position,
                                         target_world,
+                                        tilemap_epoch,
                                     )
                                 {
                                     entity.order_state = OrderState::Idle;
@@ -2576,7 +2932,10 @@ impl GameplayScene {
                                     continue;
                                 };
                                 let needs_rebuild = match self.nav_path_by_entity.get(&entity.id) {
-                                    Some(path_state) => path_state.goal_tile != goal_tile,
+                                    Some(path_state) => {
+                                        path_state.goal_tile != goal_tile
+                                            || path_state.planned_epoch != tilemap_epoch
+                                    }
                                     None => true,
                                 };
                                 if needs_rebuild
@@ -2584,6 +2943,7 @@ impl GameplayScene {
                                         entity.id,
                                         entity.transform.position,
                                         target_world,
+                                        tilemap_epoch,
                                     )
                                 {
                                     entity.order_state = OrderState::Idle;
@@ -2648,24 +3008,6 @@ impl GameplayScene {
         }
         self.run_settler_job_runner_postpass(world);
 
-        self.resource_count = self.resource_count.saturating_add(completed_jobs);
-        for index in 0..self.completed_target_ids.len() {
-            let target_id = self.completed_target_ids[index];
-            let mut should_despawn = false;
-            if let Some(target) = world.find_entity_mut(target_id) {
-                if let Some(interactable) = target.interactable.as_mut() {
-                    if interactable.remaining_uses > 0 {
-                        interactable.remaining_uses -= 1;
-                    }
-                    should_despawn = interactable.remaining_uses == 0;
-                }
-            }
-            if should_despawn {
-                world.despawn(target_id);
-                self.remove_entity_save_mapping(target_id);
-            }
-        }
-
         for (actor_id, start_position) in actor_start_positions {
             let (current_position, order_state) = match world.find_entity(actor_id) {
                 Some(actor) => (actor.transform.position, actor.order_state),
@@ -2690,28 +3032,37 @@ impl GameplayScene {
             };
 
             let mut facing = Self::facing_from_movement_delta(actual_delta);
-            let action_state = if Some(actor_id) == self.player_id {
+            if Some(actor_id) == self.player_id {
                 if let Some(player_facing) = facing {
                     self.last_player_facing = player_facing;
                 } else {
                     facing = Some(self.last_player_facing);
                 }
-                self.resolve_player_action_state_for_visual_sandbox(world, actor_id, movement_action_state)
+            } else if facing.is_none() {
+                facing = world.entity_action_visual(actor_id).action_params.facing;
+            }
+
+            let action_state = if GameplaySystemsHost::order_state_indicates_interaction(order_state) {
+                ActionState::Interact
+            } else if self
+                .hit_ticks_remaining_by_actor
+                .get(&actor_id)
+                .copied()
+                .unwrap_or(0)
+                > 0
+            {
+                ActionState::Hit
+            } else if self.actor_is_carrying(actor_id) {
+                ActionState::Carry
             } else {
-                if facing.is_none() {
-                    facing = world.entity_action_visual(actor_id).action_params.facing;
-                }
-                if GameplaySystemsHost::order_state_indicates_interaction(order_state) {
-                    ActionState::Interact
-                } else {
-                    movement_action_state
-                }
+                movement_action_state
             };
 
-            world.update_entity_action_state_params(
+            world.set_entity_action_visual(
                 actor_id,
-                action_state,
-                ActionParams {
+                EntityActionVisual {
+                    action_state,
+                    action_params: ActionParams {
                     phase: 0.0,
                     intensity: speed01,
                     speed01,
@@ -2719,8 +3070,12 @@ impl GameplayScene {
                     target_hint: None,
                     is_looping: true,
                 },
+                    held_visual: self.actor_held_visual(actor_id),
+                },
             );
         }
+
+        self.tick_hit_timers();
 
         let camera_delta = camera_delta(input, fixed_dt_seconds, CAMERA_SPEED_UNITS_PER_SECOND);
         world.camera_mut().position.x += camera_delta.x;

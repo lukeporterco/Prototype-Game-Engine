@@ -66,6 +66,8 @@ pub struct InputSnapshot {
     actions: ActionStates,
     cursor_position_px: Option<Vec2>,
     left_click_pressed: bool,
+    left_mouse_held: bool,
+    left_click_released: bool,
     right_click_pressed: bool,
     save_pressed: bool,
     load_pressed: bool,
@@ -85,6 +87,8 @@ impl InputSnapshot {
         actions: ActionStates,
         cursor_position_px: Option<Vec2>,
         left_click_pressed: bool,
+        left_mouse_held: bool,
+        left_click_released: bool,
         right_click_pressed: bool,
         save_pressed: bool,
         load_pressed: bool,
@@ -98,6 +102,8 @@ impl InputSnapshot {
             actions,
             cursor_position_px,
             left_click_pressed,
+            left_mouse_held,
+            left_click_released,
             right_click_pressed,
             save_pressed,
             load_pressed,
@@ -134,6 +140,16 @@ impl InputSnapshot {
         self
     }
 
+    pub fn with_left_mouse_held(mut self, left_mouse_held: bool) -> Self {
+        self.left_mouse_held = left_mouse_held;
+        self
+    }
+
+    pub fn with_left_click_released(mut self, left_click_released: bool) -> Self {
+        self.left_click_released = left_click_released;
+        self
+    }
+
     pub fn with_right_click_pressed(mut self, right_click_pressed: bool) -> Self {
         self.right_click_pressed = right_click_pressed;
         self
@@ -166,6 +182,14 @@ impl InputSnapshot {
 
     pub fn left_click_pressed(&self) -> bool {
         self.left_click_pressed
+    }
+
+    pub fn left_mouse_held(&self) -> bool {
+        self.left_mouse_held
+    }
+
+    pub fn left_click_released(&self) -> bool {
+        self.left_click_released
     }
 
     pub fn right_click_pressed(&self) -> bool {
@@ -565,6 +589,7 @@ pub struct SceneWorld {
     camera: Camera2D,
     active_floor: FloorId,
     tilemap: Option<Tilemap>,
+    tilemap_epoch: u64,
     visual_state: SceneVisualState,
     debug_markers: Vec<DebugMarker>,
     def_database: Option<DefDatabase>,
@@ -657,14 +682,20 @@ impl SceneWorld {
 
     pub fn set_tilemap(&mut self, tilemap: Tilemap) {
         self.tilemap = Some(tilemap);
+        self.tilemap_epoch = self.tilemap_epoch.saturating_add(1);
     }
 
     pub fn clear_tilemap(&mut self) {
         self.tilemap = None;
+        self.tilemap_epoch = self.tilemap_epoch.saturating_add(1);
     }
 
     pub fn tilemap(&self) -> Option<&Tilemap> {
         self.tilemap.as_ref()
+    }
+
+    pub fn tilemap_epoch(&self) -> u64 {
+        self.tilemap_epoch
     }
 
     pub fn set_selected_actor_visual(&mut self, selected: Option<EntityId>) {

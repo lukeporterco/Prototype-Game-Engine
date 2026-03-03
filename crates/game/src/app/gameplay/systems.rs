@@ -37,7 +37,10 @@ struct GameplaySystemContext<'a> {
     input: &'a InputSnapshot,
     player_id: Option<EntityId>,
     selected_entity: Option<EntityId>,
+    visual_sandbox_demo_active: bool,
     pawn_role_by_entity: &'a HashMap<EntityId, PawnControlRole>,
+    entity_archetype_id_by_entity: &'a HashMap<EntityId, EntityDefId>,
+    carry_visual_by_actor: &'a HashMap<EntityId, String>,
     ai_agents_by_entity: &'a mut HashMap<EntityId, AiAgent>,
     status_sets_by_entity: &'a mut HashMap<EntityId, StatusSet>,
     active_interactions_by_actor: &'a mut HashMap<EntityId, ActiveInteraction>,
@@ -62,7 +65,10 @@ impl GameplaySystemsHost {
         input: &InputSnapshot,
         player_id: Option<EntityId>,
         selected_entity: Option<EntityId>,
+        visual_sandbox_demo_active: bool,
         pawn_role_by_entity: &HashMap<EntityId, PawnControlRole>,
+        entity_archetype_id_by_entity: &HashMap<EntityId, EntityDefId>,
+        carry_visual_by_actor: &HashMap<EntityId, String>,
         ai_agents_by_entity: &mut HashMap<EntityId, AiAgent>,
         status_sets_by_entity: &mut HashMap<EntityId, StatusSet>,
         active_interactions_by_actor: &mut HashMap<EntityId, ActiveInteraction>,
@@ -82,7 +88,10 @@ impl GameplaySystemsHost {
                 input,
                 player_id,
                 selected_entity,
+                visual_sandbox_demo_active,
                 pawn_role_by_entity,
+                entity_archetype_id_by_entity,
+                carry_visual_by_actor,
                 ai_agents_by_entity,
                 status_sets_by_entity,
                 active_interactions_by_actor,
@@ -566,34 +575,102 @@ impl GameplaySystemsHost {
                 self.run_ai_system(context);
             }
             GameplaySystemId::CombatResolution => {
-                for event in context.events.iter_emitted_so_far() {
-                    let GameplayEvent::InteractionCompleted {
-                        actor_id,
+                let mut completed_interactions = context
+                    .events
+                    .iter_emitted_so_far()
+                    .filter_map(|event| match event {
+                        GameplayEvent::InteractionCompleted { actor_id, target_id } => {
+                            Some((*actor_id, *target_id))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                completed_interactions.sort_by_key(|(actor_id, target_id)| (actor_id.0, target_id.0));
+
+                let mut predicted_remaining_uses_by_target = HashMap::<EntityId, u32>::new();
+                for (actor_id, target_id) in completed_interactions {
+                    if context
+                        .completed_attack_pairs_this_tick
+                        .contains(&(actor_id, target_id))
+                    {
+                        let damage = context
+                            .damage_by_entity
+                            .get(&actor_id)
+                            .copied()
+                            .unwrap_or(ATTACK_DAMAGE_PER_HIT);
+                        context.intents.enqueue(GameplayIntent::ApplyDamage {
+                            entity_id: target_id,
+                            amount: damage,
+                        });
+                        context.intents.enqueue(GameplayIntent::AddStatus {
+                            entity_id: target_id,
+                            status_id: STATUS_SLOW,
+                            duration_seconds: STATUS_SLOW_DURATION_SECONDS,
+                        });
+                    }
+
+                    let Some(target_kind) = Self::interaction_outcome_target_kind(
+                        context.world_view,
+                        context.entity_archetype_id_by_entity,
                         target_id,
-                    } = event
-                    else {
+                    ) else {
                         continue;
                     };
-                    if !context
-                        .completed_attack_pairs_this_tick
-                        .contains(&(*actor_id, *target_id))
-                    {
-                        continue;
+
+                    match target_kind {
+                        InteractionOutcomeTargetKind::ResourcePile => {
+                            let predicted_remaining = predicted_remaining_uses_by_target
+                                .entry(target_id)
+                                .or_insert_with(|| {
+                                    context
+                                        .world_view
+                                        .find_entity(target_id)
+                                        .and_then(|target| target.interactable)
+                                        .map(|interactable| interactable.remaining_uses)
+                                        .unwrap_or(0)
+                                });
+                            if *predicted_remaining == 0 {
+                                continue;
+                            }
+                            *predicted_remaining = predicted_remaining.saturating_sub(1);
+                            context.intents.enqueue(GameplayIntent::SetCarryVisual {
+                                actor_id,
+                                carry_visual_def: VISUAL_SANDBOX_CARRY_VISUAL_DEF.to_string(),
+                            });
+                            context
+                                .intents
+                                .enqueue(GameplayIntent::DecrementInteractableUses {
+                                    target_id,
+                                    amount: 1,
+                                });
+                            if *predicted_remaining == 0 {
+                                context
+                                    .intents
+                                    .enqueue(GameplayIntent::DespawnEntity { entity_id: target_id });
+                            }
+                        }
+                        InteractionOutcomeTargetKind::StockpileSmall => {
+                            if context.carry_visual_by_actor.contains_key(&actor_id) {
+                                context
+                                    .intents
+                                    .enqueue(GameplayIntent::ClearCarryVisual { actor_id });
+                                context
+                                    .intents
+                                    .enqueue(GameplayIntent::IncrementResourceCount { amount: 1 });
+                            }
+                        }
+                        InteractionOutcomeTargetKind::DoorDummy => {
+                            if context.visual_sandbox_demo_active {
+                                context
+                                    .intents
+                                    .enqueue(GameplayIntent::StartHitVisualTimer {
+                                        actor_id,
+                                        ticks: VISUAL_SANDBOX_HIT_DURATION_TICKS,
+                                    });
+                            }
+                        }
+                        InteractionOutcomeTargetKind::OtherInteractable => {}
                     }
-                    let damage = context
-                        .damage_by_entity
-                        .get(actor_id)
-                        .copied()
-                        .unwrap_or(ATTACK_DAMAGE_PER_HIT);
-                    context.intents.enqueue(GameplayIntent::ApplyDamage {
-                        entity_id: *target_id,
-                        amount: damage,
-                    });
-                    context.intents.enqueue(GameplayIntent::AddStatus {
-                        entity_id: *target_id,
-                        status_id: STATUS_SLOW,
-                        duration_seconds: STATUS_SLOW_DURATION_SECONDS,
-                    });
                 }
             }
             GameplaySystemId::StatusEffects => {
@@ -619,5 +696,59 @@ impl GameplaySystemsHost {
             };
             context.events.emit(event);
         }
+    }
+
+    fn entity_has_archetype_tag(
+        world_view: WorldView<'_>,
+        entity_archetype_id_by_entity: &HashMap<EntityId, EntityDefId>,
+        entity_id: EntityId,
+        tag: &str,
+    ) -> bool {
+        let Some(archetype_id) = entity_archetype_id_by_entity.get(&entity_id).copied() else {
+            return false;
+        };
+        let Some(def_db) = world_view.world.def_database() else {
+            return false;
+        };
+        let Some(archetype) = def_db.entity_def(archetype_id) else {
+            return false;
+        };
+        archetype.tags.iter().any(|candidate| candidate == tag)
+    }
+
+    fn interaction_outcome_target_kind(
+        world_view: WorldView<'_>,
+        entity_archetype_id_by_entity: &HashMap<EntityId, EntityDefId>,
+        target_id: EntityId,
+    ) -> Option<InteractionOutcomeTargetKind> {
+        let target = world_view.find_entity(target_id)?;
+        if target.interactable.is_none() {
+            return None;
+        }
+        if Self::entity_has_archetype_tag(
+            world_view,
+            entity_archetype_id_by_entity,
+            target_id,
+            "stockpile_small",
+        ) {
+            return Some(InteractionOutcomeTargetKind::StockpileSmall);
+        }
+        if Self::entity_has_archetype_tag(
+            world_view,
+            entity_archetype_id_by_entity,
+            target_id,
+            "door_dummy",
+        ) {
+            return Some(InteractionOutcomeTargetKind::DoorDummy);
+        }
+        if Self::entity_has_archetype_tag(
+            world_view,
+            entity_archetype_id_by_entity,
+            target_id,
+            "resource_pile",
+        ) {
+            return Some(InteractionOutcomeTargetKind::ResourcePile);
+        }
+        Some(InteractionOutcomeTargetKind::OtherInteractable)
     }
 }

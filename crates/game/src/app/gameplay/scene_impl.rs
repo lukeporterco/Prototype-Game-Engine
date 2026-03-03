@@ -9,15 +9,21 @@ impl Scene for GameplayScene {
         self.player_move_speed = player_archetype.move_speed;
         self.player_id = None;
         self.selected_entity = None;
+        self.selected_settlers.clear();
+        self.selection_drag_start_px = None;
+        self.selection_drag_cursor_px = None;
         self.active_floor = ActiveFloor::Main;
         self.last_player_facing = CardinalFacing::South;
         world.set_active_floor(self.active_floor_engine());
         self.resource_count = 0;
+        self.current_tick = 0;
         self.interactable_cache.clear();
         self.interactable_lookup_by_save_id.clear();
         self.completed_target_ids.clear();
         self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
         self.visual_sandbox_demo_active = false;
+        self.carry_visual_by_actor.clear();
+        self.hit_ticks_remaining_by_actor.clear();
         self.system_order_text = GAMEPLAY_SYSTEM_ORDER_TEXT.to_string();
         world.apply_pending();
         self.sync_save_id_map_with_world(world)
@@ -156,6 +162,7 @@ impl Scene for GameplayScene {
                     ));
                 }
                 self.selected_entity = Some(runtime_id);
+                self.sync_settler_multi_selection_from_primary(world);
                 SceneDebugCommandResult::Success(format!("selected entity {entity_id}"))
             }
             SceneDebugCommand::OrderMove { x, y } => {
@@ -170,6 +177,7 @@ impl Scene for GameplayScene {
                 };
                 if !self.entity_is_on_active_floor(actor) {
                     self.selected_entity = None;
+                    self.selected_settlers.clear();
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} is not on active floor",
                         actor_id.0
@@ -229,6 +237,7 @@ impl Scene for GameplayScene {
                 };
                 if !self.entity_is_on_active_floor(actor) {
                     self.selected_entity = None;
+                    self.selected_settlers.clear();
                     return SceneDebugCommandResult::Error(format!(
                         "selected entity {} is not on active floor",
                         actor_id.0
@@ -343,7 +352,9 @@ impl Scene for GameplayScene {
                     }
                 }) {
                     self.selected_entity = None;
+                    self.selected_settlers.clear();
                 }
+                self.sanitize_settler_multi_selection(world);
 
                 SceneDebugCommandResult::Success(format!(
                     "floor.set v1 active:{}",
@@ -399,10 +410,14 @@ impl Scene for GameplayScene {
         );
         self.player_id = None;
         self.selected_entity = None;
+        self.selected_settlers.clear();
+        self.selection_drag_start_px = None;
+        self.selection_drag_cursor_px = None;
         self.active_floor = ActiveFloor::Main;
         self.last_player_facing = CardinalFacing::South;
         world.set_active_floor(self.active_floor_engine());
         self.resource_count = 0;
+        self.current_tick = 0;
         self.interactable_cache.clear();
         self.interactable_lookup_by_save_id.clear();
         self.completed_target_ids.clear();
@@ -415,6 +430,8 @@ impl Scene for GameplayScene {
         self.system_order_text.clear();
         self.combat_chaser_scenario = CombatChaserScenarioSlot::default();
         self.visual_sandbox_demo_active = false;
+        self.carry_visual_by_actor.clear();
+        self.hit_ticks_remaining_by_actor.clear();
         self.selected_completion_enqueued_this_tick = false;
         self.reselect_player_on_respawn = false;
     }

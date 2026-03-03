@@ -548,12 +548,14 @@ struct InputCollector {
     injected_cursor_position_px: Option<super::Vec2>,
     left_mouse_is_down: bool,
     left_click_pressed_edge: bool,
+    left_click_released_edge: bool,
     right_mouse_is_down: bool,
     right_click_pressed_edge: bool,
     injected_pending_events: VecDeque<InjectedInputEvent>,
     injected_action_states: super::input::ActionStates,
     injected_left_mouse_is_down: bool,
     injected_left_click_pressed_edge: bool,
+    injected_left_click_released_edge: bool,
     injected_right_mouse_is_down: bool,
     injected_right_click_pressed_edge: bool,
     injected_disconnect_reset_pending: bool,
@@ -617,6 +619,9 @@ impl InputCollector {
         let actions = self.merged_action_states();
         let left_click_pressed =
             self.left_click_pressed_edge || self.injected_left_click_pressed_edge;
+        let left_mouse_held = self.left_mouse_is_down || self.injected_left_mouse_is_down;
+        let left_click_released =
+            self.left_click_released_edge || self.injected_left_click_released_edge;
         let right_click_pressed =
             self.right_click_pressed_edge || self.injected_right_click_pressed_edge;
         let snapshot = if console_open {
@@ -625,6 +630,8 @@ impl InputCollector {
                 false,
                 super::input::ActionStates::default(),
                 merged_cursor_position_px,
+                false,
+                false,
                 false,
                 false,
                 false,
@@ -640,6 +647,8 @@ impl InputCollector {
                 actions,
                 merged_cursor_position_px,
                 left_click_pressed,
+                left_mouse_held,
+                left_click_released,
                 right_click_pressed,
                 self.save_pressed_edge,
                 self.load_pressed_edge,
@@ -650,7 +659,9 @@ impl InputCollector {
         };
         self.switch_scene_pressed_edge = false;
         self.left_click_pressed_edge = false;
+        self.left_click_released_edge = false;
         self.injected_left_click_pressed_edge = false;
+        self.injected_left_click_released_edge = false;
         self.right_click_pressed_edge = false;
         self.injected_right_click_pressed_edge = false;
         self.save_pressed_edge = false;
@@ -686,8 +697,10 @@ impl InputCollector {
         self.injected_cursor_position_px = None;
         self.left_mouse_is_down = false;
         self.left_click_pressed_edge = false;
+        self.left_click_released_edge = false;
         self.injected_left_mouse_is_down = false;
         self.injected_left_click_pressed_edge = false;
+        self.injected_left_click_released_edge = false;
         self.right_mouse_is_down = false;
         self.right_click_pressed_edge = false;
         self.injected_right_mouse_is_down = false;
@@ -713,6 +726,7 @@ impl InputCollector {
         self.injected_cursor_position_px = None;
         self.injected_left_mouse_is_down = false;
         self.injected_left_click_pressed_edge = false;
+        self.injected_left_click_released_edge = false;
         self.injected_right_mouse_is_down = false;
         self.injected_right_click_pressed_edge = false;
     }
@@ -808,7 +822,12 @@ impl InputCollector {
                     }
                     self.injected_left_mouse_is_down = true;
                 }
-                ElementState::Released => self.injected_left_mouse_is_down = false,
+                ElementState::Released => {
+                    if self.injected_left_mouse_is_down {
+                        self.injected_left_click_released_edge = true;
+                    }
+                    self.injected_left_mouse_is_down = false;
+                }
             },
             InjectedMouseButton::Right => match state {
                 ElementState::Pressed => {
@@ -994,7 +1013,12 @@ impl InputCollector {
                     }
                     self.left_mouse_is_down = true;
                 }
-                ElementState::Released => self.left_mouse_is_down = false,
+                ElementState::Released => {
+                    if self.left_mouse_is_down {
+                        self.left_click_released_edge = true;
+                    }
+                    self.left_mouse_is_down = false;
+                }
             },
             MouseButton::Right => match state {
                 ElementState::Pressed => {
@@ -3056,7 +3080,9 @@ mod tests {
         let second = input.snapshot_for_tick(false);
 
         assert!(first.left_click_pressed());
+        assert!(first.left_mouse_held());
         assert!(!second.left_click_pressed());
+        assert!(second.left_mouse_held());
     }
 
     #[test]
@@ -3068,7 +3094,41 @@ mod tests {
         let second = input.snapshot_for_tick(false);
 
         assert!(first.left_click_pressed());
+        assert!(first.left_mouse_held());
         assert!(!second.left_click_pressed());
+        assert!(second.left_mouse_held());
+    }
+
+    #[test]
+    fn left_click_release_is_edge_triggered_for_single_tick() {
+        let mut input = InputCollector::new(1280, 720);
+        input.handle_mouse_input(MouseButton::Left, ElementState::Pressed);
+        let _pressed = input.snapshot_for_tick(false);
+        input.handle_mouse_input(MouseButton::Left, ElementState::Released);
+        let released = input.snapshot_for_tick(false);
+        let after = input.snapshot_for_tick(false);
+
+        assert!(released.left_click_released());
+        assert!(!released.left_mouse_held());
+        assert!(!after.left_click_released());
+    }
+
+    #[test]
+    fn injected_left_click_release_sets_release_edge() {
+        let mut input = InputCollector::new(1280, 720);
+        input.enqueue_injected_event(InjectedInputEvent::MouseDown {
+            button: InjectedMouseButton::Left,
+        });
+        let down = input.snapshot_for_tick(false);
+        assert!(down.left_click_pressed());
+        assert!(down.left_mouse_held());
+
+        input.enqueue_injected_event(InjectedInputEvent::MouseUp {
+            button: InjectedMouseButton::Left,
+        });
+        let up = input.snapshot_for_tick(false);
+        assert!(up.left_click_released());
+        assert!(!up.left_mouse_held());
     }
 
     #[test]
@@ -3110,6 +3170,8 @@ mod tests {
         assert!(!snapshot.is_down(InputAction::MoveUp));
         assert!(!snapshot.switch_scene_pressed());
         assert!(!snapshot.left_click_pressed());
+        assert!(!snapshot.left_mouse_held());
+        assert!(!snapshot.left_click_released());
         assert!(!snapshot.right_click_pressed());
         assert!(!snapshot.save_pressed());
         assert!(!snapshot.load_pressed());
