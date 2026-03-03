@@ -2335,9 +2335,12 @@ impl GameplayScene {
         });
         world.set_targeted_interactable_visual(targeted_interactable_visual);
 
-        let player_start_position = self
-            .player_id
-            .and_then(|player_id| world.find_entity(player_id).map(|player| player.transform.position));
+        let actor_start_positions: Vec<(EntityId, Vec2)> = world
+            .entities()
+            .iter()
+            .filter(|entity| entity.actor)
+            .map(|entity| (entity.id, entity.transform.position))
+            .collect();
 
         if let Some(player_id) = self.player_id {
             let move_speed = self.effective_move_speed_for_entity(player_id, self.player_move_speed);
@@ -2663,21 +2666,16 @@ impl GameplayScene {
             }
         }
 
-        if let (Some(player_id), Some(start_position), Some(player)) = (
-            self.player_id,
-            player_start_position,
-            self.player_id.and_then(|id| world.find_entity(id)),
-        ) {
-            let move_speed = self.effective_move_speed_for_entity(player_id, self.player_move_speed);
-            let actual_delta = Vec2 {
-                x: player.transform.position.x - start_position.x,
-                y: player.transform.position.y - start_position.y,
+        for (actor_id, start_position) in actor_start_positions {
+            let (current_position, order_state) = match world.find_entity(actor_id) {
+                Some(actor) => (actor.transform.position, actor.order_state),
+                None => continue,
             };
-
-            if let Some(facing) = Self::facing_from_movement_delta(actual_delta) {
-                self.last_player_facing = facing;
-            }
-
+            let actual_delta = Vec2 {
+                x: current_position.x - start_position.x,
+                y: current_position.y - start_position.y,
+            };
+            let move_speed = self.effective_move_speed_for_entity(actor_id, self.player_move_speed);
             let magnitude = (actual_delta.x * actual_delta.x + actual_delta.y * actual_delta.y).sqrt();
             let speed_denominator = (move_speed * fixed_dt_seconds).abs();
             let speed01 = if speed_denominator <= f32::EPSILON {
@@ -2690,16 +2688,34 @@ impl GameplayScene {
             } else {
                 ActionState::Idle
             };
-            let action_state =
-                self.resolve_player_action_state_for_visual_sandbox(world, player_id, movement_action_state);
+
+            let mut facing = Self::facing_from_movement_delta(actual_delta);
+            let action_state = if Some(actor_id) == self.player_id {
+                if let Some(player_facing) = facing {
+                    self.last_player_facing = player_facing;
+                } else {
+                    facing = Some(self.last_player_facing);
+                }
+                self.resolve_player_action_state_for_visual_sandbox(world, actor_id, movement_action_state)
+            } else {
+                if facing.is_none() {
+                    facing = world.entity_action_visual(actor_id).action_params.facing;
+                }
+                if GameplaySystemsHost::order_state_indicates_interaction(order_state) {
+                    ActionState::Interact
+                } else {
+                    movement_action_state
+                }
+            };
+
             world.update_entity_action_state_params(
-                player_id,
+                actor_id,
                 action_state,
                 ActionParams {
                     phase: 0.0,
                     intensity: speed01,
                     speed01,
-                    facing: Some(self.last_player_facing),
+                    facing,
                     target_hint: None,
                     is_looping: true,
                 },

@@ -32,6 +32,35 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Tools: debug overlay, counters, diagnostics
 - Content: mod scan, XML compile, pack I/O, DefDatabase
 ---
+## Module Boundaries and Ownership
+### A. Module map
+#### Core
+- Owns shared primitives and IDs used across engine/game layers.
+#### App/Loop
+- Owns fixed-step loop orchestration, frame pacing, and scene-machine stepping.
+#### SceneMachine and Scene
+- Owns scene lifecycle (`load/update/render/unload`) and scene switching contracts.
+#### World (SceneWorld and runtime state)
+- Owns entity storage, transforms, runtime visual state, and spawn/despawn queues.
+#### Rendering
+- Owns camera/world-to-screen transforms and sprite/placeholder drawing policy.
+#### Assets and Content Pipeline
+- Owns XML-to-compiled-pack flow and runtime `DefDatabase` loading.
+#### Input
+- Owns input sampling and per-tick snapshots used by gameplay update.
+#### Tools (Overlay, Console)
+- Owns debug overlay, console, command palette, and debug command wiring.
+#### Placeholders (Physics, Audio, Scripting seam)
+- Reserved seams only; no full subsystem ownership yet.
+### B. Ownership rules
+- Engine layer must not depend on game rules.
+- Runtime simulation must not parse XML.
+- Scene/game logic can consume engine seams but should not mutate unrelated engine modules.
+### C. Seam invariants
+- Fixed-step simulation remains deterministic-first.
+- Scene debug command routing stays explicit engine->scene boundary.
+- Render entrypoints remain stable while visual behavior evolves behind the seam.
+---
 ## Data Contracts (Plain English)
 ### Scene and Entity (runtime)
 - Entity: stable ID + Transform + Renderable descriptor + runtime order state
@@ -77,3 +106,5 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 
 - Deprecated in-place detailed notes (Module Boundaries + Tickets 33-47) were moved to `CODEXNOTES_ARCHIVE.md` on 2026-02-23.
 - Deprecated in-place detailed notes (Status model reminder + Tickets 55-65 + legacy Module Boundaries dump) were moved to `CODEXNOTES_ARCHIVE.md` on 2026-03-01.
+- Ticket 66 (2026-03-03): renderer sprite blit now uses deterministic integer source-over alpha blending (`alpha=0` no-op, `alpha=255` full replace, intermediate alpha blends RGB/A).
+- Ticket 66 (2026-03-03): gameplay now updates `EntityActionVisual` for all actors per tick from actual movement delta; non-player actors hold facing on zero-delta and force `ActionState::Interact` when order-state indicates interaction.

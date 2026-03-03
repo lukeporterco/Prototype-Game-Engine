@@ -1413,15 +1413,39 @@ fn draw_sprite_centered_scaled(
             let src_x = ((dx as f32) * inv_scale).floor() as u32;
             let src_x = src_x.min(sprite.width - 1) as usize;
             let src_offset = src_row_offset + src_x * 4;
-            let alpha = sprite.rgba[src_offset + 3];
-            if alpha == 0 {
+            let src_a = sprite.rgba[src_offset + 3];
+            if src_a == 0 {
                 continue;
             }
             let dst_offset = dst_row_offset + out_x as usize * 4;
-            frame[dst_offset] = sprite.rgba[src_offset];
-            frame[dst_offset + 1] = sprite.rgba[src_offset + 1];
-            frame[dst_offset + 2] = sprite.rgba[src_offset + 2];
-            frame[dst_offset + 3] = alpha;
+            if src_a == 255 {
+                frame[dst_offset] = sprite.rgba[src_offset];
+                frame[dst_offset + 1] = sprite.rgba[src_offset + 1];
+                frame[dst_offset + 2] = sprite.rgba[src_offset + 2];
+                frame[dst_offset + 3] = 255;
+                continue;
+            }
+
+            let src_r = sprite.rgba[src_offset] as u16;
+            let src_g = sprite.rgba[src_offset + 1] as u16;
+            let src_b = sprite.rgba[src_offset + 2] as u16;
+            let src_a_u16 = src_a as u16;
+            let inv_a = 255u16 - src_a_u16;
+
+            let dst_r = frame[dst_offset] as u16;
+            let dst_g = frame[dst_offset + 1] as u16;
+            let dst_b = frame[dst_offset + 2] as u16;
+            let dst_a = frame[dst_offset + 3] as u16;
+
+            let out_r = (src_r * src_a_u16 + dst_r * inv_a + 127) / 255;
+            let out_g = (src_g * src_a_u16 + dst_g * inv_a + 127) / 255;
+            let out_b = (src_b * src_a_u16 + dst_b * inv_a + 127) / 255;
+            let out_a = src_a_u16 + ((dst_a * inv_a + 127) / 255);
+
+            frame[dst_offset] = out_r as u8;
+            frame[dst_offset + 1] = out_g as u8;
+            frame[dst_offset + 2] = out_b as u8;
+            frame[dst_offset + 3] = out_a as u8;
         }
     }
 }
@@ -1833,6 +1857,48 @@ mod tests {
         };
         assert_eq!(scaled_sprite_dimensions(&sprite, 1.0), (4, 6));
         assert_eq!(scaled_sprite_dimensions(&sprite, 2.0), (8, 12));
+    }
+
+    #[test]
+    fn draw_sprite_alpha_zero_leaves_destination_unchanged() {
+        let mut frame = vec![10u8, 20, 30, 40];
+        let sprite = LoadedSprite {
+            width: 1,
+            height: 1,
+            rgba: vec![200, 100, 50, 0],
+        };
+
+        draw_sprite_centered_scaled(&mut frame, 1, 1, 0, 0, &sprite, 1.0);
+
+        assert_eq!(frame, vec![10u8, 20, 30, 40]);
+    }
+
+    #[test]
+    fn draw_sprite_alpha_255_replaces_destination_pixel() {
+        let mut frame = vec![10u8, 20, 30, 40];
+        let sprite = LoadedSprite {
+            width: 1,
+            height: 1,
+            rgba: vec![200, 100, 50, 255],
+        };
+
+        draw_sprite_centered_scaled(&mut frame, 1, 1, 0, 0, &sprite, 1.0);
+
+        assert_eq!(frame, vec![200u8, 100, 50, 255]);
+    }
+
+    #[test]
+    fn draw_sprite_alpha_source_over_blends_with_destination() {
+        let mut frame = vec![10u8, 20, 30, 255];
+        let sprite = LoadedSprite {
+            width: 1,
+            height: 1,
+            rgba: vec![200, 100, 50, 128],
+        };
+
+        draw_sprite_centered_scaled(&mut frame, 1, 1, 0, 0, &sprite, 1.0);
+
+        assert_eq!(frame, vec![105u8, 60, 40, 255]);
     }
 
     #[test]

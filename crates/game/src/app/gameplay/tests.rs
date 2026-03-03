@@ -3539,6 +3539,75 @@
     }
 
     #[test]
+    fn settler_move_order_updates_action_visual_walk_facing_then_idle() {
+        let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
+        let mut world = SceneWorld::default();
+        seed_def_database(&mut world);
+        scene.load(&mut world);
+        world.apply_pending();
+        let settler_id =
+            spawn_def_via_console(&mut scene, &mut world, "proto.settler", Vec2 { x: 0.0, y: 0.0 });
+        scene.selected_entity = Some(settler_id);
+
+        let order_result = scene.execute_debug_command(
+            SceneDebugCommand::OrderMove { x: 3.0, y: 0.0 },
+            SceneDebugContext::default(),
+            &mut world,
+        );
+        assert!(matches!(order_result, SceneDebugCommandResult::Success(_)));
+
+        let mut saw_walk = false;
+        let mut reached_idle_after_movement = false;
+        let mut previous_position = world.find_entity(settler_id).expect("settler").transform.position;
+        for _ in 0..200 {
+            scene.update(0.1, &InputSnapshot::empty(), &mut world);
+            world.apply_pending();
+
+            let settler = world.find_entity(settler_id).expect("settler");
+            let current_position = settler.transform.position;
+            let delta = Vec2 {
+                x: current_position.x - previous_position.x,
+                y: current_position.y - previous_position.y,
+            };
+            let visual = world.entity_action_visual(settler_id);
+
+            if delta.x.abs() > f32::EPSILON || delta.y.abs() > f32::EPSILON {
+                saw_walk = true;
+                assert_eq!(visual.action_state, ActionState::Walk);
+                let expected_facing =
+                    GameplayScene::facing_from_movement_delta(delta).expect("movement facing");
+                assert_eq!(visual.action_params.facing, Some(expected_facing));
+            }
+
+            if saw_walk && matches!(settler.order_state, OrderState::Idle) {
+                scene.update(0.1, &InputSnapshot::empty(), &mut world);
+                world.apply_pending();
+                let idle_visual = world.entity_action_visual(settler_id);
+                assert_eq!(idle_visual.action_state, ActionState::Idle);
+                assert!(idle_visual.action_params.speed01 <= f32::EPSILON);
+
+                let idle_facing = idle_visual.action_params.facing;
+                scene.update(0.1, &InputSnapshot::empty(), &mut world);
+                world.apply_pending();
+                let idle_visual_again = world.entity_action_visual(settler_id);
+                assert_eq!(idle_visual_again.action_state, ActionState::Idle);
+                assert!(idle_visual_again.action_params.speed01 <= f32::EPSILON);
+                assert_eq!(idle_visual_again.action_params.facing, idle_facing);
+                reached_idle_after_movement = true;
+                break;
+            }
+
+            previous_position = current_position;
+        }
+
+        assert!(saw_walk, "expected settler to emit walk visual while moving");
+        assert!(
+            reached_idle_after_movement,
+            "expected settler visual to return to idle after movement completed"
+        );
+    }
+
+    #[test]
     fn nav_sandbox_selected_settler_order_move_routes_to_snapped_goal_center() {
         let mut scene = GameplayScene::new("A", SceneKey::B, Vec2 { x: 0.0, y: 0.0 });
         let mut world = SceneWorld::default();
