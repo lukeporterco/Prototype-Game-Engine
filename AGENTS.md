@@ -104,6 +104,11 @@ Every ticket must use exactly these top-level sections, in this order:
 - If `ROADMAP` says `V2: None`, do not modify `docs/V2_BACKLOG.md`.
 - Use the strict template in `docs/V2_BACKLOG.md` for every appended entry.
 
+### V2 backlog archival rule (Required)
+- `docs/V2_BACKLOG.md` is active backlog only (not-yet-implemented work).
+- Completed or obsolete V2 entries must be moved to `docs/V2_BACKLOG_ARCHIVE.md` (move, do not copy).
+- Each archived entry must include `Date (YYYY-MM-DD)` and `Closed-by` metadata.
+
 ### Required per-ticket sections (Non-negotiable)
 Every CODEX INPUT must include these subsections.
 
