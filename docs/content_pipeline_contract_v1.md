@@ -1,19 +1,17 @@
 # Content Pipeline Contract v1
-Last updated: 2026-02-23. Covers: Ticket 6 (contract v1).
+Last updated: 2026-03-04. Covers: Tickets 6-70.1.
 
-Status: Locked for Ticket 6 (spec-first).  
-Scope: Contract only. No compiler or loader implementation in this ticket.
+Status: Active and aligned to shipped compiler/runtime behavior.
+Scope: Contract for what is currently enforced and relied on in the vertical slice.
 
 ## 1. Goal and Boundary
 
 This contract defines the seam between XML authoring and runtime content use:
 
 1. Authoring format is XML.
-2. Compiler output is `ContentPack v1` (one pack per mod).
+2. Compiler output is compiled content packs.
 3. Loader output is runtime `DefDatabase`.
 4. Runtime simulation consumes `DefDatabase` only and never parses XML.
-
-The purpose is to keep runtime fast and constrained, while preserving deterministic and debuggable content compilation.
 
 ## 2. Public Contract Interfaces
 
@@ -33,88 +31,108 @@ load_content_packs_to_def_database(base_pack, mod_packs_in_load_order)
 
 ## 3. Mod Identity and Source Rules
 
-### 3.1 `mod_id` source (explicit)
+### 3.1 `mod_id` source
 
 1. For entries under `mods/`, `mod_id` is the leaf folder name.
 2. No aliasing/remapping is allowed in v1.
 3. Base content uses fixed `mod_id = "base"` from `assets/base`.
-
-Examples:
-
-1. `mods\betterlabels` -> `mod_id = "betterlabels"`
-2. `mods\foo_bar` -> `mod_id = "foo_bar"`
-3. `assets\base` -> `mod_id = "base"`
 
 ### 3.2 XML discovery root
 
 1. Compiler discovers XML files recursively under a mod root.
 2. Input paths are normalized to forward slashes (`/`) for hashing and deterministic ordering.
 
-## 4. Def Philosophy and Minimal Def Type
+## 4. EntityDef v1 (Current Enforced Schema)
 
 Defs are archetypes only, with no runtime mutable state.
 
-The first locked def type is `EntityDef`.
+Supported `EntityDef` fields:
 
-`EntityDef` v1 fields:
+1. `defName` (required, non-empty text).
+2. `label` (required for first/full definition; optional on later overrides).
+3. `renderable` (required for first/full definition; optional on later overrides).
+4. `moveSpeed` (optional `f32`, finite and `>= 0`, runtime default `5.0`).
+5. `health_max` (optional `u32`, must be `> 0` when present).
+6. `base_damage` (optional `u32`, `0` allowed).
+7. `aggro_radius` (optional `f32`, finite and `>= 0`).
+8. `attack_range` (optional `f32`, finite and `>= 0`).
+9. `attack_cooldown_seconds` (optional `f32`, finite and `>= 0`).
+10. `tags` (optional list of `<li>` text entries only).
 
-1. `defName: string` required.
-2. `label: string` required.
-3. `renderable` required.
-   - Preferred form:
-     - `<renderable kind="Placeholder" />`
-     - `<renderable kind="Sprite" spriteKey="player" />`
-   - Legacy-compatible text form (still accepted):
-     - `<renderable>Placeholder</renderable>`
-     - `<renderable>Sprite:<key></renderable>`
-   - `Sprite` keys use `[a-z0-9_/-]`, must be non-empty, and must not include `..`, leading `/`, or `\`.
-4. `moveSpeed: f32` optional, default `5.0`, must be finite and `>= 0`.
-5. `tags: list<string>` optional.
+### 4.1 `renderable` accepted forms
 
-Minimal shape:
+Attribute form:
+
+- `<renderable kind="Placeholder" />`
+- `<renderable kind="Sprite" spriteKey="visual_test/pawn_blue" pixelScale="3" />`
+
+Legacy text form (still accepted):
+
+- `<renderable>Placeholder</renderable>`
+- `<renderable>Sprite:visual_test/pawn_blue</renderable>`
+
+Sprite key constraints:
+
+- Must pass key validation (`[a-z0-9_/-]`, non-empty, no leading `/`, no `..`, no `\`).
+
+### 4.2 `renderable` strictness rules
+
+1. Allowed `renderable` attributes: `kind`, `spriteKey`, `pixelScale` only.
+2. `kind="Placeholder"` must not include `spriteKey`, `pixelScale`, or child elements.
+3. `kind="Sprite"` requires `spriteKey`.
+4. `pixelScale` is optional, integer `1..=16`, default `1`.
+5. Text-form `renderable` must not include attributes or child elements.
+
+### 4.3 Sprite anchors rules
+
+For `kind="Sprite"`, one optional `<anchors>` block is supported:
 
 ```xml
-<Defs>
-  <EntityDef>
-    <defName>proto.player</defName>
-    <label>Player</label>
-    <renderable kind="Placeholder" />
-    <moveSpeed>5.0</moveSpeed>
-    <tags>
-      <li>colonist</li>
-      <li>starter</li>
-    </tags>
-  </EntityDef>
-</Defs>
+<renderable kind="Sprite" spriteKey="..." pixelScale="3">
+  <anchors>
+    <anchor name="hand" x="4" y="-1" />
+    <anchor name="carry" x="3" y="-2" />
+    <anchor name="tool" x="4" y="-1" />
+  </anchors>
+</renderable>
 ```
-
-## 5. Validation Rules
-
-Validation is strict. Content errors fail load/compile for that run.
 
 Rules:
 
+1. At most one `<anchors>` block.
+2. `<anchors>` has no attributes.
+3. `<anchors>` children must be `<anchor>` only.
+4. `<anchor>` allowed attributes: `name`, `x`, `y` only (all required).
+5. `name` allowed values: `hand`, `carry`, `muzzle`, `light_origin`, `tool`.
+6. `x` and `y` must parse as `i16` integers.
+7. Duplicate anchor names are rejected.
+
+## 5. Validation Strictness and Unknown-Field Behavior
+
+Validation is strict. Unknown fields/elements/attributes are rejected with compile errors, including nested unknowns:
+
+1. Unknown fields in `<EntityDef>` are rejected.
+2. Unknown attributes/children in `<renderable>` are rejected.
+3. Unknown children in `<tags>` are rejected (only `<li>` allowed).
+4. Unknown attributes/children in `<anchors>` and `<anchor>` are rejected.
+
+Additional validation rules:
+
 1. Missing required fields are errors.
-2. Unknown elements/fields are errors.
+2. Duplicate fields in one `EntityDef` are errors.
 3. Invalid enum values are errors.
-4. Non-finite or invalid numeric values are errors.
-5. Duplicate key in the same mod is an error (`(def_type, def_name)` duplicate).
-6. Cross-mod key collision with different `def_type` is an error.
+4. Non-finite/invalid numeric values are errors.
+5. Duplicate `defName` in the same mod is an error.
 
-## 6. Error Model
+## 6. Override and Merge Rules
 
-Compiler and loader report structured `ContentError` entries:
+Override key is `(def_type, def_name)`.
 
-1. `code`
-2. `message`
-3. `mod_id`
-4. `file_path`
-5. best-effort `line` and `column`
-6. optional `def_type`
-7. optional `def_name`
-8. optional `hint`
-
-If parser location is unavailable, use `source_location = unknown` while keeping `mod_id` and `file_path`.
+1. Later mod wins over earlier mod.
+2. Scalar fields use last-writer-wins.
+3. List fields replace the whole field (no append/deep merge).
+4. Partial override is allowed only if a prior definition exists.
+5. First/full definition must include `label` and `renderable`.
 
 ## 7. Deterministic Ordering Rules
 
@@ -123,82 +141,25 @@ If parser location is unavailable, use `source_location = unknown` while keeping
 1. Discover XML files recursively.
 2. Sort by normalized relative path (lexicographic).
 3. Within each file, read defs in document order.
-4. Before serialization, sort compiled defs by `(def_type, def_name)`.
 
 ### 7.2 Loader ordering
 
-1. Base pack applies first.
+1. Base applies first.
 2. Mods apply in configured load order.
-3. Runtime numeric IDs are assigned after final merge, sorted by `(def_type, def_name)`.
+3. Runtime IDs are assigned from merged defs in stable sorted order.
 
-## 8. ContentPack v1
-
-Per-mod binary format with required header fields:
-
-1. `magic: [u8; 4] = "PGCP"`
-2. `pack_format_version: u16 = 1`
-3. `compiler_version: String`
-4. `game_version: String`
-5. `mod_id: String`
-6. `mod_load_index: u32`
-7. `enabled_mods_hash_sha256: [u8; 32]`
-8. `input_hash_sha256: [u8; 32]`
-9. `def_count: u32`
-10. `source_file_count: u32`
-11. `created_utc_unix_seconds: u64` (diagnostic only)
-12. `ordering_scheme: "v1:path-lex+doc-order+def-sort"`
-
-Body requirements:
-
-1. Serialized defs.
-2. Source mapping records sufficient for mod/file level diagnostics.
-
-## 9. Cache Invalidation Contract
-
-Pack validity depends on exact match of these inputs:
-
-1. `pack_format_version`
-2. `compiler_version`
-3. `game_version`
-4. `mod_id`
-5. `mod_load_index`
-6. `enabled_mods_hash_sha256`
-7. `input_hash_sha256` (from normalized relative path + raw file bytes)
-
-Additional rules:
-
-1. Missing cache -> rebuild.
-2. Corrupt cache -> rebuild.
-3. Version mismatch -> rebuild.
-4. `compiler_version` invalidation uses exact string equality.
-5. `game_version` invalidation uses exact string equality.
-6. Any byte difference in either string invalidates cache.
-7. No semver/range compatibility in v1.
-
-## 10. Override Rules
-
-Override key is `(def_type, def_name)`.
-
-1. Later mod wins over earlier mod.
-2. Scalar fields use last-writer-wins.
-3. List fields replace the whole field (no append/deep merge).
-4. Duplicate key in same mod is error.
-5. Same `def_name` with different `def_type` across mods is error.
-
-## 11. Runtime `DefDatabase` Contract
+## 8. Runtime `DefDatabase` Contract
 
 1. Runtime stores compiled defs only.
-2. Runtime uses numeric IDs in hot paths.
+2. Runtime hot paths use numeric IDs.
 3. Runtime does not parse XML.
-4. Runtime may maintain precomputed indices.
 
-## 12. Fixture Set
+## 9. Fixture Set
 
-See `docs/fixtures/content_pipeline_v1/` and `docs/fixtures/content_pipeline_v1/EXPECTATIONS.md` for pass/fail cases, merged expectations, and invalidation checks.
+See `docs/fixtures/content_pipeline_v1/` and `docs/fixtures/content_pipeline_v1/EXPECTATIONS.md` for pass/fail cases and regression coverage.
 
-## 13. Non-goals for v1
+## 10. Non-goals for v1
 
 1. No deep patch language.
-2. No semver compatibility windows for cache reuse.
-3. No runtime XML fallback.
-4. No full gameplay schema beyond minimum `EntityDef` slice contract.
+2. No runtime XML fallback.
+3. No schema version bump in this contract update.

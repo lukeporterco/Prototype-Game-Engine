@@ -1,9 +1,9 @@
 # CODEXNOTES_ARCHIVE.md
 ## Purpose
 Historical record for decisions, ticket-by-ticket logs, superseded notes, and implementation timelines.
-Use `CODEXNOTES.md` for current active context.
+Use `docs/CODEXNOTES.md` for current active context.
 ## Migration Notes
-- On 2026-02-20, historical notes were moved from `CODEXNOTES.md` to enforce living-vs-archive separation in `AGENTS.md`.
+- On 2026-02-20, historical notes were moved from `docs/CODEXNOTES.md` to enforce living-vs-archive separation in `AGENTS.md`.
 - Ticket notes below are preserved as moved, in chronological order.
 ---
 ## Ticket Notes (2026-02-18)
@@ -932,7 +932,7 @@ Use `CODEXNOTES.md` for current active context.
 ---
 
 ## Archive Migration (2026-02-23)
-- Moved from `CODEXNOTES.md` to keep living notes concise per AGENTS guidance.
+- Moved from `docs/CODEXNOTES.md` to keep living notes concise per AGENTS guidance.
 
 ## Module Boundaries and Ownership
 ### A. Module map
@@ -1185,7 +1185,7 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 ---
 
 ## Migration Notes (2026-02-28)
-- Moved deprecated in-place detailed notes from `CODEXNOTES.md` into archive to keep living context concise per `AGENTS.md`.
+- Moved deprecated in-place detailed notes from `docs/CODEXNOTES.md` into archive to keep living context concise per `AGENTS.md`.
 - Scope moved: module-boundary details, Ticket 48-54 detailed bullets, and single-shot stress test update notes.
 
 ## Module Boundaries and Ownership (Moved from CODEXNOTES.md, Deprecated In-Place on 2026-02-28)
@@ -1260,7 +1260,7 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 ---
 
 ## Migration Notes (2026-03-01)
-- Moved detailed historical notes from `CODEXNOTES.md` into archive to keep `CODEXNOTES.md` as active-context only.
+- Moved detailed historical notes from `docs/CODEXNOTES.md` into archive to keep `docs/CODEXNOTES.md` as active-context only.
 - Scope moved: status model reminder, Tickets 55-65 detail bullets, and legacy module-boundary dump.
 
 ## Ticket Notes (Moved from CODEXNOTES.md on 2026-03-01)
@@ -1318,3 +1318,4 @@ Placeholders (Physics, Audio, Scripting seam) owns reserved extension seams and 
 - Dependency direction remains engine -> game boundary-safe with scene trait seam.
 - Rendering/picking policies may read runtime state but must not mutate simulation transforms.
 - Console queueable outputs remain standardized as `ok:` or `error:` lines.
+

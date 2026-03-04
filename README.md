@@ -1,5 +1,5 @@
 # Prototype Game Engine
-Last updated: 2026-02-23. Covers: Tickets 0-52.
+Last updated: 2026-03-04. Covers: Tickets 0-70.1.
 
 Prototype-first Rust game engine + colony-sim vertical slice scaffold.
 
@@ -8,7 +8,7 @@ Prototype-first Rust game engine + colony-sim vertical slice scaffold.
 - Content pipeline contract: `docs/content_pipeline_contract_v1.md`
 - Thruport CLI harness usage: `docs/thruport_cli.md`
 - Test discovery helper workflow: `docs/test_helper.md`
-- Working context log: `CODEXNOTES.md`
+- Working context log: `docs/CODEXNOTES.md`
 
 ## Run
 
@@ -38,7 +38,7 @@ thruport_cli --port 46001 send thruport.status
 
 Authoritative details:
 - CLI contract/options: `docs/thruport_cli.md`
-- Console command schemas: `CONSOLE_COMMANDS.md`
+- Console command schemas: `docs/CONSOLE_COMMANDS.md`
 
 ## Current baseline
 - Fixed-step loop with decoupled render cadence.

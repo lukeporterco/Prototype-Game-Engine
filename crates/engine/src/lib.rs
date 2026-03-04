@@ -160,6 +160,7 @@ mod tests {
         let codexnotes_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
+            .join("docs")
             .join("CODEXNOTES.md");
         let notes = fs::read_to_string(&codexnotes_path).unwrap_or_else(|error| {
             panic!(

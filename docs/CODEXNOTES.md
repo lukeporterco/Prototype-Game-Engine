@@ -1,10 +1,11 @@
 # CODEXNOTES.md
-Last updated: 2026-03-01. Covers: Tickets 0-54.
+Last updated: 2026-03-04. Covers: Tickets 0-70.1.
 ## Purpose
 Living, structured notes for Codex and humans to keep consistent context across threads.
 Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
-- Historical ticket logs were moved to `CODEXNOTES_ARCHIVE.md` on 2026-02-20.
-- Use `CODEXNOTES.md` for active context only; use `CODEXNOTES_ARCHIVE.md` for historical detail.
+- Ticket-by-ticket logs are written directly to `docs/CODEXNOTES_ARCHIVE.md` at ticket completion time.
+- Use `docs/CODEXNOTES.md` for active living context only; use `docs/CODEXNOTES_ARCHIVE.md` for historical detail.
+- `docs/CODEXNOTES.md` is not a temporary staging area for ticket logs.
 - Canonical thruport startup/session runbook lives at `.codex_artifacts/SOME_COMMANDS.md`.
 ---
 ## Decisions (Locked)
@@ -102,10 +103,10 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 ## Known Issues / TODO
 - Next ticket queue not defined beyond Ticket 30; awaiting prioritization.
 ---
-- Detailed Ticket 31-32.3 notes were moved to CODEXNOTES_ARCHIVE.md on 2026-02-20.
+- Detailed Ticket 31-32.3 notes were moved to `docs/CODEXNOTES_ARCHIVE.md` on 2026-02-20.
 
-- Deprecated in-place detailed notes (Module Boundaries + Tickets 33-47) were moved to `CODEXNOTES_ARCHIVE.md` on 2026-02-23.
-- Deprecated in-place detailed notes (Status model reminder + Tickets 55-65 + legacy Module Boundaries dump) were moved to `CODEXNOTES_ARCHIVE.md` on 2026-03-01.
+- Deprecated in-place detailed notes (Module Boundaries + Tickets 33-47) were moved to `docs/CODEXNOTES_ARCHIVE.md` on 2026-02-23.
+- Deprecated in-place detailed notes (Status model reminder + Tickets 55-65 + legacy Module Boundaries dump) were moved to `docs/CODEXNOTES_ARCHIVE.md` on 2026-03-01.
 - Ticket 66 (2026-03-03): renderer sprite blit now uses deterministic integer source-over alpha blending (`alpha=0` no-op, `alpha=255` full replace, intermediate alpha blends RGB/A).
 - Ticket 66 (2026-03-03): gameplay now updates `EntityActionVisual` for all actors per tick from actual movement delta; non-player actors hold facing on zero-delta and force `ActionState::Interact` when order-state indicates interaction.
 - Ticket 67 (2026-03-03): interaction outcomes for tagged interactables moved to `CombatResolution` (`InteractionCompleted`-driven) and now emit explicit intents (`SetCarryVisual`, `ClearCarryVisual`, `DecrementInteractableUses`, `IncrementResourceCount`, `StartHitVisualTimer`); `CompleteInteraction` safe-point apply is mechanical-only (order idle + nav clear).
@@ -119,3 +120,4 @@ Keep this concise and actionable. Prefer bullet points. Avoid long code dumps.
 - Ticket 69 (2026-03-03): macro load failures are one-shot per run (`error: command palette macros load failed: <reason>`), missing macro file is silent/no-op, and over-cap files are rejected as invalid for the run (no macro buttons).
 - Ticket 69 (2026-03-03): `DebugInfoSnapshot` gained typed `selected_role_text: Option<String>`; gameplay now populates it from `pawn_role_by_entity` for `PlayerPawn|Settler|Npc`, and overlay inspect renders a single compact `role: <value>` line only when present (no `dump.state v1`/`dump.ai v1` schema changes).
 - Ticket 70 (2026-03-03): V2 backlog hygiene rule added: active items stay in `docs/V2_BACKLOG.md`; completed/obsolete items are moved (not copied) to `docs/V2_BACKLOG_ARCHIVE.md` with `Date` and `Closed-by` metadata.
+

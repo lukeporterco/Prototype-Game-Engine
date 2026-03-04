@@ -1,5 +1,5 @@
 # AGENTS.md
-Last updated: 2026-02-23. Covers: Tickets 0-52.
+Last updated: 2026-03-04. Covers: Tickets 0-70.1.
 
 ## Project
 Proto GE: a prototype-first Rust game engine + colony-sim vertical slice (RimWorld-inspired).  
@@ -38,13 +38,27 @@ Everything else is optional until this works.
 - Use small, incremental commits/changes aligned to a single ticket.
 - Keep code modular by module responsibility (App/Loop, Scene, Rendering, Assets, Input, Tools).
 - Prefer clear, explicit data structures over clever abstractions.
+- This file is intentionally kept at repo root as the start-here workflow hub.
+- All longform project docs live under `docs/`.
+
+## Doc Date Hygiene (Mandatory)
+- Any time Codex edits a doc that has a `Last updated:` header, update that date to the current local date (America/Los_Angeles).
+- If that doc also includes `Covers: Tickets ...` or similar coverage metadata, update it when relevant.
 
 ## Doc Map / Source of Truth
+Read in this order for docs navigation:
+1) `AGENTS.md` (root start-here workflow hub)
+2) `README.md` (human entry point and run basics)
+3) `docs/PROTOGE_INFRASTRUCTURE_REFERENCE.md` (runtime baseline contract)
+4) `docs/content_pipeline_contract_v1.md` (content/XML contract)
+5) `docs/CODEXNOTES.md` (living context)
+6) `docs/CODEXNOTES_ARCHIVE.md` (ticket-by-ticket historical logs)
+
 ### Primary sources (contracts)
 - Runtime/architecture: `docs/PROTOGE_INFRASTRUCTURE_REFERENCE.md`
 - Content contract: `docs/content_pipeline_contract_v1.md`
 - CLI details: `docs/thruport_cli.md`
-- Console command schemas: `CONSOLE_COMMANDS.md`
+- Console command schemas: `docs/CONSOLE_COMMANDS.md`
 - Test targeting / harness guidance: `docs/test_helper.md`
 
 ### Workflow helpers (non-authoritative)
@@ -58,7 +72,7 @@ Before implementing any ticket, Codex must inspect repo reality and use it as th
 Inspect first, in this order:
 1) Rules and overview
 - AGENTS.md
-- CODEXNOTES.md
+- docs/CODEXNOTES.md
 - `docs/V2_BACKLOG.md` (review before ticket work; append entries when ROADMAP has V2 bullets)
 - `.codex_artifacts/SOME_COMMANDS.md` (canonical thruport start-session workflow)
 - README.md and docs/ (if present)
@@ -72,15 +86,17 @@ Inspect first, in this order:
 If anything is unclear, Codex must report what it found and propose a minimal plan before editing code.
 
 ## CODEXNOTES.md (Living Context)
-Codex may read and update `CODEXNOTES.md` to preserve structured context across threads.  
+Codex may read and update `docs/CODEXNOTES.md` to preserve structured context across threads.  
 Rules for editing:
 - Append-only by default; if you revise, keep prior decisions and mark them as deprecated instead of deleting.
 - Use concise bullet points and headings.
 - Record decisions, interfaces, file paths, and pitfalls discovered.
 - Do not store large code dumps; store summaries and links to files/functions.
-- Codex should update CODEXNOTES.md after every ticket if any of the following changed: a decision, a file path convention, an interface/data contract, a performance rule, or a new pitfall/bug pattern was discovered.
+- Ticket-by-ticket logs must be written directly to `docs/CODEXNOTES_ARCHIVE.md` at ticket completion time.
+- `docs/CODEXNOTES.md` must not be used as a temporary staging area for ticket logs.
+- Codex should update `docs/CODEXNOTES.md` after every ticket only if net-new living context changed (decision, file path convention, interface/data contract, performance rule, or pitfall).
 
-Suggested sections inside CODEXNOTES.md:
+Suggested sections inside docs/CODEXNOTES.md:
 - Decisions (locked)
 - Current milestone and next tickets
 - Module map (what owns what)
@@ -130,10 +146,10 @@ VERIFICATION (mandatory)
 - Before editing: restate the ticket goal and list the files you expect to touch.
 - Implement the smallest version that satisfies acceptance criteria.
 - Prefer adding a minimal test or smoke check when feasible.
-- When blocked: write a short note in CODEXNOTES.md describing what you found, what you tried, and the next step.
+- When blocked: write a short note in `docs/CODEXNOTES.md` describing what you found, what you tried, and the next step.
 
 ### Implementation behavior rules (Anti-slop)
-- No guessing: do not silently assume architecture, file locations, commands, or dependencies. If repo inspection does not resolve a question, pick the safest minimal path and state the assumption clearly in the ticket or CODEXNOTES.md.
+- No guessing: do not silently assume architecture, file locations, commands, or dependencies. If repo inspection does not resolve a question, pick the safest minimal path and state the assumption clearly in the ticket or `docs/CODEXNOTES.md`.
 - No “catfish code”: do not produce code that looks plausible but is not wired into real project structure, real build steps, or real runtime behavior.
 - Small, verifiable steps: implement the smallest working slice first, verify, then extend. Do not attempt large end-to-end builds in one step.
 
@@ -159,15 +175,15 @@ A ticket is done when:
 - Build/run succeeds
 - Any added tests pass
 - VERIFICATION commands in the ticket were run and passed
-- CODEXNOTES.md is updated if a decision, interface, file path convention, performance rule, or pitfall was discovered
+- `docs/CODEXNOTES.md` is updated only for net-new living context, and ticket logs are written to `docs/CODEXNOTES_ARCHIVE.md`
 
-## CODEXNOTES.md vs CODEXNOTES_ARCHIVE.md (Separation and Usage)
+## docs/CODEXNOTES.md vs docs/CODEXNOTES_ARCHIVE.md (Separation and Usage)
 
 Purpose and scope
-- `CODEXNOTES.md` is the living context file. It must stay short, current, and immediately useful for implementing the next tickets.
-- `CODEXNOTES_ARCHIVE.md` is historical record. It stores older ticket logs and superseded decisions so the main file does not become noisy.
+- `docs/CODEXNOTES.md` is the living context file. It must stay short, current, and immediately useful for implementing the next tickets.
+- `docs/CODEXNOTES_ARCHIVE.md` is historical record. It stores ticket logs and superseded decisions so the main file does not become noisy.
 
-What belongs in CODEXNOTES.md
+What belongs in docs/CODEXNOTES.md
 Keep only information that is actively needed to make correct changes right now:
 - Locked decisions that are still in force
 - Current milestone and next-ticket queue
@@ -177,31 +193,31 @@ Keep only information that is actively needed to make correct changes right now:
 - Current known issues / pitfalls that still apply
 - References to where things live (file paths, key functions), kept concise
 
-What belongs in CODEXNOTES_ARCHIVE.md
+What belongs in docs/CODEXNOTES_ARCHIVE.md
 Move anything that is not needed for near-term work:
-- Completed ticket-by-ticket logs after they’re no longer relevant
+- Ticket-by-ticket logs written at ticket completion time
 - Deprecated or replaced decisions (keep them for history, but marked deprecated)
 - Old interface versions and old schema versions that are no longer supported
 - One-off investigations and debugging timelines that are solved
 
 When to use each file
-- Read `CODEXNOTES.md` first before any implementation work. Treat it as current truth.
-- Consult `CODEXNOTES_ARCHIVE.md` only when you need history:
+- Read `docs/CODEXNOTES.md` first before any implementation work. Treat it as current truth.
+- Consult `docs/CODEXNOTES_ARCHIVE.md` only when you need history:
   - Why a decision was made
   - How an interface evolved
   - Tracking regressions to an earlier change
   - Recovering a previously removed approach
 
 Update rules (mandatory)
-- After each ticket, update `CODEXNOTES.md` only with net-new, still-relevant context: decisions, contracts, file paths, pitfalls.
-- If an update would add more than a short set of bullets or it is primarily historical detail, put it in `CODEXNOTES_ARCHIVE.md` and add a brief pointer from `CODEXNOTES.md` (one or two bullets) explaining what moved and why.
-- If you revise an existing note, prefer marking the old one as deprecated and moving the deprecated detail into `CODEXNOTES_ARCHIVE.md`, keeping `CODEXNOTES.md` clean.
+- After each ticket, write the ticket log directly to `docs/CODEXNOTES_ARCHIVE.md`.
+- After each ticket, update `docs/CODEXNOTES.md` only with net-new, still-relevant living context: decisions, contracts, file paths, pitfalls.
+- If you revise an existing living note, prefer marking the old one as deprecated and moving deprecated detail into `docs/CODEXNOTES_ARCHIVE.md`, keeping `docs/CODEXNOTES.md` clean.
 
-## Developer Notes: `CONSOLE_COMMANDS.md`
+## Developer Notes: `docs/CONSOLE_COMMANDS.md`
 
-`CONSOLE_COMMANDS.md` is a developer-facing reference for the in-game console. It is meant for you (and anyone working on the project) to quickly remember what commands exist, what they do, and how to use them during testing and iteration. It is not a public-facing spec and does not need to describe internal implementation details.
+`docs/CONSOLE_COMMANDS.md` is a developer-facing reference for the in-game console. It is meant for you (and anyone working on the project) to quickly remember what commands exist, what they do, and how to use them during testing and iteration. It is not a public-facing spec and does not need to describe internal implementation details.
 
-When to use `CONSOLE_COMMANDS.md`
+When to use `docs/CONSOLE_COMMANDS.md`
 Use it as the first stop when you want to:
 
 * Spawn or despawn entities while testing
@@ -210,7 +226,7 @@ Use it as the first stop when you want to:
 * Remember exact syntax, optional arguments, and defaults
 * Confirm what a command prints on success or failure
 
-What to put in `CONSOLE_COMMANDS.md`
+What to put in `docs/CONSOLE_COMMANDS.md`
 Keep entries practical and copy-paste friendly:
 
 * Command name
@@ -222,8 +238,8 @@ Keep entries practical and copy-paste friendly:
 
 Project rules for edits
 
-* If you add, remove, or change a console command, update `CONSOLE_COMMANDS.md` in the same change.
-* If the console shell/input behavior changes (toggle key, history behavior, submission/queue semantics), update `CONSOLE_COMMANDS.md` in the same change.
+* If you add, remove, or change a console command, update `docs/CONSOLE_COMMANDS.md` in the same change.
+* If the console shell/input behavior changes (toggle key, history behavior, submission/queue semantics), update `docs/CONSOLE_COMMANDS.md` in the same change.
 * Prefer documenting the behavior you observe in-game (inputs and outputs) rather than how it’s implemented.
 * If behavior is intentionally unstable while prototyping, mark it clearly as “temporary” so it’s not mistaken for a guarantee.
 
@@ -233,4 +249,6 @@ Commands may be handled at different layers:
 * Engine/scene-machine commands (quit, reset scene, switch scene)
 * Scene/game commands (spawn, despawn, teleport, etc.)
 
-`CONSOLE_COMMANDS.md` should note which layer a command targets, mainly so you know what scene needs to be active for it to work.
+`docs/CONSOLE_COMMANDS.md` should note which layer a command targets, mainly so you know what scene needs to be active for it to work.
+
+
